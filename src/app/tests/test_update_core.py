@@ -72,7 +72,8 @@ def test_no_pinned_key_means_updates_are_disabled_not_unsigned():
     with pytest.raises(TrustError, match="No release-signing key is pinned"):
         TrustStore().verify_envelope(index_bytes(key, []))
     # the repository's shipped key file is empty: an honest "not configured" state, never a silent pass
-    assert TrustStore.load_pinned().configured is False
+    pinned = TrustStore.load_pinned()
+    assert pinned.configured and list(pinned.keys) == ["23bb536587702e29"]      # the owner's production PUBLIC key (private half is never in the repo)
     # the unsigned development mode must be opted into explicitly
     assert TrustStore(allow_unsigned=True).verify_envelope(index_bytes(key, []))["schema"] == 1
 

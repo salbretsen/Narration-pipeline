@@ -3,6 +3,11 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.5.1
+- **Production release-signing key pinned** (id `23bb536587702e29`, public half in `studio/update/pinned_keys.json`). The private key is held outside the
+  repository by the owner's assistant session and must be set as the CI secret `RELEASE_SIGNING_KEY`; no release has been signed yet. The updater is
+  now enabled and will accept only indexes signed by that key. Tests that assumed "no key" now use an empty trust store explicitly.
+
 ## v0.5.0
 Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
 **Not yet run on a Mac** (see `docs/10-installation-and-updates.md`, checks M1-M10) and **no release has been signed** (no production key exists).

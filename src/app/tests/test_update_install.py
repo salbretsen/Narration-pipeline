@@ -430,11 +430,9 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
     r = _cli("doctor", "--json", env_extra=env)
     names = {c["name"]: c for c in json.loads(r.stdout)}
-    assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "warn"
+    assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "ok"
     r = _cli("update", "--status", env_extra=env)
     assert r.returncode == 0 and "installed" in r.stdout
-    r = _cli("update", "--install", env_extra=env)       # nothing is configured: must fail safely, not crash or install
-    assert r.returncode == 1 and "signing key" in (r.stdout + r.stderr).lower()
 
 
 def test_serve_refuses_busy_port_and_second_copy(tmp_path):

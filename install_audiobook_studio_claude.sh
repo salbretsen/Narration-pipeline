@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.0 (build 20261029104915-8394e3c2)
+#  Version v0.5.1 (build 20261029110146-7205162c)
 #
 #  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
 #  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
@@ -23,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.0"
-BUILD_ID="20261029104915-8394e3c2"
+STUDIO_VERSION="v0.5.1"
+BUILD_ID="20261029110146-7205162c"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -407,11 +407,16 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_eb930f095d82__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_587b0a3bbf6a__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.5.1
+- **Production release-signing key pinned** (id `23bb536587702e29`, public half in `studio/update/pinned_keys.json`). The private key is held outside the
+  repository by the owner's assistant session and must be set as the CI secret `RELEASE_SIGNING_KEY`; no release has been signed yet. The updater is
+  now enabled and will accept only indexes signed by that key. Tests that assumed "no key" now use an empty trust store explicitly.
 
 ## v0.5.0
 Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
@@ -508,7 +513,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_eb930f095d82__
+__STUDIO_EOF_587b0a3bbf6a__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -538,10 +543,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_2980a5b9ceff__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_c6815649c778__'
 # Audiobook Studio
 
-**v0.5.0** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.1** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -873,7 +878,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_2980a5b9ceff__
+__STUDIO_EOF_c6815649c778__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2672,7 +2677,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_0cb6d7b2750b__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_788d2ec1f2be__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -2681,13 +2686,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_0cb6d7b2750b__
+__STUDIO_EOF_788d2ec1f2be__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -15630,13 +15635,19 @@ class Fetcher:
         os.replace(part, dest)
         return dest
 __STUDIO_EOF_b7ae6a706482__
-cat > "$DEST/studio/update/pinned_keys.json" <<'__STUDIO_EOF_eed5a5f9010d__'
+cat > "$DEST/studio/update/pinned_keys.json" <<'__STUDIO_EOF_2b281c91ae23__'
 {
-  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Empty until the owner runs tools/release_keys.py generate and commits the public key. While empty, updates are disabled; nothing is signed.",
-  "keys": [],
+  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Public keys only; the private key is held offline by the owner and as the CI secret RELEASE_SIGNING_KEY. If no key is listed, updates are disabled.",
+  "keys": [
+    {
+      "id": "23bb536587702e29",
+      "name": "release-2026",
+      "public_key": "7PPKF3Nnu02MJ97vl5kvakS5Jt3cWLMKemOwAUHkSHI="
+    }
+  ],
   "revoked": []
 }
-__STUDIO_EOF_eed5a5f9010d__
+__STUDIO_EOF_2b281c91ae23__
 cat > "$DEST/studio/update/repository.py" <<'__STUDIO_EOF_9aac2ab730c9__'
 """ReleaseRepository implementations. A repository only says *where* to fetch; the signature decides *whether to trust*."""
 from __future__ import annotations
@@ -22672,7 +22683,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_aa6bae69a86c__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_beef9cef3bdb__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23057,13 +23068,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.0" and st["version_label"] == "v0.5.0"
+    assert st["version"] == "0.5.1" and st["version_label"] == "v0.5.1"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.0" and "stage" not in a
+    assert a["version_label"] == "v0.5.1" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_aa6bae69a86c__
+__STUDIO_EOF_beef9cef3bdb__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -24638,7 +24649,7 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_70aa088b01ec__'
+cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_fe9cb3bfda09__'
 """Update building blocks: signatures, release selection, hardened network and archive handling, release store, runtime provisioning,
 platform services, provider/storage interfaces. All local; no network, no macOS."""
 from __future__ import annotations
@@ -24713,7 +24724,8 @@ def test_no_pinned_key_means_updates_are_disabled_not_unsigned():
     with pytest.raises(TrustError, match="No release-signing key is pinned"):
         TrustStore().verify_envelope(index_bytes(key, []))
     # the repository's shipped key file is empty: an honest "not configured" state, never a silent pass
-    assert TrustStore.load_pinned().configured is False
+    pinned = TrustStore.load_pinned()
+    assert pinned.configured and list(pinned.keys) == ["23bb536587702e29"]      # the owner's production PUBLIC key (private half is never in the repo)
     # the unsigned development mode must be opted into explicitly
     assert TrustStore(allow_unsigned=True).verify_envelope(index_bytes(key, []))["schema"] == 1
 
@@ -25128,8 +25140,8 @@ def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monke
     monkeypatch.delenv("AUDIOBOOK_STUDIO_ROOT", raising=False)
     create_app(ctx, start_worker=False)
     assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
-__STUDIO_EOF_70aa088b01ec__
-cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_36c62f2a1f55__'
+__STUDIO_EOF_fe9cb3bfda09__
+cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_0f608c496581__'
 """Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
 queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
 from __future__ import annotations
@@ -25265,6 +25277,18 @@ def test_check_states(env):
     st = env.mgr.check()
     assert st["state"] == "offline" and st["error_kind"] == "offline" and st["last_success_check"]   # last good check is kept
     env.site.offline = False
+
+
+def test_updates_are_switched_off_when_no_key_is_pinned(env):
+    from studio.update.trust import TrustStore
+
+    env.mgr.trust = TrustStore()
+    env.publish("0.5.1")
+    st = env.mgr.check()
+    assert st["state"] == "disabled" and st["error_kind"] == "no_key" and "signing key" in st["message"]
+    assert not env.site.requests                                           # does not even contact the server
+    with pytest.raises(UpdateError):
+        env.mgr.download(background=False)
 
 
 def test_incompatible_release_is_reported_not_offered(env):
@@ -25818,8 +25842,8 @@ def test_real_process_update_then_failed_update_rolls_back(live):
         assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
     assert pid1 != int((live.tmp / "Audiobook Studio" / "state" / "svc" / "t-app.pid").read_text())     # restarted, not duplicated
     assert ctx.db.schema_version() > 0
-__STUDIO_EOF_36c62f2a1f55__
-cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_0fde6a45d2eb__'
+__STUDIO_EOF_0f608c496581__
+cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_f61c128fb6d4__'
 """Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
 or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
 from __future__ import annotations
@@ -26252,11 +26276,9 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
     r = _cli("doctor", "--json", env_extra=env)
     names = {c["name"]: c for c in json.loads(r.stdout)}
-    assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "warn"
+    assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "ok"
     r = _cli("update", "--status", env_extra=env)
     assert r.returncode == 0 and "installed" in r.stdout
-    r = _cli("update", "--install", env_extra=env)       # nothing is configured: must fail safely, not crash or install
-    assert r.returncode == 1 and "signing key" in (r.stdout + r.stderr).lower()
 
 
 def test_serve_refuses_busy_port_and_second_copy(tmp_path):
@@ -26283,7 +26305,7 @@ def test_provider_boundaries_do_not_import_each_other_directly():
             assert "launchctl" not in t, p
         if "web" in p.parts:
             assert "github.com" not in t.replace("github.com/salbretsen", ""), p
-__STUDIO_EOF_0fde6a45d2eb__
+__STUDIO_EOF_f61c128fb6d4__
 cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_f5ccd3b476bf__'
 """Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
 (Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
@@ -26435,20 +26457,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_664b2df716dd__'
-20261029104915-8394e3c2
-__STUDIO_EOF_664b2df716dd__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_b5196a5066fc__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_a192a0f81683__'
+20261029110146-7205162c
+__STUDIO_EOF_a192a0f81683__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_7e201cbd2da8__'
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "schema_version": 2,
   "runtime_id": "a1964c5cf7429b65",
-  "build": "20261029104915-8394e3c2",
+  "build": "20261029110146-7205162c",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_b5196a5066fc__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_5cf80dfe5d02__'
+__STUDIO_EOF_7e201cbd2da8__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e797bca5c6a9__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 94ed4bd3459375e05a3df9b4a962537066a91d32942bdf5f74eaad078077ac76  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -26457,13 +26479,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-eb930f095d82b75fb33c1d9d9afbf0b4f8eb41ba8f61e8bb4cdd5f396e411d97  CHANGELOG.md
+587b0a3bbf6adbb4fd8d9adc3a03db69dbd02ed91b5c9f02706f339886bc23f3  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-2980a5b9ceff81941c0b61961bbb8e1c6c08c5401cbeb9ea88ad40b388e1d0b0  README.md
+c6815649c778531ae2347999e5cb240b230eade97edc0fedbdc93b6ee585a6f5  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 a1964c5cf7429b65b7f8e5f900ce93e88164ca027daaa2cb33f88da716f8eb63  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-0cb6d7b2750b41d887eeff80dc37dbc6abf6896ae7a1debb723abfd3f27ada41  studio/__init__.py
+788d2ec1f2be03253a446b6829d1befac98b07504a2d887e48e80998760fe78c  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -26512,7 +26534,7 @@ f8cdc1305a61326cb3b7680912fb1dc1a6d1a06d337fcf6be319728a71713690  studio/update/
 7bc7a50ec889e523ec2f9e198aa4398d06b056d4d727536bbc1c63f84df1aee7  studio/update/manager.py
 493d0f087608ebc59c2264634d116fd83bfe4ce20c80c0c7e8705ffb6e07de0f  studio/update/manifest.py
 b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/net.py
-eed5a5f9010d5f71e20e0e3844c385fdb3273e5df655129034efa9ed95595a4d  studio/update/pinned_keys.json
+2b281c91ae2318c517adecc77e15a2984e452a4b614672460f79d6afed0bbccb  studio/update/pinned_keys.json
 9aac2ab730c9b792a5fdf13f1598dd1a7f44714ee8b13a0ff5a4d24e1359163c  studio/update/repository.py
 5b0fe9ea649c04a158cfd4b9404b446d2f543540d3885d86634fbf8ae0a1b33a  studio/update/runtime.py
 1f126a21193fd4773fd5e789f262664d67d4a80692a501cdc8f219e5a015a1a1  studio/update/status.py
@@ -26550,17 +26572,17 @@ c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-aa6bae69a86c82678559419aeaf90e40e93ea912d5827df354b0299e91a2bd25  tests/test_integration.py
+beef9cef3bdb67ac0ee73eeac53c6b7c3f8d861c0fd5156b29514921889fff7b  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-70aa088b01ec63d406424297f60e1323a8d59c710a1deb8b1113aeb8b1929f08  tests/test_update_core.py
-36c62f2a1f552147d11a426b6191f6025c47f798e0a685e9d4f21de95dbc207e  tests/test_update_flow.py
-0fde6a45d2eb7aaabee0cff2a72c31343eaafa8f1b5da075dd348df637a9f4ce  tests/test_update_install.py
+fe9cb3bfda090ad2ee4e5219b083e38d071d108f1e680d3e8d8e9e3a6b436498  tests/test_update_core.py
+0f608c49658109191e88f9fac47c4c9d910659de911513cd9ce9758403739a84  tests/test_update_flow.py
+f61c128fb6d4a619bed81d4cca5132c6d87229769aedfec8dd9610a5da856425  tests/test_update_install.py
 f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-664b2df716ddae8264ce94513f187fd34f9fe753b128e7217196643b25804dd4  BUILD
-b5196a5066fc2c2db0a6d23202c3ca18466528407514037074595a2cf9d97f6b  release.json
-__STUDIO_EOF_5cf80dfe5d02__
+a192a0f81683125edb8156f4987d99b8d8fe6b9bef45dd6dc2030011f5c83500  BUILD
+7e201cbd2da8d17c69c6dcce9f20d3a37c479ba6462c88ca93626dab0524e02a  release.json
+__STUDIO_EOF_e797bca5c6a9__
 }
 
 verify_manifest() {

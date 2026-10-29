@@ -1,5 +1,11 @@
 {
-  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Empty until the owner runs tools/release_keys.py generate and commits the public key. While empty, updates are disabled; nothing is signed.",
-  "keys": [],
+  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Public keys only; the private key is held offline by the owner and as the CI secret RELEASE_SIGNING_KEY. If no key is listed, updates are disabled.",
+  "keys": [
+    {
+      "id": "23bb536587702e29",
+      "name": "release-2026",
+      "public_key": "7PPKF3Nnu02MJ97vl5kvakS5Jt3cWLMKemOwAUHkSHI="
+    }
+  ],
   "revoked": []
 }

@@ -5,7 +5,7 @@ done until the same checks pass (plus new tests for the new behaviour).
 
 ## Automated suite (`src/app/tests`, mock engine, real FFmpeg, FastAPI TestClient)
 
-Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **242 passed** (about 2 min; 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
+Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **243 passed** (about 2 min; 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
 without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per test), the mock engine, a worker you drive in-process
 (`make_worker(faults).run_until_idle()`), and builders for TXT, DOCX, EPUB and WAV fixtures.
 

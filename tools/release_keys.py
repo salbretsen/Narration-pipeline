@@ -59,7 +59,7 @@ def main() -> int:
         if a.pin:
             data = json.loads(PINNED_FILE.read_text("utf-8"))
             data["keys"].append({"id": key_id(key.public_key().public_bytes_raw()), "name": a.name, "public_key": pub})
-            PINNED_FILE.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
+            PINNED_FILE.write_bytes((json.dumps(data, indent=2) + "\n").encode("utf-8"))   # LF on every OS (the installer rejects CR)
             print(f"pinned in {PINNED_FILE}: review and commit that file (public key only).")
     else:
         key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(Path(a.private).expanduser().read_text().strip()))

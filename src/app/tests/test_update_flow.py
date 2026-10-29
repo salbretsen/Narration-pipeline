@@ -135,6 +135,18 @@ def test_check_states(env):
     env.site.offline = False
 
 
+def test_updates_are_switched_off_when_no_key_is_pinned(env):
+    from studio.update.trust import TrustStore
+
+    env.mgr.trust = TrustStore()
+    env.publish("0.5.1")
+    st = env.mgr.check()
+    assert st["state"] == "disabled" and st["error_kind"] == "no_key" and "signing key" in st["message"]
+    assert not env.site.requests                                           # does not even contact the server
+    with pytest.raises(UpdateError):
+        env.mgr.download(background=False)
+
+
 def test_incompatible_release_is_reported_not_offered(env):
     env.publish("0.6.0", min_os="99.0")
     st = env.mgr.check()
