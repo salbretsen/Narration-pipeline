@@ -41,7 +41,7 @@ def collect() -> list[tuple[str, str]]:
 
 def main() -> None:
     init = (SRC_APP / "studio" / "__init__.py").read_text("utf-8")
-    from_version = "v" + re.search(r'__version__ = "([^"]+)"', init).group(1) + " - " + re.search(r'RELEASE_STAGE = "([^"]+)"', init).group(1)
+    from_version = "v" + re.search(r'__version__ = "([^"]+)"', init).group(1)
     files = collect()
     manifest = "".join(f"{hashlib.sha256(t.encode('utf-8')).hexdigest()}  {rel}\n" for rel, t in files)
     build_id = time.strftime("%Y%m%d%H%M%S") + "-" + hashlib.sha256(manifest.encode()).hexdigest()[:8]

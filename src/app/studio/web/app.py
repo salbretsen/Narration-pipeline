@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, RELEASE_STAGE, VERSION_LABEL, __version__, services as S
+from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
 from ..doctor import MODEL_LICENSES, run_checks
@@ -852,7 +852,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
             build = (ctx.app_dir / "BUILD").read_text("utf-8").strip()
         except OSError:
             pass
-        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "stage": RELEASE_STAGE, "developer": DEVELOPER,
+        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "developer": DEVELOPER,
                 "company": COMPANY, "copyright": COPYRIGHT, "build": build, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES,
                 "qa_limitations": QA_LIMITATIONS, "home": str(ctx.home), "python": sys.version.split()[0],
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}

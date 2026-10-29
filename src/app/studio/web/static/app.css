@@ -292,7 +292,7 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
 }
 
 /* ---------------------------------------------------------------- reference voice lab */
-.lab { border-top: 4px solid var(--accent); }
+.lab h3 { margin-top: 0; }
 .steps { list-style: none; display: flex; flex-wrap: wrap; gap: .35rem; padding: 0; margin: .8rem 0 1rem; }
 .step { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: .3rem .85rem; font: inherit; font-weight: 600; font-size: .86rem; color: var(--muted); cursor: pointer; }
 .step.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }

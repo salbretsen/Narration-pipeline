@@ -20,9 +20,8 @@ export async function render(view) {
         and the Mac narrates them with Qwen3-TTS, checks every passage with an independent Whisper transcription, lets you review and correct
         anything flagged, and produces chapter-marked audiobook files for your own release process.</p>
       <p>Everything runs on this Mac. Manuscripts and voice recordings never leave it, and there is no telemetry.</p>
-      <div class="callout warn small"><strong>Prerelease software (${about.version_label}).</strong> Expect rough edges and changes between versions.
-        Keep backups of your library. Automatic QA is not a substitute for listening, and nothing is uploaded to Audible, ACX or any other
-        distributor: this studio produces local publication candidates only.</div>
+      <div class="callout info small"><strong>Version ${about.version_label}.</strong> Keep backups of your library. Automatic QA is not a substitute
+        for listening, and nothing is uploaded to Audible, ACX or any other distributor: this studio produces local publication candidates only.</div>
       <dl class="about-facts">
         <div><dt>Version</dt><dd>${about.version_label}</dd></div>
         <div><dt>Build</dt><dd>${about.build || "development"}</dd></div>

@@ -1,8 +1,13 @@
-"""Audiobook Studio - local, autonomous audiobook production on Apple Silicon."""
+"""Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
-__version__ = "0.1"
-RELEASE_STAGE = "prerelease"
-VERSION_LABEL = f"v{__version__} - {RELEASE_STAGE}"
+Versioning is MAJOR.MINOR.PATCH:
+  MAJOR  a major release update (requires human acceptance)
+  MINOR  feature additions or overhauls inside the current major release
+  PATCH  minor adjustments: visual tweaks and bug fixes
+"""
+
+__version__ = "0.2.1"
+VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"

@@ -57,7 +57,7 @@ function previewResult(v, j) {
 function createForms(speakers, english) {
   return html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Add a narrator</h2>
     <div class="tabs" role="tablist" aria-label="Narrator type">
-      ${[["preset", "Preset speaker"], ["design", "Designed voice"], ["clone", "Clone an authorised voice"]].map(([k, l]) =>
+      ${[["preset", "Preset speaker"], ["design", "Designed voice"], ["clone", "Clone an authorised voice"], ["record", "Record a reference voice"]].map(([k, l]) =>
         html`<button role="tab" type="button" class="tab ${tab === k ? "active" : ""}" aria-selected="${tab === k}" data-tab="${k}" id="tab-${k}" aria-controls="panel-${k}">${l}</button>`)}
     </div>
     <div role="tabpanel" id="panel-${tab}" aria-labelledby="tab-${tab}">
@@ -83,7 +83,9 @@ function createForms(speakers, english) {
       <label class="check consent"><input type="checkbox" name="owner_attest" value="true" required>
         I confirm this is my own voice, or I have the speaker's explicit written permission to create and commercially use a synthetic copy of it.
         I will not use this tool to impersonate anyone.</label>
-      <button class="btn primary" type="submit">Upload &amp; create cloned narrator</button></form>` : ""}
+      <button class="btn primary" type="submit">Upload &amp; create cloned narrator</button>
+      <p class="small muted">No recording yet? Use the <button type="button" class="linklike" data-tab="record">Record a reference voice</button> tab to record one in your browser with guidance.</p></form>` : ""}
+    ${tab === "record" ? html`<div id="lab-host"></div>` : ""}
     </div></section>`;
 }
 
@@ -96,10 +98,10 @@ export async function render(view) {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
       <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
         books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
-      <div id="lab-host"></div>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
-    view.querySelector("#lab-host").appendChild(lab.el);  // the lab keeps its own state across repaints
+    const host = view.querySelector("#lab-host");
+    if (host) host.appendChild(lab.el);  // the lab keeps its own state while the tab is switched or the page repaints
     wireForms();
   };
 
@@ -156,7 +158,9 @@ export async function render(view) {
 
   async function onClick(e) {
     const tb = e.target.closest("[data-tab]");
-    if (tb) { tab = tb.dataset.tab; paint(); const n = view.querySelector(`#tab-${tab}`); if (n) n.focus(); return; }
+    if (tb) {
+      if (tab === "record" && tb.dataset.tab !== "record") lab.releaseMic();  // never leave the microphone on in the background
+      tab = tb.dataset.tab; paint(); const n = view.querySelector(`#tab-${tab}`); if (n) n.focus(); return; }
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const act = b.dataset.act;

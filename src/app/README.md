@@ -1,6 +1,6 @@
 # Audiobook Studio
 
-**v0.1 - prerelease** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.2.1** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -80,7 +80,7 @@ everything else alone:
 
 ### Reference voice lab (record a cloned narrator in the browser)
 
-**Narrator Studio → Reference voice lab** walks a new user from a blank page to a cloned narrator
+**Narrator Studio → Add a narrator → Record a reference voice** walks a new user from a blank page to a cloned narrator
 without uploading anything:
 
 1. **Set up.** Read the room, microphone and delivery checklist, pick a microphone, and watch the

@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.1 - prerelease (build 20261028224123-b62dd50f)
+#  Version v0.2.1 (build 20261028225824-0a8c0713)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -20,8 +20,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.1 - prerelease"
-BUILD_ID="20261028224123-b62dd50f"
+STUDIO_VERSION="v0.2.1"
+BUILD_ID="20261028225824-0a8c0713"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -377,6 +377,29 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_0d64c43468b1__'
+# Changelog
+
+Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
+additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.2.1
+- The Reference voice lab moved into the Narrator Studio "Add a narrator" card as the **Record a reference voice** tab.
+- Leaving that tab now turns the microphone off, and the lab screen shows it as off when you return.
+- Versioning changed to MAJOR.MINOR.PATCH; the "prerelease" label was dropped.
+
+## v0.2
+- Reference voice lab: record a reference voice in the browser (guided setup, room check, sample scripts,
+  quality analysis, Whisper transcript check, audition, create narrator). It now lives in the
+  Narrator Studio "Add a narrator" card, as the **Record a reference voice** tab.
+- HTTPS (self-signed) on port 8443 with `--lan`, required for microphone access from other computers.
+- Folder browser for storage locations (admin), `studio auth remove-user`, password confirmation,
+  About page, short-segment WER false-positive fix.
+
+## v0.1
+- First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
+  chapter-marked M4B export, release signoff, LAN access with authentication, background service.
+__STUDIO_EOF_0d64c43468b1__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -406,10 +429,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_9ac232ed3bfe__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_f03f102ef92b__'
 # Audiobook Studio
 
-**v0.1 - prerelease** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.2.1** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -489,7 +512,7 @@ everything else alone:
 
 ### Reference voice lab (record a cloned narrator in the browser)
 
-**Narrator Studio → Reference voice lab** walks a new user from a blank page to a cloned narrator
+**Narrator Studio → Add a narrator → Record a reference voice** walks a new user from a blank page to a cloned narrator
 without uploading anything:
 
 1. **Set up.** Read the room, microphone and delivery checklist, pick a microphone, and watch the
@@ -692,7 +715,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_9ac232ed3bfe__
+__STUDIO_EOF_f03f102ef92b__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -709,17 +732,22 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_535329dd4810__'
-"""Audiobook Studio - local, autonomous audiobook production on Apple Silicon."""
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_151c61a92ecf__'
+"""Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
-__version__ = "0.1"
-RELEASE_STAGE = "prerelease"
-VERSION_LABEL = f"v{__version__} - {RELEASE_STAGE}"
+Versioning is MAJOR.MINOR.PATCH:
+  MAJOR  a major release update (requires human acceptance)
+  MINOR  feature additions or overhauls inside the current major release
+  PATCH  minor adjustments: visual tweaks and bug fixes
+"""
+
+__version__ = "0.2.1"
+VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_535329dd4810__
+__STUDIO_EOF_151c61a92ecf__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -7431,7 +7459,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_127e8bc8ec6d__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_aab33f582b9e__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -7454,7 +7482,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, RELEASE_STAGE, VERSION_LABEL, __version__, services as S
+from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
 from ..doctor import MODEL_LICENSES, run_checks
@@ -8286,13 +8314,13 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
             build = (ctx.app_dir / "BUILD").read_text("utf-8").strip()
         except OSError:
             pass
-        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "stage": RELEASE_STAGE, "developer": DEVELOPER,
+        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "developer": DEVELOPER,
                 "company": COMPANY, "copyright": COPYRIGHT, "build": build, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES,
                 "qa_limitations": QA_LIMITATIONS, "home": str(ctx.home), "python": sys.version.split()[0],
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_127e8bc8ec6d__
+__STUDIO_EOF_aab33f582b9e__
 cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5068e44bfe07__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
@@ -8696,7 +8724,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_234b5211d211__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_ab89b7f5b0b1__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_6f1faee0beee__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -8991,7 +9019,7 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
 }
 
 /* ---------------------------------------------------------------- reference voice lab */
-.lab { border-top: 4px solid var(--accent); }
+.lab h3 { margin-top: 0; }
 .steps { list-style: none; display: flex; flex-wrap: wrap; gap: .35rem; padding: 0; margin: .8rem 0 1rem; }
 .step { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: .3rem .85rem; font: inherit; font-weight: 600; font-size: .86rem; color: var(--muted); cursor: pointer; }
 .step.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -9067,7 +9095,7 @@ body.signed-out .shell { grid-template-columns: 1fr; }
   #chpw { display: none; }
   .topbar-status { max-width: 34vw; }
 }
-__STUDIO_EOF_ab89b7f5b0b1__
+__STUDIO_EOF_6f1faee0beee__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 <!doctype html>
 <html lang="en">
@@ -9654,7 +9682,7 @@ export function player(src, label, extraClass = "") {
 }
 __STUDIO_EOF_49a8615fbfc8__
   mkdir -p "$DEST/studio/web/static/js/views"
-cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_9d3217f50703__'
+cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_dcc55ea8f77a__'
 // About page (version, credits, what this is), plus system health, worker control, QA limits and licences.
 import { get, post, html, setHTML, busy } from "../ui.js";
 
@@ -9677,9 +9705,8 @@ export async function render(view) {
         and the Mac narrates them with Qwen3-TTS, checks every passage with an independent Whisper transcription, lets you review and correct
         anything flagged, and produces chapter-marked audiobook files for your own release process.</p>
       <p>Everything runs on this Mac. Manuscripts and voice recordings never leave it, and there is no telemetry.</p>
-      <div class="callout warn small"><strong>Prerelease software (${about.version_label}).</strong> Expect rough edges and changes between versions.
-        Keep backups of your library. Automatic QA is not a substitute for listening, and nothing is uploaded to Audible, ACX or any other
-        distributor: this studio produces local publication candidates only.</div>
+      <div class="callout info small"><strong>Version ${about.version_label}.</strong> Keep backups of your library. Automatic QA is not a substitute
+        for listening, and nothing is uploaded to Audible, ACX or any other distributor: this studio produces local publication candidates only.</div>
       <dl class="about-facts">
         <div><dt>Version</dt><dd>${about.version_label}</dd></div>
         <div><dt>Build</dt><dd>${about.build || "development"}</dd></div>
@@ -9719,7 +9746,7 @@ export async function render(view) {
   view.addEventListener("click", onClick);
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_9d3217f50703__
+__STUDIO_EOF_dcc55ea8f77a__
 cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_ccb124670dd0__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
@@ -10814,7 +10841,7 @@ export async function render(view) {
   return () => view.removeEventListener("click", onClick);
 }
 __STUDIO_EOF_0d4f60a5e35f__
-cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_16284f75d102__'
+cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_513afb06ec00__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
 import { Mic, micSupport, listMics, encodeWav, roomMetrics, envelope, dbfs, BLUETOOTH_RE } from "../recorder.js";
@@ -10837,7 +10864,7 @@ function qualityBlock(q) {
 
 export function createLab({ onVoiceCreated }) {
   const el = document.createElement("section");
-  el.className = "card lab";
+  el.className = "lab";
   el.setAttribute("aria-labelledby", "lab-h");
   const mic = new Mic();
   const L = { step: "setup", scripts: [], auditionText: "", takes: [], devices: [], deviceId: "", status: {}, room: null, scriptId: "core-harbour", cur: null, recState: "idle",
@@ -11198,7 +11225,7 @@ export function createLab({ onVoiceCreated }) {
     if (destroyed) return;
     const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : "";
     const body = { setup: setupPanel, room: roomPanel, record: recordPanel, review: reviewPanel, create: createPanel }[L.step]();
-    setHTML(el, html`<h2 id="lab-h">Reference voice lab <span class="badge tone-info">record in your browser</span></h2>
+    setHTML(el, html`<h3 id="lab-h">Reference voice lab <span class="badge tone-info">record in your browser</span></h3>
       <p class="muted">Develop a reference voice for a cloned narrator by <strong>recording it right here</strong>. The lab walks you through setup, a room check, guided recording with sample scripts,
         quality analysis, a Whisper transcript check and an audition, before you create the narrator. Recordings stay on this Mac.</p>
       ${stepper()}${L.ready ? body : html`<p class="muted">Loading…</p>`}`);
@@ -11250,11 +11277,16 @@ export function createLab({ onVoiceCreated }) {
 
   return {
     el, init,
+    releaseMic() {
+      if (L.recState === "recording" || L.recState === "countdown") { L.recState = "idle"; }
+      L.roomRun = null;
+      mic.close().then(() => paint());  // repaint so the lab shows the microphone as off when you come back
+    },
     destroy() { destroyed = true; timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); if (raf) cancelAnimationFrame(raf); mic.close(); if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url); },
   };
 }
-__STUDIO_EOF_16284f75d102__
-cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_035b3199cbc7__'
+__STUDIO_EOF_513afb06ec00__
+cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_e2b77877580d__'
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player } from "../ui.js";
 import { createLab } from "./voicelab.js";
@@ -11314,7 +11346,7 @@ function previewResult(v, j) {
 function createForms(speakers, english) {
   return html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Add a narrator</h2>
     <div class="tabs" role="tablist" aria-label="Narrator type">
-      ${[["preset", "Preset speaker"], ["design", "Designed voice"], ["clone", "Clone an authorised voice"]].map(([k, l]) =>
+      ${[["preset", "Preset speaker"], ["design", "Designed voice"], ["clone", "Clone an authorised voice"], ["record", "Record a reference voice"]].map(([k, l]) =>
         html`<button role="tab" type="button" class="tab ${tab === k ? "active" : ""}" aria-selected="${tab === k}" data-tab="${k}" id="tab-${k}" aria-controls="panel-${k}">${l}</button>`)}
     </div>
     <div role="tabpanel" id="panel-${tab}" aria-labelledby="tab-${tab}">
@@ -11340,7 +11372,9 @@ function createForms(speakers, english) {
       <label class="check consent"><input type="checkbox" name="owner_attest" value="true" required>
         I confirm this is my own voice, or I have the speaker's explicit written permission to create and commercially use a synthetic copy of it.
         I will not use this tool to impersonate anyone.</label>
-      <button class="btn primary" type="submit">Upload &amp; create cloned narrator</button></form>` : ""}
+      <button class="btn primary" type="submit">Upload &amp; create cloned narrator</button>
+      <p class="small muted">No recording yet? Use the <button type="button" class="linklike" data-tab="record">Record a reference voice</button> tab to record one in your browser with guidance.</p></form>` : ""}
+    ${tab === "record" ? html`<div id="lab-host"></div>` : ""}
     </div></section>`;
 }
 
@@ -11353,10 +11387,10 @@ export async function render(view) {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
       <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
         books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
-      <div id="lab-host"></div>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
-    view.querySelector("#lab-host").appendChild(lab.el);  // the lab keeps its own state across repaints
+    const host = view.querySelector("#lab-host");
+    if (host) host.appendChild(lab.el);  // the lab keeps its own state while the tab is switched or the page repaints
     wireForms();
   };
 
@@ -11413,7 +11447,9 @@ export async function render(view) {
 
   async function onClick(e) {
     const tb = e.target.closest("[data-tab]");
-    if (tb) { tab = tb.dataset.tab; paint(); const n = view.querySelector(`#tab-${tab}`); if (n) n.focus(); return; }
+    if (tb) {
+      if (tab === "record" && tb.dataset.tab !== "record") lab.releaseMic();  // never leave the microphone on in the background
+      tab = tb.dataset.tab; paint(); const n = view.querySelector(`#tab-${tab}`); if (n) n.focus(); return; }
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const act = b.dataset.act;
@@ -11451,7 +11487,7 @@ export async function render(view) {
   Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
-__STUDIO_EOF_035b3199cbc7__
+__STUDIO_EOF_e2b77877580d__
 cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_afba12b3c069__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
@@ -12412,7 +12448,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_32db07a4965b__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_8c26f2a0f931__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -12797,13 +12833,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.1" and st["version_label"] == "v0.1 - prerelease"
+    assert st["version"] == "0.2.1" and st["version_label"] == "v0.2.1"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.1 - prerelease" and a["stage"] == "prerelease"
+    assert a["version_label"] == "v0.2.1" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_32db07a4965b__
+__STUDIO_EOF_8c26f2a0f931__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -13220,10 +13256,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_a60202c44bb7__'
-20261028224123-b62dd50f
-__STUDIO_EOF_a60202c44bb7__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_cf1f4b7cc562__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_9fd7c32ef976__'
+20261028225824-0a8c0713
+__STUDIO_EOF_9fd7c32ef976__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_30377706e046__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -13231,11 +13267,12 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
+0d64c43468b1f36703c2110eb415d2f1b63b2d78bf80609ed1c7f15c998741da  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-9ac232ed3bfe8130563ff410bbb56dd8fc5689b0b6ea45f18bcdaa4407f7a634  README.md
+f03f102ef92be5b51b6f60b41e82a66d1a64d098d790a2ef37b46ea7130fe668  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-535329dd4810ac963005223819028bcf0246fe9ea453906997e07e4686e39d70  studio/__init__.py
+151c61a92ecf2685fc45d60d4eeb4f8ae52c8e254ecb070077a7039d243509a8  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -13258,34 +13295,34 @@ ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.p
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-127e8bc8ec6db80bd56e34ed554504c1257b44c3d52ccbe10684d65823c84b94  studio/web/app.py
+aab33f582b9ee315dc28b3c67ea722a761cbb5f3bc2ec26f2c66fec26d279d23  studio/web/app.py
 5068e44bfe079a802aeb959b2361f7bc0b0dd2e6e442a4525221b6d9c6ba78b8  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 234b5211d21110d73f20c2d8f93561b9a76b81ac049e1bafc7fc4a90da3c717c  studio/web/security.py
-ab89b7f5b0b104787dc921595caee2ede1d4236f26259aba17bc78a468fda909  studio/web/static/app.css
+6f1faee0beee4ce828facbab72762b02e16235782acd5543eb450081ef637cdc  studio/web/static/app.css
 393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
 e0da28d55f1c1c93fbc84974f9d697b196349d1dcbfa327d1e630de86c69f5da  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 49a8615fbfc8e557a49958ad32ed704d6cf5fac0c8e1005e475c9e9e2b6c545f  studio/web/static/js/ui.js
-9d3217f5070341d14bd5b7174ff56602579b6292c21dfb506b5f7492f786e635  studio/web/static/js/views/about.js
+dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/static/js/views/about.js
 ccb124670dd0da4c4331e3972b64bc8b4a252e1ee87470f7712f79793cfcd66d  studio/web/static/js/views/book.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
 9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
 2ff497a0e6065d689f925e9f6a840c1935b5abd4c68cd285c4e849421ae76daf  studio/web/static/js/views/queue.js
 f6b03f8b7455e68e28db1cf5c85626106c1522a4f647291fd03641b7cabe0be7  studio/web/static/js/views/review.js
 0d4f60a5e35fa819053dd23665361cd449cc1dfd75188c615b78a97de8dc5927  studio/web/static/js/views/settings.js
-16284f75d102977965c8757f1fa5eca2ee68378633b43ba29250d4b4e64a6eea  studio/web/static/js/views/voicelab.js
-035b3199cbc70ff871dcf7c0c1830ab04a1f1f832bf3711bba2f2704e4c329e9  studio/web/static/js/views/voices.js
+513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
+e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
 afba12b3c069b092f6c182c6c25f2f1fde421281260813a77a0fbec36ad2ce7a  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-32db07a4965bda4c6654f1b79c916b9cb63ffe0973226a7616c25562a813ef9b  tests/test_integration.py
+8c26f2a0f931b53c03869562e9f002140c34e3b4bcfff7e299a209e1d56be5ff  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-a60202c44bb7c0d09eda0f4ff03114c80050a68a7a97bf0e996fcf6a613e07e4  BUILD
-__STUDIO_EOF_cf1f4b7cc562__
+9fd7c32ef9768b22f624b018a9ced6581ff6738540d10dc31ca5d9d07a2d09c0  BUILD
+__STUDIO_EOF_30377706e046__
 }
 
 verify_manifest() {

@@ -20,7 +20,7 @@ function qualityBlock(q) {
 
 export function createLab({ onVoiceCreated }) {
   const el = document.createElement("section");
-  el.className = "card lab";
+  el.className = "lab";
   el.setAttribute("aria-labelledby", "lab-h");
   const mic = new Mic();
   const L = { step: "setup", scripts: [], auditionText: "", takes: [], devices: [], deviceId: "", status: {}, room: null, scriptId: "core-harbour", cur: null, recState: "idle",
@@ -381,7 +381,7 @@ export function createLab({ onVoiceCreated }) {
     if (destroyed) return;
     const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : "";
     const body = { setup: setupPanel, room: roomPanel, record: recordPanel, review: reviewPanel, create: createPanel }[L.step]();
-    setHTML(el, html`<h2 id="lab-h">Reference voice lab <span class="badge tone-info">record in your browser</span></h2>
+    setHTML(el, html`<h3 id="lab-h">Reference voice lab <span class="badge tone-info">record in your browser</span></h3>
       <p class="muted">Develop a reference voice for a cloned narrator by <strong>recording it right here</strong>. The lab walks you through setup, a room check, guided recording with sample scripts,
         quality analysis, a Whisper transcript check and an audition, before you create the narrator. Recordings stay on this Mac.</p>
       ${stepper()}${L.ready ? body : html`<p class="muted">Loading…</p>`}`);
@@ -433,6 +433,11 @@ export function createLab({ onVoiceCreated }) {
 
   return {
     el, init,
+    releaseMic() {
+      if (L.recState === "recording" || L.recState === "countdown") { L.recState = "idle"; }
+      L.roomRun = null;
+      mic.close().then(() => paint());  // repaint so the lab shows the microphone as off when you come back
+    },
     destroy() { destroyed = true; timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); if (raf) cancelAnimationFrame(raf); mic.close(); if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url); },
   };
 }
