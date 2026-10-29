@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Automated tests (unit + HTTP integration). They use the MOCK engine (synthetic test tones)
+# and temporary directories; they never touch your library and never run MLX inference.
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+cd "$STUDIO_APP"
+export STUDIO_ENGINE=mock STUDIO_NO_WORKER=1
+exec "$STUDIO_PY" -m pytest -q -p no:cacheprovider tests "$@"

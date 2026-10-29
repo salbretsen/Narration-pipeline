@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Audiobook Studio command line: ./studio doctor | test | import | run | resume | list | issues | approve | report | export | smoke
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+cd "$STUDIO_APP"
+exec "$STUDIO_PY" -m studio "$@"

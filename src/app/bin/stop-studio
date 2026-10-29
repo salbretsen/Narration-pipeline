@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Stop the Audiobook Studio server and GPU worker gracefully. Completed segments and the
+# queue are stored on disk; an interrupted segment is resumed (and counted) on next start.
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+
+stop_pid() {
+  local name="$1" file="$2" pid
+  [ -f "$file" ] || return 0
+  pid="$(cat "$file")"
+  if pid_alive "$pid"; then
+    echo "Stopping $name (pid $pid)..."
+    kill -TERM "$pid" 2>/dev/null || true
+    for _ in $(seq 1 60); do pid_alive "$pid" || break; sleep 0.5; done
+    if pid_alive "$pid"; then echo "$name did not stop in 30s; forcing."; kill -KILL "$pid" 2>/dev/null || true; fi
+  fi
+  rm -f "$file"
+}
+stop_pid "web server" "$AUDIOBOOK_STUDIO_HOME/run/server.pid"
+stop_pid "GPU worker" "$AUDIOBOOK_STUDIO_HOME/run/worker.pid"
+echo "Audiobook Studio stopped."

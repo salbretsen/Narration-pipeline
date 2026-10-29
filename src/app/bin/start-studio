@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Start the Audiobook Studio web UI (and its GPU worker) on http://127.0.0.1:<port>.
+#   ./start-studio               run in this terminal (Ctrl+C stops it), opens the browser
+#   ./start-studio --background  run detached; logs in logs/server.out.log
+#   ./start-studio --no-browser  do not open a browser window
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+
+BACKGROUND=0
+OPEN_BROWSER=1
+PASS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --background|-d) BACKGROUND=1 ;;
+    --no-browser) OPEN_BROWSER=0 ;;
+    --port) PASS+=("--port" "$2"); shift ;;
+    -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+    *) PASS+=("$1") ;;
+  esac
+  shift
+done
+
+PIDFILE="$AUDIOBOOK_STUDIO_HOME/run/server.pid"
+mkdir -p "$AUDIOBOOK_STUDIO_HOME/run" "$AUDIOBOOK_STUDIO_HOME/logs"
+PORT="$(studio_port)"
+for ((i = 0; i < ${#PASS[@]}; i++)); do
+  if [ "${PASS[$i]}" = "--port" ]; then PORT="${PASS[$((i + 1))]}"; fi
+done
+URL="http://127.0.0.1:${PORT}"
+
+if [ -f "$PIDFILE" ] && pid_alive "$(cat "$PIDFILE")"; then
+  echo "Audiobook Studio is already running at $URL (pid $(cat "$PIDFILE"))."
+  [ "$OPEN_BROWSER" = 1 ] && command -v open >/dev/null && open "$URL"
+  exit 0
+fi
+
+cd "$STUDIO_APP"
+if [ "$BACKGROUND" = 1 ]; then
+  nohup "$STUDIO_PY" -m studio serve ${PASS[@]+"${PASS[@]}"} >>"$AUDIOBOOK_STUDIO_HOME/logs/server.out.log" 2>&1 &
+  SERVER_PID=$!
+else
+  "$STUDIO_PY" -m studio serve ${PASS[@]+"${PASS[@]}"} &
+  SERVER_PID=$!
+  trap 'echo; echo "Stopping (finishing the current segment safely)..."; kill -TERM "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; exit 0' INT TERM
+fi
+
+for _ in $(seq 1 60); do
+  if curl -fsS -o /dev/null "$URL/api/worker" 2>/dev/null; then break; fi
+  if ! pid_alive "$SERVER_PID"; then echo "The server failed to start. See $AUDIOBOOK_STUDIO_HOME/logs/server.log" >&2; exit 1; fi
+  sleep 0.5
+done
+echo "Audiobook Studio running at $URL"
+if [ "$OPEN_BROWSER" = 1 ] && command -v open >/dev/null; then open "$URL"; fi
+if [ "$BACKGROUND" = 1 ]; then
+  echo "Running in the background (pid $SERVER_PID). Stop it with ./stop-studio"
+  exit 0
+fi
+wait "$SERVER_PID"

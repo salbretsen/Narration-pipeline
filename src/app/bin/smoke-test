@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Real-hardware smoke test on Apple Silicon: real Qwen3-TTS + Whisper inference, queue, M4B export.
+#   ./smoke-test                                   (uses a synthetic self-generated clone reference)
+#   ./smoke-test --ref-audio me.wav --ref-text "exact words"   (only with a voice you own / have permission for)
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+cd "$STUDIO_APP"
+exec "$STUDIO_PY" -m studio smoke "$@"
