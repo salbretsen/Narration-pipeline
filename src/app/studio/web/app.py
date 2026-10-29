@@ -746,6 +746,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     register_narrative(app, ctx)
 
+    from .pronunciation_api import register as register_pronunciation
+
+    register_pronunciation(app, ctx)
+
     from ..platform_services import default_platform
     from ..update.launch import make_launcher
     from ..update.layout import Layout

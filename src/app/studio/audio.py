@@ -90,6 +90,42 @@ def resample_linear(a: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     return np.interp(x_new, x_old, a).astype(np.float32)
 
 
+def time_stretch(a: np.ndarray, sr: int, rate: float) -> np.ndarray:
+    """Change speaking pace without changing pitch (WSOLA, NumPy only). ``rate`` > 1 is faster/shorter,
+    < 1 is slower/longer. Intended for modest factors (about 0.8-1.25); quality degrades beyond that."""
+    a = np.asarray(a, dtype=np.float32).reshape(-1)
+    if abs(rate - 1.0) < 1e-3 or a.size < int(sr * 0.2) or rate <= 0:
+        return a
+    n = int(sr * 0.04) // 2 * 2          # 40 ms frames
+    hs = n // 2                            # synthesis hop (50% overlap, periodic Hann sums to 1)
+    tol = int(sr * 0.012)                  # search +-12 ms for the best-matching splice point
+    ha = hs * rate                         # analysis hop
+    win = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)).astype(np.float32)
+    pad = n + tol
+    x = np.concatenate([np.zeros(pad, np.float32), a, np.zeros(pad + n, np.float32)])
+    out_len = int(a.size / rate)
+    out = np.zeros(out_len + 3 * n, np.float32)
+    prev = None
+    m = 0
+    while True:
+        o = m * hs
+        nominal = pad + int(round((m - 1) * ha))
+        if o + n > out.size or nominal + n + tol > x.size:
+            break
+        if prev is None:
+            pos = nominal
+        else:
+            target = x[prev + hs: prev + hs + n]
+            lo = max(0, nominal - tol)
+            cand = np.lib.stride_tricks.sliding_window_view(x[lo: nominal + tol + n], n)
+            score = cand @ target / np.sqrt(np.einsum("ij,ij->i", cand, cand) + 1e-6)
+            pos = lo + int(np.argmax(score))
+        out[o: o + n] += win * x[pos: pos + n]
+        prev = pos
+        m += 1
+    return out[hs: hs + out_len].astype(np.float32)
+
+
 # ---------------------------------------------------------------- acoustic QA
 
 

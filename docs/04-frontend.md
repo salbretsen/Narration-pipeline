@@ -36,6 +36,7 @@ server restart). `index.html` loads `/static/app.css` and the module `/static/js
 | `js/views/settings.js` | every setting, storage paths with Check / Browse / Finder, the folder-browser dialog |
 | `js/views/narrative.js`, `narrative-fields.js` | route `#/narrative/ID`: analysis stages and actions, project overrides, character directory (edit, merge, voices), story notes; the settings fields are shared with Settings |
 | `js/views/inspector.js` | route `#/inspect/ID`: the Segment Inspector (context, attribution evidence, direction layers, instruction sent, boundary editing, preview, attempts) |
+| `js/views/pronunciation.js` | route `#/pronunciation` (side nav "Pronunciation"): global or per-book dictionary (add/edit/toggle/delete via dialogs), a Try box, and per-voice pace; changes that would re-render finished segments ask for confirmation using the `409 details.stale_segments` convention |
 | `js/views/about.js` | About page (version, credits), worker, environment check, QA limits, licences |
 
 ## Patterns
