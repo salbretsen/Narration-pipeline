@@ -9,7 +9,7 @@ while [ -L "$SELF" ]; do
   case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
 done
 ROOT="${AUDIOBOOK_STUDIO_ROOT:-$(cd "$(dirname "$SELF")" && pwd)}"
-PY="$ROOT/app/venv-python"
+PY="$ROOT/app/venv/bin/python"
 if [ ! -x "$PY" ]; then
   echo "Audiobook Studio is not installed correctly (missing $PY). Re-run install_audiobook_studio_mac.sh." >&2
   exit 1
@@ -17,7 +17,16 @@ fi
 export AUDIOBOOK_STUDIO_ROOT="$ROOT"
 export AUDIOBOOK_STUDIO_HOME="${AUDIOBOOK_STUDIO_HOME:-$ROOT/state}"
 export AUDIOBOOK_STUDIO_LOGS="${AUDIOBOOK_STUDIO_LOGS:-$HOME/Library/Logs/Audiobook Studio}"
-export HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+# The model cache must be fixed before Python (and huggingface_hub) starts: read it from the settings, else use the default.
+if [ -z "${HF_HOME:-}" ]; then
+  HF_HOME="$("$PY" -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("models", {}).get("cache_dir") or "")
+except Exception:
+    print("")' "$AUDIOBOOK_STUDIO_HOME/config/settings.json" 2>/dev/null || true)"
+  HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+fi
+export HF_HOME
 export HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
 export PATH="$ROOT/app/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cd "$ROOT/app/current"

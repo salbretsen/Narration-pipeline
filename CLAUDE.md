@@ -17,12 +17,12 @@ and run the baseline *before* changing anything.
 6. Security model is fixed: same-origin SPA, CSP without inline scripts/styles, CSRF header, Host allowlist, sign-in required on the network. Do not weaken it.
 7. The microphone only works over HTTPS or localhost (browser rule). The HTTPS listener (`:8443`) exists for that reason.
 8. Write large edits as patch scripts via the file tools; inline shell heredocs with quotes **or backslash escapes** have corrupted files before (v0.5: NUL and newline bytes inside `.py` files). Use Write/Edit, then `python -c "import studio.<module>"`.
-9. Release signing: the production private key never enters the repo, CI logs, archives or memory. Nothing may be described as "signed" unless `RELEASE_SIGNING_KEY` was present; the updater stays off while `pinned_keys.json` has no key. Say plainly that v0.5's installer, launchd service and updater have **not** been run on a Mac until doc 10's checks M1-M10 are done.
+9. Release signing: the production private key never enters the repo, CI logs, archives or memory. Nothing may be described as "signed" unless `RELEASE_SIGNING_KEY` was present; the updater stays off while `pinned_keys.json` has no key. Report exactly what was and was not verified on the Mac (doc 10, "Results of the first hardware run": real Safari, a clean Mac and the real GitHub download path are still unverified). The production public key (id 23bb536587702e29) is pinned; its private key file lives outside the repo.
 
 ## Quick commands (from `src/app`, Windows dev)
 
 ```text
-pytest -q -p no:cacheprovider tests              # expect 243 passed (about 2 min)
+pytest -q -p no:cacheprovider tests              # expect 244 passed (about 2 min)
 node --input-type=module --check < path/to.js     # JS syntax
 python ../../tools/build_installer.py             # regenerate the installer, then bash -n and shellcheck -S style
 ```

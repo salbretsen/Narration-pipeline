@@ -698,3 +698,18 @@ def test_real_process_update_then_failed_update_rolls_back(live):
         assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
     assert pid1 != int((live.tmp / "Audiobook Studio" / "state" / "svc" / "t-app.pid").read_text())     # restarted, not duplicated
     assert ctx.db.schema_version() > 0
+
+
+def test_supervised_worker_exits_when_its_server_disappears(ctx, monkeypatch):
+    import os
+
+    from studio.engines import MockASR, MockEngine
+    from studio.worker import Worker
+
+    monkeypatch.setenv("STUDIO_SUPERVISED_WORKER", "1")
+    w = Worker(ctx, tts=MockEngine({}), asr=MockASR())
+    assert w.parent_gone() is False
+    monkeypatch.setattr(os, "getppid", lambda: 1)              # the server was killed: re-parented to launchd
+    assert w.parent_gone() is True
+    monkeypatch.delenv("STUDIO_SUPERVISED_WORKER")
+    assert Worker(ctx, tts=MockEngine({}), asr=MockASR()).parent_gone() is False     # foreground `studio worker` is never auto-stopped

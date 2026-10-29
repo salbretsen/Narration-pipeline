@@ -50,12 +50,22 @@ class Context:
             self.db.migrate(self.backups_dir / "db")
             if not self.settings_path.exists():
                 save_settings(self.settings_path, Settings())
+        try:  # every entry point (CLI, doctor, worker, server) must see the same configured model cache, before Hugging Face is imported
+            self.apply_model_cache_env()
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------- settings
-    def apply_model_cache_env(self) -> str | None:
-        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release."""
+    def apply_model_cache_env(self, force: bool = False) -> str | None:
+        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release.
+
+        The launcher (bin/audiobook-studio) sets HF_HOME *before* Python starts, which is the only reliable way: changing it after
+        huggingface_hub has been imported leaves the library with two cache locations (weights from one, tokenizer from the other:
+        "Tokenizer not loaded", found on the first Mac run). So this only acts while huggingface_hub is not imported yet, unless forced."""
+        import sys
+
         d = self.settings().models.cache_dir
-        if d:
+        if d and (force or "huggingface_hub" not in sys.modules):
             os.environ["HF_HOME"] = str(Path(d).expanduser())
         return os.environ.get("HF_HOME")
 

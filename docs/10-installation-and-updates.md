@@ -4,10 +4,12 @@ Audiobook Studio stays a **locally installed web application** with a Python inf
 no Apple Developer ID, signing or notarization is involved, and nothing here asks anyone to disable or bypass a macOS security control.
 This document is the reference for the managed install, the per-user service, the signed update system and how each is tested.
 
-**What was and was not verified.** Everything marked *tested* ran on the Windows dev machine (mock engine, fake network, real processes where
-noted). Nothing in this document has been run on a Mac or on a Mac with no developer tools yet: see [Manual macOS checks](#manual-macos-checks)
-for the exact commands. The release pipeline, signing and key handling have been exercised with throw-away keys only; **no production signing
-key exists yet**, so no release has been signed and the updater is switched off (by design) until the owner pins one.
+**What was and was not verified.** Tests marked *tested* ran on the Windows dev machine (mock engine, fake network, real processes where noted).
+On **2026-10-29 the installer, service, updater and migration were also run on the production M3 Max (macOS 27.0)**: see
+[Results of the first hardware run](#results-of-the-first-hardware-run) for exactly what passed and what has **not** been verified (notably: a truly
+clean Mac, real Safari, the real GitHub download path). The production signing key (id `23bb536587702e29`) is generated and its public half is pinned
+(v0.5.1); **no release has been published or signed on GitHub yet**, and the CI secret `RELEASE_SIGNING_KEY` still has to be set (the private key
+file is on the dev machine, outside the repository).
 
 ## 1. The user flow
 
@@ -75,7 +77,7 @@ audio packages bundle them (`tools/check_lock_wheels.py` proves a usable wheel e
   audiobook-studio                 command-line tool (absolute paths only)
   app/releases/<version>/          immutable, replaceable application code (one directory per release, 3 kept)
   app/current -> releases/<ver>    symlink launchd uses; app/current.json is the authoritative pointer (+ previous)
-  app/venv-python -> runtimes/<id>/venv/bin/python
+  app/venv -> runtimes/<id>/venv     (directory link: the service runs app/venv/bin/python; a link to the interpreter file alone loses the venv)
   app/runtimes/<runtime_id>/       private Python environments (shared by releases with the same requirements.lock)
   app/python/  app/uv-cache/       uv-managed Python and cache (inside app/, never ~/.local)
   app/tools/bin/                   uv, ffmpeg, ffprobe (pinned, verified)
@@ -265,11 +267,36 @@ fails is a defect to report, not to work around.
 - **M9 External disk:** unplug the library disk mid-job: affected book pauses with `storage:`; Updates still works; replug resumes. `--check` with the disk unplugged names the volume.
 - **M10 Update end-to-end:** with a real signed release (after the owner pins a key): Check, Download, Install; confirm rollback by publishing a deliberately broken test release to a scratch repo/channel.
 
+## Results of the first hardware run
+
+M3 Max, 48 GB, macOS 27.0, 2026-10-29, driven over SSH (no GUI session). The Mac was **not** a pristine machine: Command Line Tools and system git were
+installed and Homebrew exists (it is not on the SSH PATH). The installer used none of them (nothing Homebrew-related was touched, no password prompt, no
+profile edited), but "works on a Mac with none of them" is **not proven** by this run.
+
+| Check | Result |
+|---|---|
+| M1/M2 pre-flight and install (scratch root, then production root) | **PASS** after fixes. Real bugs found and fixed in 0.5.2: a `v` prefix in the release folder name; a re-run reused stale files of the same version; the `app/venv-python` file link ran Python without its venv (now the directory link `app/venv`) |
+| Idempotent re-run | **PASS**: tools, release (same build) and environment skipped, accounts kept |
+| M3 Gatekeeper | FFmpeg/FFprobe are signed by Developer ID *Martin Riedl (KU3N25YGLU)*, uv by *OpenAI OpCo, LLC (2DC432GLL2)* (Astral), hardened runtime, **no quarantine flags anywhere in the tree**, all ran with no dialog. `spctl --assess` says "rejected (the code is valid but does not seem to be an app)", the normal answer for command-line tools. A *browser-downloaded* installer was not tested |
+| M4 audio/MLX | **PASS**: MLX 0.32.4 with Metal, FFmpeg 9.0.2 with AAC and MP3 encoders, `doctor` all OK |
+| M6 launchd | **PASS**: starts; `kill -9` of the server restarts it in seconds as one process; a supervised worker exits on its own when its server is killed (fixed in 0.5.2); `stop` leaves nothing running and stays stopped; a second `start` is idempotent; a second `serve` refuses ("port in use") |
+| M8 real narration (smoke test: real Qwen3-TTS + Whisper) | **PASS**: CustomVoice RTF 0.33, clone RTF 0.42, 20/20 queued segments passed QA, AAC M4B export. It first failed ("Tokenizer not loaded") because the model cache was applied inside Python after `huggingface_hub` was imported; fixed by having the launcher set `HF_HOME` before Python starts |
+| M10 signed update through the real launchd handoff (signed with the production key, served from a local directory) | **PASS** 21/21: tampered archive refused, index signed by another key refused, good update installed (pointer switched, database backup, data intact, hold released), deliberately broken release rolled back automatically |
+| Drain during real narration (`tools/e2e/mac_drain_test.py`) | **PASS**: update requested mid-job, queue held, service switched, job resumed by itself, 19/19 segments passed, **0 segments regenerated** |
+| M5 migration from the Bash/Homebrew install (production) | **PASS**: 19 books / 386 segments / 24 voices, accounts and TLS certificate kept (same fingerprint), HTTP 8080 and HTTPS 8443 reachable from the Windows dev machine, unauthenticated API still 401, the old LaunchAgent plist saved in `state/backups/legacy-*/`, the old folder left in place |
+| M9 external disk | **PASS** (pre-flight): an unmounted `/Volumes/AudioSSD` is named and stops the install; `/Volumes/<share>` (an SMB share) is accepted. A mid-job unplug was **not** tested |
+| M7 Safari / Add to Dock | **NOT VERIFIED** (no GUI session). Chromium and WebKit-in-Playwright only |
+| Real GitHub download path | **NOT VERIFIED**: nothing is published; `update --check` returns a clean "HTTP 404". The update tests used a local directory repository with the real signature checks |
+| Clean-Mac claim (no CLT, Homebrew or git) | **NOT VERIFIED** (see above) |
+
+Operational notes: the legacy worker (pid 57449) had outlived the legacy server and kept the GPU lease after the cutover, so it was stopped by hand.
+Killing a server with `kill -9` used to leave its worker running for good; supervised workers now exit by themselves.
+
 ## Known limits and decisions
 
-- No production signing key yet: updater is off until `pinned_keys.json` is populated. The first signed release must ship that key (chicken-and-egg: it can only arrive through the installer or a manual copy).
+- The production public key is pinned (v0.5.1) but nothing is published: until a signed index exists on GitHub, `update --check` reports HTTP 404 (verified). The private key lives only on the owner-side dev machine (`~/.audiobook-studio-release/release.key`, mode 600) and must be added as the Actions secret `RELEASE_SIGNING_KEY` (no `gh` CLI is installed on the dev machine; use the GitHub web UI) and backed up offline.
 - `requirements.lock` is a **universal** lock resolved on a Windows machine with `uv pip compile --universal`; the macOS target resolver assumes macOS 13 and rejects MLX (14+). `tools/check_lock_wheels.py` verifies wheels exist; actually installing them on a Mac is manual check M2.
-- `transformers` is held to 5.21.x (the version running on the production Mac); other pins were resolved on 2026-10-29 and are untested on a Mac until M2/M4/M8.
+- The lock pins `transformers==5.21.0`, `huggingface-hub==2.3.0`, `pydantic==2.14.1` exactly (the combination verified on the production Mac); the other pins resolved on 2026-10-29 were exercised by the hardware run (install, smoke test, drain test), but a newer set must be re-verified the same way before it ships.
 - The FFmpeg build is GPLv3 and from a single third-party site; an outage or removal blocks fresh installs (fail closed) until re-pinned.
 - Updates install a new Python environment only when `requirements.lock` changes (`runtime_id`); that path uses the app-owned `uv` and has been tested with a fake runner only.
 - `after_job` waits at most 7 days; `now` waits at most 15 minutes for the segment in flight, then gives up without changing anything.

@@ -239,6 +239,7 @@ class WorkerSupervisor:
         logf = open(self.ctx.logs_dir / "worker.out.log", "ab")
         env = dict(os.environ)
         env["AUDIOBOOK_STUDIO_HOME"] = str(self.ctx.home)
+        env["STUDIO_SUPERVISED_WORKER"] = "1"  # the worker exits (after its current segment) if this server disappears
         kw: dict[str, Any] = {}
         if os.name == "posix":
             kw["start_new_session"] = True

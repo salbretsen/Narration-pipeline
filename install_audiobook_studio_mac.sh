@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.1 (build 20261029110146-7205162c)
+#  Version v0.5.2 (build 20261029121938-4f4dd41b)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,8 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.1"
-BUILD_ID="20261029110146-7205162c"
+STUDIO_VERSION="v0.5.2"
+STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
+BUILD_ID="20261029121938-4f4dd41b"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -198,7 +199,7 @@ except Exception:
 }
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 __STUDIO_EOF_45c27eed4a2a__
-cat > "$DEST/bin/audiobook-studio" <<'__STUDIO_EOF_94ed4bd34593__'
+cat > "$DEST/bin/audiobook-studio" <<'__STUDIO_EOF_2a92b069ee24__'
 #!/bin/bash
 # Audiobook Studio command line (managed installation).
 #   audiobook-studio doctor | start | stop | restart | status | logs | version | update --check | update --install
@@ -210,7 +211,7 @@ while [ -L "$SELF" ]; do
   case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
 done
 ROOT="${AUDIOBOOK_STUDIO_ROOT:-$(cd "$(dirname "$SELF")" && pwd)}"
-PY="$ROOT/app/venv-python"
+PY="$ROOT/app/venv/bin/python"
 if [ ! -x "$PY" ]; then
   echo "Audiobook Studio is not installed correctly (missing $PY). Re-run install_audiobook_studio_mac.sh." >&2
   exit 1
@@ -218,12 +219,21 @@ fi
 export AUDIOBOOK_STUDIO_ROOT="$ROOT"
 export AUDIOBOOK_STUDIO_HOME="${AUDIOBOOK_STUDIO_HOME:-$ROOT/state}"
 export AUDIOBOOK_STUDIO_LOGS="${AUDIOBOOK_STUDIO_LOGS:-$HOME/Library/Logs/Audiobook Studio}"
-export HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+# The model cache must be fixed before Python (and huggingface_hub) starts: read it from the settings, else use the default.
+if [ -z "${HF_HOME:-}" ]; then
+  HF_HOME="$("$PY" -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("models", {}).get("cache_dir") or "")
+except Exception:
+    print("")' "$AUDIOBOOK_STUDIO_HOME/config/settings.json" 2>/dev/null || true)"
+  HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+fi
+export HF_HOME
 export HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
 export PATH="$ROOT/app/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 cd "$ROOT/app/current"
 exec "$PY" -m studio "$@"
-__STUDIO_EOF_94ed4bd34593__
+__STUDIO_EOF_2a92b069ee24__
   chmod 755 "$DEST/bin/audiobook-studio"
 cat > "$DEST/bin/run-tests" <<'__STUDIO_EOF_3c447bcd621e__'
 #!/usr/bin/env bash
@@ -460,11 +470,21 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_587b0a3bbf6a__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_d2c41a64a9d1__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.5.2
+- Fixes found by the first real run on the M3 Max (macOS 27; results in doc 10):
+  - Model cache: `HF_HOME` is now set by the launcher (and the LaunchAgent runs the launcher) before Python starts, instead of being changed in-process after
+    `huggingface_hub` was imported (that produced "Tokenizer not loaded"). `Context.apply_model_cache_env` only acts if the library is not imported yet.
+  - A supervised worker exits (after its current segment) when its server disappears, so `kill -9` of the server no longer leaves a stale worker holding the GPU lease.
+  - `requirements.lock` pins `transformers 5.21.0`, `huggingface-hub 2.3.0`, `pydantic 2.14.1` (the combination verified on the Mac).
+  - Re-running an installer build of the same version re-extracts the files (compares the build id).
+- The stable interpreter path is now the directory link `app/venv` (a link to the interpreter file alone ran without the environment).
+- Installer: the version carried a `v` prefix that the release store rejected; the bare version is used for release folders.
 
 ## v0.5.1
 - **Production release-signing key pinned** (id `23bb536587702e29`, public half in `studio/update/pinned_keys.json`). The private key is held outside the
@@ -473,7 +493,7 @@ additions or overhauls inside the current major release; PATCH = minor adjustmen
 
 ## v0.5.0
 Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
-**Not yet run on a Mac** (see `docs/10-installation-and-updates.md`, checks M1-M10) and **no release has been signed** (no production key exists).
+**Verified on the production M3 Max in v0.5.2** (`docs/10-installation-and-updates.md`, "Results of the first hardware run"); no release has been published or signed on GitHub yet.
 - **No-prerequisites installer** `install_audiobook_studio_mac.sh`: needs no Homebrew, Git, Python, pip, FFmpeg, Node, Xcode or Command Line Tools,
   no sudo, and edits no shell profile or system directory. Installs a private Python 3.12 with the pinned `uv`, FFmpeg/FFprobe 9.0.2 (GPLv3 build,
   downloaded not bundled, AAC and MP3 encoders verified) into the app folder, and hash-locked prebuilt wheels (`requirements.lock`, 88 packages,
@@ -566,7 +586,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_587b0a3bbf6a__
+__STUDIO_EOF_d2c41a64a9d1__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -596,10 +616,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_c6815649c778__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_babc06ffbe76__'
 # Audiobook Studio
 
-**v0.5.1** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.2** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -931,12 +951,12 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_c6815649c778__
+__STUDIO_EOF_babc06ffbe76__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
 __STUDIO_EOF_b50c02630f9f__
-cat > "$DEST/requirements.lock" <<'__STUDIO_EOF_a1964c5cf742__'
+cat > "$DEST/requirements.lock" <<'__STUDIO_EOF_d2cda442365e__'
 # Generated by tools/lock_requirements.py from requirements.txt + requirements-mlx.txt. Do not edit by hand.
 # Install with: uv pip install --require-hashes --only-binary :all: -r requirements.lock
 annotated-doc==0.0.5 \
@@ -1417,10 +1437,11 @@ httpx2-jsfetch==1.0 ; sys_platform == 'emscripten' \
     --hash=sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60 \
     --hash=sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32
     # via httpx2
-huggingface-hub==2.4.0 \
-    --hash=sha256:13a6158b9e3393d9d3f248ce99074d50c2a0a1449fb9d8e2f710751e2084c188 \
-    --hash=sha256:42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801
+huggingface-hub==2.3.0 \
+    --hash=sha256:0b783b37f200f1d25bef2344a997c7d410f4437fbe9d8fd965f958e75cec7aef \
+    --hash=sha256:5da369600233568a126eb5578754935b2add9446b42d9e2fc0927d56840ac1a5
     # via
+    #   -c constraints.txt
     #   -r requirements.txt
     #   mlx-audio
     #   mlx-whisper
@@ -1965,9 +1986,9 @@ nvidia-nvtx==13.2.86 ; (platform_machine == 'aarch64' and sys_platform == 'linux
     --hash=sha256:7f3f430a87bb1e2db3371832d21a5c1efcf77bef7cacfd772fd71649e121cd58 \
     --hash=sha256:968ce72baee2a01791c7d3254000eac81f24677b0b91c62d21b449a1f309c245
     # via cuda-toolkit
-opentelemetry-api==1.45.1 \
-    --hash=sha256:aa38ed19bcc084ba42782a73255b3582283eced7ad6dddbd6695189e69adfb75 \
-    --hash=sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb
+opentelemetry-api==1.45.2 \
+    --hash=sha256:2cbd737377e710ee740d261c94e93fa0f08e6d037c18f17513cc0a2d94479a34 \
+    --hash=sha256:d7b0008e21e5fd61cbe7a7f34ca3b6905a78ab677d9bc395e299359c75cda6b4
     # via fastapi
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
@@ -1984,155 +2005,154 @@ pycparser==3.12 ; implementation_name != 'PyPy' \
     --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e \
     --hash=sha256:f03387877eab82ce01bbdfd0ba7252ee55a90b1c708d5129e2ce915475cf1db6
     # via cffi
-pydantic==2.14.2 \
-    --hash=sha256:7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118 \
-    --hash=sha256:fb7b2db6cefe8414dd612edeede49c4c433acb0432b0f92b95024e45f66c505d
+pydantic==2.14.1 \
+    --hash=sha256:9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454 \
+    --hash=sha256:94f478203dd03404682a1ada216965651dd74b1d2d5ffd62e00e0837caab5c26
     # via
+    #   -c constraints.txt
     #   -r requirements.txt
     #   fastapi
-pydantic-core==2.50.2 \
-    --hash=sha256:01eb0282d0b3a065d55956d1be9ce398c46db3dd6d277a6cb2358c8aa8c53179 \
-    --hash=sha256:04cf672960b8c4fc28bb159c8cdd101fbd311c520237a5c0360448b851adfb41 \
-    --hash=sha256:0b94a515f44f1ebcb25395bcdba506c4cdaf6d3fcb0466b9658521b41e5ff057 \
-    --hash=sha256:0d090ae76d5b09c003600c7779b3adcf3d1b49268f616c5c51d844e54c8e318d \
-    --hash=sha256:126f158474346f457c0759c29c1a6334acd5f7f99dd272bb27d19314f3d81b4d \
-    --hash=sha256:150f6e101f575c21a4ecfed1be1c05bb89a0ad49cb9c846ed377583bd71b32c2 \
-    --hash=sha256:16ec8e07c37f02dcf68939cc7f202ba9a148cc155ee2acf22d337e10b24c2cb7 \
-    --hash=sha256:18f008ef58cd30782f81b6e0119e20b7e884edcefbc2d370162ebe033f6e5c99 \
-    --hash=sha256:196b87b48b2695426920e8470d20f9e99f019ebd86f15808aa018b68086840cd \
-    --hash=sha256:1a5e859f5a8a6d834b0a13acaa0eaddf1a9b4b015fcda13bab7b471e18299d32 \
-    --hash=sha256:1ac5b99bc7b0a68ec64f5f75a6828a7bab5535c8df0cdc07901deb50e0815910 \
-    --hash=sha256:1b0e8dc3932cf4e9ed5727570325cacc716b9409ffc794a221c0ccc72e8eb775 \
-    --hash=sha256:1b9f652e17a13bbc09b45f74c3c326cca72059ce4dcdef687fcb04389db413a9 \
-    --hash=sha256:1db9cab6197e797824f0479dd2ae5fd2e272aa61c61b7faa5a6e450ca7a0d3b7 \
-    --hash=sha256:1fdf5b52ed22f1404c2433d0b46df2d86d9befb742d0b9b4042a2325c43cdb97 \
-    --hash=sha256:2115d7ca6d58554af8a14da3dd32d361a4fe999fae52f115a6155679b5b00e72 \
-    --hash=sha256:21a902e546032c82b7275552345a2342d862e0541aea7226c91067c396e68b3f \
-    --hash=sha256:21ea3b00f1e87c66f3f9e92f9f6fec20495ac0e60d7d2e68ba1fc49739d7cf40 \
-    --hash=sha256:23385c4626f8b5a7792aa381ea573d9432cfbf4c21375a0a5eed2a4fb64e0e58 \
-    --hash=sha256:240fec32a74af0979f7253532859b3fd209ad5eea822416bb010929dba445c3d \
-    --hash=sha256:24120c644322a35b5eb765416ac8442214c45689e255f5fc6e761e7e7c743c8b \
-    --hash=sha256:26b778d4ebb75f181d36220ff0f54a513fc46f053d9b09ce79993c2f00bc45cc \
-    --hash=sha256:2d4a043c820363359e40ac96270e1915e5376e116be1f59cee0701775de3e376 \
-    --hash=sha256:31a1fb3ffbd1195b24490f671d12623dd4c9bfa56d6af0a299fa43b516134f5b \
-    --hash=sha256:33c6800ab9563adaa0d7893e9cd8f5b972ef1e6a23df70498e05c24f3fcec5e1 \
-    --hash=sha256:3435c443da7510a6de1a30c68beae338852a11f0440cc8320ea756a162f38dbe \
-    --hash=sha256:36917e29c0b815d6b940bc91560fcf453b5b85d55c579796373f0ea11d1c111a \
-    --hash=sha256:36d8b9725684ca3bf658b90a101d335fc8cae405bb22196b7b5ef41344913756 \
-    --hash=sha256:3939538e640c94ab779a05f2d45dafedd01d65d93e1290797f3ac5b59fcb6455 \
-    --hash=sha256:3b1bb3950e0794a795c9344d818d5b476189b0c9c9755e8eb8fde87c3acee17a \
-    --hash=sha256:3bfe12243b3ded517c6734d91f127489e2f51bf95cb533b53130fe360333db80 \
-    --hash=sha256:3fbcd402e4b607d4b8de5d4591215f31f042af03f9d09e58f693a6221e32833f \
-    --hash=sha256:41ed8abeffda6a880207fdc0cd1343a448cec3cc6b38b53f730c0745f745292d \
-    --hash=sha256:43a8fd56f3c681f3cda2d5c842ad28e88241df742dfcbe8fd1dd437a3056e1f6 \
-    --hash=sha256:48e944091b7bff233920bed8a60b0ed6c96c73d3c5836bf51c4b9a4bfb58e4ca \
-    --hash=sha256:4ac996e42a93d80122a23edce44e02c6b9c4913f5c6198a077da31475341a39a \
-    --hash=sha256:4e9392ddf67fe97ab9889f796d468c9908a8754b8b6c7520eb03a65012b9a1e7 \
-    --hash=sha256:4ea01f30e119f1ec7a2034e85c40f491d469896aef02cd6436fd9292fe1be3fb \
-    --hash=sha256:4eb54c25e3463d73e1e4ed439ffc45d1d7e590df40bc7bb06f11a906afd996c3 \
-    --hash=sha256:4ee64baeab403b9de9c92846c5c1abec28ffb046cbc023bfae059897841f88af \
-    --hash=sha256:523fe6574aea50f456cbc301c1cdddcbf237939f7657f9af99b4f0f71942b59c \
-    --hash=sha256:5299296ff5cafcb69851fd652de8f9268a0bb036bcbedbfcaa94cf743baf3986 \
-    --hash=sha256:53bd25e8ab54c02bb4c55d4848c1d36f75f3b9a7356e83179fe27794d9e9e6c4 \
-    --hash=sha256:57bccd3e1128736c792094da1feac6da46ec3feb1957ef649a9b3e4f8de6fa04 \
-    --hash=sha256:596921489390a002d6a5e303384a0f1f98384f8bb550fbf38a1aafa6093da0f9 \
-    --hash=sha256:5ab5738c39b25b5dc5a721270e2269a2f5e86e614375e6c07ee6caab8cbc0f2f \
-    --hash=sha256:5c12a5a080570a91bbcbf6d10db008b80e3f5dea015ef2f0137bbec70f24f3f3 \
-    --hash=sha256:5d3cd8be71c4da3c9b42cc92f17e5e3036bdca98bf18555a0e072c3fe87abbb4 \
-    --hash=sha256:61e13100b30d8d25fc0d1f0297014b32941bf0975a3584bd08f3adebb68d1ead \
-    --hash=sha256:6258754c473b3045a7aa30b833a8a331a1ab36c6147cb230789861d80bb26f83 \
-    --hash=sha256:6a438cb8a3f87f2c49e82e43fb19511d4d5043f53e0787dc4df937ccb904373a \
-    --hash=sha256:6c25b8826be85714b27dafe908d3461e1b09e3e31c0279a7029040c832c781ef \
-    --hash=sha256:6d47b2d0e00e030e0ebdb08115a37da7294e7a6d196d134a77ed7ee6c142284b \
-    --hash=sha256:6e731bf5a5e8e25398544d7709e39068ec4230b0177e4db7fa955692fd415ba3 \
-    --hash=sha256:6eb6ff07964f39e33c6f57fefe939514e76b8c0d4a694e5663e2e04e80cc1798 \
-    --hash=sha256:6f5a432c6c1ef18a1a02a04b3616b8d3f2f88b13faa46caae1ac6559ab202234 \
-    --hash=sha256:6ffb4dce3ecb2cd563aa30f9eb5088a1cf1f4f688b90cbb374fa96e49fc50b02 \
-    --hash=sha256:701bc55d08c22f981973ca4f6fdf4ea102ee1ee3a21b818b66fdb161ea711a4a \
-    --hash=sha256:713d7c33c0e231e3786eb0ec95885814dd65d5f3a09754399b6acbf5e9365f11 \
-    --hash=sha256:71615edeaf1ae70f5f3f558426072eede0168b7e5190fd9633878e29a0b85732 \
-    --hash=sha256:783abdfac21247d33bec40aa683d26bba30d61655c40de38b2decc4797aabf92 \
-    --hash=sha256:7c539d452cba22f250103c7d1c00cbe9038eb705e657476e701c43374efd9f2e \
-    --hash=sha256:7c6e1bd6cadae13958e52897ef020e85c9916a95917149fca463bb0c0421a7c6 \
-    --hash=sha256:7f9821dfc0c473c96ad55ce4189c7cb4f9c94e7d4f563afb874173243dec1162 \
-    --hash=sha256:823b222c4fc861a82c650998a6117ecbd150cc71bf8b78f9a31bf3f48c456108 \
-    --hash=sha256:83d6f42ae6eba44548a1a3d4f900a5b1500fdd14f09f04754a8800ab0d544432 \
-    --hash=sha256:8431ecb131489cbdaf6f51f7ade47475f73aff4f1912552f75ba19a6cfe233a8 \
-    --hash=sha256:848984e231190ae49bc8b5229e64d2a6fba4231dc6046e1b6b28ddc060bc7601 \
-    --hash=sha256:86e7abd24a67f61a4bfe8df059b67a2bdd8bf33705178e98463195d140bd3780 \
-    --hash=sha256:8772c2c0091e6fc2d0499151793d31bf811826986b0727052935a95104845544 \
-    --hash=sha256:8835566b3e94026da3ce2249f9ee35c9d2ebe4cd131f6a39bfc82708d3010a46 \
-    --hash=sha256:89213368eef163350af37127939ace099010e8102757905c3e329f1175950ed8 \
-    --hash=sha256:91238117cd296352f54f24117ff5a227bdea428865dba1244aa0cdd1424c0bc2 \
-    --hash=sha256:91315aea7adb51821d4a3378ede953bfdd76e3bf71551de4a82d7638cef7dc02 \
-    --hash=sha256:91c92856b846aa690ea6239ffd6c5003c5e3e296a69095570bf4efee5bfa0bdc \
-    --hash=sha256:928a44ad1e21a7e923eb924d601605f0694cd187d2ce5d40bf7ad76650f4627d \
-    --hash=sha256:92acf02c770b9d5c4e9a3e8d64e9d95ae26456a86ebb7b7cf64a97f899e5871b \
-    --hash=sha256:92ada606285dab054e40848a951f583c537cde1e54701ea1305ec0096877012d \
-    --hash=sha256:93bedc68c4138088ea3c042189c01d2945f530f0dcc36e1ea02df8418bd4f1cd \
-    --hash=sha256:93eb41d626d9a2749a678823c70bba8c25033cef474ae8001fd7621adbbd8437 \
-    --hash=sha256:95838be125133fa314753f8cc5168f7c41e3a9dd5eef5383dbbbeed511bd4853 \
-    --hash=sha256:9667637665acba166a7dbbc786f14c50512d3a01f7199e0e1a13b929e92d7c7a \
-    --hash=sha256:98722314e12a8e4fa346e0afd3fff2098b5732875ff45592b450a7b589b43c4f \
-    --hash=sha256:99e1d482138a71902415ba375bb4627679a5fefd3bd07803c3a8f37632f4981d \
-    --hash=sha256:9a87744e683d9a13f60b7fa5242c17f8d283ffa94ad727cb19063b48c3d34960 \
-    --hash=sha256:9a8a62281fd9c6a373b3fd3d473685e6838d43341eecde5f47729748e2c11ee3 \
-    --hash=sha256:9b01a092955c1c7530196ad526755cff4f2d11f37ca9a6fc9ebe37ca49a48977 \
-    --hash=sha256:9b2383933b1dd7a8c93e02f99ebfd305f1286057172483b8e6898bed3fef69d3 \
-    --hash=sha256:9e7460abce637f90e37f8c443559fbd687c38884d05cb69ef265e634945f4324 \
-    --hash=sha256:9eff570402175c7d5fff8497d5a9c05580664a79bb66c07b8f205d17f69e580b \
-    --hash=sha256:9fcde11462e0faab4c2a2ae8cd4516f7dd8239eec583bd88c5524d8064ad2d0c \
-    --hash=sha256:a1b4d60bad57d6e0e7cd30cc4d1dc646d258dd6dfb7935ce76c7dd72dd1e98b0 \
-    --hash=sha256:a3317630e2791f56071b82f89bb71624146125e4311e6643f708c6ba744b5ac5 \
-    --hash=sha256:a53d5f11cd6d15569ba3e53f3498077f0d5e633f6ec604d2ea613e895017ebee \
-    --hash=sha256:a55c1163e829a08707b4a92c8ee02a5a3a3847ced74aa4da94e3e975ffe1ec63 \
-    --hash=sha256:a59db03b80a156a6fbeae41096866d1cb89cdf31031ba44c768a804538880636 \
-    --hash=sha256:a786cf782ebb2e45a43c7118d75d452aac982b79577dfe804d8dbf2878f0b589 \
-    --hash=sha256:a88851e8e332588cb8cced8b5318d1163c7d0bb87830aa8dcafbc4ae9602b73c \
-    --hash=sha256:adec010c824290d4ca87047e8d8bfa4f85ac29f545f326cd5321696805d311ed \
-    --hash=sha256:aff31602e8518594e6f6bc670cdb27e37cb7dbeb2d5d0b76a7707b70fe951ddf \
-    --hash=sha256:b0b25d647036972c2951059046cb498f72b7af5a2def27bf8e5f44c3067ab7dd \
-    --hash=sha256:b0e6a2152706d84f7da8b9d34dcecc7e9bde678af32c40bd5b405f427ae0fbdb \
-    --hash=sha256:b1adf2f37521b578c438f6ec61d1c1d0c20b076863ddd5d8b6f3ab658857db3f \
-    --hash=sha256:b29b7c5adf4b2be7c941f7f76432aa3269cd5052ff8610376b8ece24d7b02c51 \
-    --hash=sha256:b2dd65864aad38dbcc57c3d0e2c978d4286e063378137d8fc0c9fcd558943285 \
-    --hash=sha256:b381574614245f18fdb2d6d1aa8f149e225869c47b5ee7f81812de8977817314 \
-    --hash=sha256:b3e681208e2d39fde13fbea449ef2736a85ec1ea2afa41e9193a8c536e71dafe \
-    --hash=sha256:b5675a12a7b67063fe3ca187e735b0463cf13fabc10166ae4d4b2f775fd0632d \
-    --hash=sha256:b583ddeee6a6bb5bbc04462167c68034913221139d52d9f155ca6d1637a2fdcf \
-    --hash=sha256:b62c89545d21d930c333208fd548e7b4f262228ba3a322fd75c987a75ab11f31 \
-    --hash=sha256:b7abcfaf66c1dc14c5ed928c349614f223c972a8b021b4be9548dbea6c817371 \
-    --hash=sha256:b958c217c6e56bef261f516e4caf5d490b079ad6a428752afada5a764cca6c71 \
-    --hash=sha256:bb6d49f00e2babd40af4889d6b9f4bf50879f522dd4e2e22cb705cac5e0c5e8e \
-    --hash=sha256:bd1fe69056a19c377a6c6de2c1240fb8676ba0512a969965efb486510c5e0f1f \
-    --hash=sha256:bd6ecae08c0d871cf93b6f0d4ee76b06c65be44ea22311981a022b2f1948cf9d \
-    --hash=sha256:bf7f99a0e6616cea754e2334d129091f3260d011369d9b8c658522bfb2427619 \
-    --hash=sha256:c1b65a42afc73b39e6ae908ec7b9c3b9898676a7b15ce4c66d4965f7071007c8 \
-    --hash=sha256:c324a7e0c0012e3974053f81a270d8f1aa23227571f4ddd3254c911bb356459b \
-    --hash=sha256:cb8d2d7b07cbe2d7488de7e53671f836c4f4a8032dcda079df33dc1b7e2397c0 \
-    --hash=sha256:cc488daac19e6f5292180fac5e0ef7efffabeef4e096af9a17a75a7d3d6781f6 \
-    --hash=sha256:d18d56c1ec63b304f4bb3c7db7e0d311e61cca1b1c944590a4b13ac39b2ca92b \
-    --hash=sha256:d3d049b557875f9d15230eec8a731749a7a873d8ed6a051903b05bdf46e0e65f \
-    --hash=sha256:d684ff87d00de2f6abcbbfa9b0fdce8b513dd799a900809dcfa7eb62ad69832a \
-    --hash=sha256:d71a9a9352acbcb5c73d39dd003383599428067b6eda5cf7c5d335a7a0da37e1 \
-    --hash=sha256:d79aaa468193c1bed6b0560d3c5c9f9e369e3efb0b128b38a2537e2d51d42773 \
-    --hash=sha256:d93c066a38f83376b5bc020e563666784d1b680a70d6ceb625fdb541af7a312e \
-    --hash=sha256:e2e6240a0a5ad847017b3d65187877fdb7a11d5a58d43c30736f9f523478913b \
-    --hash=sha256:e3d824b6152e1c0fd58dc6266f2de470eb7b2286135294f5f7cd26a0f0693738 \
-    --hash=sha256:e5c801bdf3cc92274b8fc2c7023c8751e5ae81260c009ac558ff55ce712a2d45 \
-    --hash=sha256:e80c47314c7233e7105a7efcfffd89d56e479e558189d1959eeeaf2639a27680 \
-    --hash=sha256:ea71b94a2eb5d2fc102926321f56d2ee8eddfad2673eadb1d23e9f287a492715 \
-    --hash=sha256:eec187d2876abb6a74203efbe2aa796455c1809334acf4e739dde35da8cfb69f \
-    --hash=sha256:efad0bdc67d3b119c3bab6b94d341a27333c2bb89ed75dfa182a4a06cd0ea329 \
-    --hash=sha256:f078e276848bc23d1f92f46fc88d5b9cbb824b9acc60d9e07116620e502e16a9 \
-    --hash=sha256:f07c965a8aa6d62145f122641f292129984f39a3e3697585b19298a1488287db \
-    --hash=sha256:f142cd663d1148ed32993ed9a58e5c67ea312f446a01a6c13a956945aafc9f23 \
-    --hash=sha256:f47c1349c3b4274aeb18459d54244881a5c0dee0fdccedffca45704ba5c9e0a0 \
-    --hash=sha256:f5ba7ef10ce82737e173fa95cafa1c8210918f7e653715b2c7a7a31877a74848 \
-    --hash=sha256:f73930dacad5e611fe019e18df6f53c30629b1843d038d303b8dec86a32493bd \
-    --hash=sha256:f81df206b937d0dca5efb38c25fc99037d82dbcd3740e34c3f81997d2322ac1c \
-    --hash=sha256:fd9aa71a800c87c0f7ab53fa38009169a23a82c685989626ca74a4bd483e1b67
-    # via pydantic
+pydantic-core==2.50.1 \
+    --hash=sha256:0036473f5583e6a60e50b8b21651511564277a3f05cc5dab8cf579f552cd5f6c \
+    --hash=sha256:0048b6dddc8ef4b64fccaad878bd143b0c3882ea9936279dc11d613f6b7dd1bc \
+    --hash=sha256:009634b83993777ddcd69cad0ffcace43dabde692109528e35f0fde91e386a8b \
+    --hash=sha256:028e2f212273d4a39b1ec1e0de8166b1165a65fc0f1111452a9d94fc7c625c63 \
+    --hash=sha256:062e891facce5ca296a1c37098e5e466780457f86413894b399f0cf22934f769 \
+    --hash=sha256:06e01fbbfdb9be777b316a71b6c49efaf4a08b615d0a98d678cda3023f79d019 \
+    --hash=sha256:06ead20d39ffd6f2f6f2a8f8a6de67ff8bb1b4f14a8a30e058502514ee2ac685 \
+    --hash=sha256:0b3a6f334c6a2345ca15318ff894502a90012536404b37c844a976c76c846e0b \
+    --hash=sha256:0c003c3b7f49debb893d2d85ae099ac5959c9839e2f330fadb1fcdf7a6594482 \
+    --hash=sha256:131059670f1d2444269b8585cb888963994871932447c08b39ac6a51fcfef658 \
+    --hash=sha256:132529c83901437ff642f585216831bf5fd7a91df66829907e155192ead62498 \
+    --hash=sha256:17e722e156d0444ecaefbe640bdb60928752bf2013e2b7a11cdb099aaae19bec \
+    --hash=sha256:1a9006395dece0e32e704c315eff8a00bede494f6108546cfc5539c89fef4f9a \
+    --hash=sha256:1c8632d4ac04e6f91128fca584b3a8a507d81604c24eeaaad00d4be42765c32b \
+    --hash=sha256:1c96fd793b73d1b92e65570132505498fe7b21eaef73cdf74e67e5dfba7ac9e4 \
+    --hash=sha256:1cf41f1ae3fa155cf167a72689ad044bcc1e3c97e064123677149bdfb5dafc4a \
+    --hash=sha256:1deeacb112d14d3f4fcb16b165f7dbaf76c70ba6e82f37ba042bdab51970a0b8 \
+    --hash=sha256:1ef800dd7d85bcdadf4c3076e4c94e43939493558a3b69a1ea830c706d4617bb \
+    --hash=sha256:1fa4c8bc12c1354c5550c0c35c1852c8c1901e89e06561724e03f8d0342e1f87 \
+    --hash=sha256:2005207aafe1231315718bf6ed5d064a7300fb4772754af35ee72fc68159492e \
+    --hash=sha256:23923ab9292c40da026330b1ecf4dc2618c8e86e0422e5d1fbf50d94d64ca4f8 \
+    --hash=sha256:23edad659e8dbd8ca7e4e877fe6c81573abbdf215bd25a68b53e1272f58b80c7 \
+    --hash=sha256:2ab756b72bd5054e4c7ef3ded331b35786cbd3cf931531a508f79a9537517064 \
+    --hash=sha256:2cbd1b75b09e976ed0d6b6ca297675632ca35df86130088457cdc60ef36970ae \
+    --hash=sha256:2cf91809d0721ab81592ba67bea7694821679c10b1a2e3c3460082b286c1918a \
+    --hash=sha256:2df1ff41884de2bc4b307bafd7c40a691094fad2ff8e767e5b45a319257bcf4e \
+    --hash=sha256:2eb75304506894a281d346220a4f7481a1b8729577c5ed2a05395991966a8396 \
+    --hash=sha256:2eedf82ee4753cdab8e50044c6bd569577eebc3859b11fecf4eb9223761ff966 \
+    --hash=sha256:30ddf019d082c117b5d309e5b86710c2a78909907ec1a9381feec3eec02eca0b \
+    --hash=sha256:325c23f3e35cfbf0fe3486fa5f7260d1e45885173002d30a28ca019994124255 \
+    --hash=sha256:32fad3a91e51b6d2039c572db04a5a873260b399f6bd62c3552671fa7a4a2899 \
+    --hash=sha256:36c426eac0af8d1529ff8467e612b933346caec1fdc0d774f78f67a1a11e16c1 \
+    --hash=sha256:3a5fce22f1e87d181e924e12da7d81cfe031fb3881a5ddf26ad28f141756ca43 \
+    --hash=sha256:3aa9de446b793de2beb6fa2d9d0961803126c4e2a99c2f25ab59b9fd6ea125c0 \
+    --hash=sha256:3e46a9eb0a0901dd6275e6b06ac3a464885ef350ec4121fe486869de8053e4bb \
+    --hash=sha256:3fde4fdc6487a58d944ca87cf5adc95d5f266e872c19599f5f4c0a8a1b1f9f9f \
+    --hash=sha256:409e0ea40ec30d9158f33574fd758e689f6045a0f2596701828c27816ca9687d \
+    --hash=sha256:40f523349960fa30f3ea51404308ff50f9997a90df639590f47a057c1f32b415 \
+    --hash=sha256:41bc8237121bd8dc8d888dfd6279fc166ffc88c1f1bf3a8bf00869680533ca4c \
+    --hash=sha256:42b54c2c90ad348b5e3a85e03e715d572c1fde357ef104cdfe3b03b697a404ea \
+    --hash=sha256:455a773617b5913bf5c20d0692e5787b119e52c4d40ea644ca31f5758fd31be2 \
+    --hash=sha256:45b11cac094aa25725581d9304eee93c9028516b9ea80dd9e175e13a5a2c840e \
+    --hash=sha256:45c6266d071c241f2a168d45bf8c54344f0effce35e7e6b73afdec11f3687568 \
+    --hash=sha256:46b3301d3b5c886f77de7546e47274a5842c622ea2020b8c6524c6b66913b4a6 \
+    --hash=sha256:476f6ed8e43cd1e0b460920e23571700872b284e77331cb30c4faf459cf48a4b \
+    --hash=sha256:48569b0ade9edfbe065cad1d700175546592aebbb42f02adcebcc26e75b896fe \
+    --hash=sha256:49c2cbb2397fe4d0987e84606e691af6cb87bc0ee1bd3e7b737f7e10b4c142f9 \
+    --hash=sha256:4a53d13cdfbedbfa87f08b83c1a0a5efcc767d785a4b41934fa9cb672670493a \
+    --hash=sha256:4be846f55c9477f5f3ddde8f2ce941137e16862a56d018ed885d422bb6ae02f2 \
+    --hash=sha256:4df197990c15b5a37c5a277d131d9f2c67de6133f2e5dafd80d9bba4b99f46f9 \
+    --hash=sha256:4e834f6a8e4ff772dcc34f58ef5504147a3ea5b0f4eeb13b0f8eb2ca75ac57f1 \
+    --hash=sha256:57f51b31ff826e2859120cf4737c5a758a48d96f3e97da40ccee1796d58078ff \
+    --hash=sha256:5958c72adb417c39b12ac87525ac60b0d73315fcdc59e21f44ee4a5e2512c9ef \
+    --hash=sha256:5dfe41f232befddb9c4377f6cfc702b51595e2d78ed082672adf8758d2c4619f \
+    --hash=sha256:5f3cae32fc46121f787cb2486de9cf95a8bf72aec5cc78f64c606fa1735a6ef5 \
+    --hash=sha256:64f6047f62a6c5ae08d0a6afb035667aa2d97c3d20d69762e034c5ea144d92a5 \
+    --hash=sha256:6a733778df2f7087ec1100ed0b41533e4f3001976e99570fa34f57c66e7f8e3e \
+    --hash=sha256:6b20a4bffabdad0db2927ac034ae3b8a681b1f7a0182f3e60b479ad2fde21ebb \
+    --hash=sha256:6dbcbee53bf17196a7f745aa9bf5a9603953a1e365b1f020be3207c676a3e7c4 \
+    --hash=sha256:6ed4f3cef55164b026fefb41341b7754cc6b624c75dfe7142d2ecceb5ad21c87 \
+    --hash=sha256:704075d10b74f2f3c6e15407c696d88701df35fc8953f434a431add0d0074db0 \
+    --hash=sha256:739dc730e6be3bd5ec2f4ab5cfc7eb047cc45fc1497b3bafec74ff2ed07df597 \
+    --hash=sha256:7456d699b13954e9c0164dcb267250a10ae0dfb03e6e26d6796ab0d46e189c84 \
+    --hash=sha256:756d669f04e62ec4148ecfe22be6a4484d9b1181a6ef32e205ebfd200540858b \
+    --hash=sha256:7689580e72a642ab5ec64d5f55b2e33636fa43b4ebe63c0c2c965ef307c7d1aa \
+    --hash=sha256:76e2e83fa6ec8cdc972d438dafc2522b3a47bee4ec0ae668b29cfb1977ab5242 \
+    --hash=sha256:7816e98acc08119dc0f340ab167048ecc54126316330c1f0caf7c6756c88e28f \
+    --hash=sha256:79490e33c4c0fcb933bbbcfc3a62184d8803b99f535863dfbb925e1bcb6945ad \
+    --hash=sha256:7f476456ac2bb0d937f75191494a09c83a30765fea4f70f3b404942fe25f6cdf \
+    --hash=sha256:844b869f118e22a41a091bdcedda8a71bc1b0f62c38d1a0c3211cece47e1d8fc \
+    --hash=sha256:84bc765b282a9d5b7fe0348b8648904f25a6a04b2139da52b1dd30c8ac3a2c8f \
+    --hash=sha256:84f34323a61a365b4e9295de6028474754829aaddd59c7bf1a040e7487ef8f3c \
+    --hash=sha256:8812592c85d0edf423f10eadcef42716d71e8219085ad9e85b775057b7306133 \
+    --hash=sha256:88e492e8b9d0312e7dc13667c30222abf284dc3b79b5302b3607b41a5784ce61 \
+    --hash=sha256:8a6791afa2245e6c6b180122d105941644f5bd410bb18623b408808cc41a3102 \
+    --hash=sha256:8b4c3df25bd323bf1d36a648d563cf1fc69d717451569927151bdad7cad07a77 \
+    --hash=sha256:8daa7ee75245d43ad7d747e5c9ecc1b1d06552f72b14887e9276f787d57375f4 \
+    --hash=sha256:93ba4e9d8210d941c200431a56b2c0400b131865947903937ed3ec5404307d2e \
+    --hash=sha256:94845ff54dc5193f228cab81b2662a04bfbb892e95bdc15edf7399000ce57d54 \
+    --hash=sha256:94be440c03fede26969a5ce75468e0e6a9927a1b46d9b679ee8adc1b057b0350 \
+    --hash=sha256:9572c1369e9c9da2d64a7b7992c786d90ff295abc93964cfe3125e4290768070 \
+    --hash=sha256:983a662de2571cb2502fc8ff47b6770b03d025d2eb314c92f77b3f07c74720ed \
+    --hash=sha256:992c3514ec891fa7858099183e4d64e6bd5a5d4ff452fae29df22faa77a006bb \
+    --hash=sha256:99ba9bc2b8062ea0c326a990f7f00e6530c23579de66dd246e72c4cafef950a5 \
+    --hash=sha256:9d1bed94af6a63835461f3cf7502058eb166c58c4778e11d0f433cfb1bd69e19 \
+    --hash=sha256:9e4472072de0137ee0d8e72d6620e85939c271d2f90f6bbb4b15c24638b79f92 \
+    --hash=sha256:a27c09d86600f1bf2fe3f37e1ae697faf3143931c09322cd799da94deee923b5 \
+    --hash=sha256:a29a061fec0b4e2d714f277e70a3a18125ecff803f2fea6eade2f2e53711d112 \
+    --hash=sha256:a3cda0e538208e5d722bbf3698b24f19c0a7d05bc8d5f8a7f9b121ea7fa243d9 \
+    --hash=sha256:a44101320cfe99432db74237545a63057dc7a88dfe792cbcad0647f2af56cb81 \
+    --hash=sha256:a4aaaa791bdae1c972a7e81765f4f3571c926b8e0b9b6e47346499fb80079665 \
+    --hash=sha256:a51eee75939cf811ac09b278745a6cee7dc873ccfbc8b9af3cc88fe4b7ce25b5 \
+    --hash=sha256:a7c58106de36ac6a56314182958de20db8d3a29dfd5db527192cc754e4f8e7fb \
+    --hash=sha256:aa8224f10880d9bf1b5993988ba153d42a8b4f3f4f511f93b1f09c93ff613c72 \
+    --hash=sha256:acbf31f37c53a5ac0c34706c80b4f5107ba20b05fdd3816124bf236ef0c57dd2 \
+    --hash=sha256:adc06d218a1cadfd2ec4628424d7d79ce4eba69c2965e7e7b55106f0da5208c8 \
+    --hash=sha256:ae28183297fb0d2b8dc46a1f01d51f5e45825fc5afe76a835a6cb7fb34821295 \
+    --hash=sha256:b0135bcdcaa0f23573f286e4cb5e0fd2962700964ed13df085b85f2b97aeab9e \
+    --hash=sha256:b087b1c5be7ac687cf22eabfe4b6b608d40df23610651e93611e1f49118baf84 \
+    --hash=sha256:b0d955195bbbe489ad343fcc956eacea9357b79cb22192c66cacdefcbc14b32f \
+    --hash=sha256:b281a3b0f0822618fe5e3e0d8a2048b6356b14388505dc9374ccffeb69989713 \
+    --hash=sha256:b6d0c2183008c188e19f4906d426b293bdc4f67ab17df8e180fe16cda208fa71 \
+    --hash=sha256:bbce99252ba3167b2b6277f1829d5bf4b43b754524bddf7f944707c3db7d2253 \
+    --hash=sha256:bc1f08f68dac9f9e83845a8039880aba2ab553eb9b2259c3243a313182c253fe \
+    --hash=sha256:bc94f474417604bd383d2cd445d071b07dd55fedceed3ce33407bf1fcc107290 \
+    --hash=sha256:bed5163e03b98bc1fa2eb05d74c63d9c5c95d8ed6254985481640fbf5e237dea \
+    --hash=sha256:c17799a62c142d61b8a3c51752a7cbc87fe2ad4ccfab10e628a77b405075c662 \
+    --hash=sha256:c18db21573bd2c6489f9a544b7499f0df2853958c568e5e783536ee1f690af41 \
+    --hash=sha256:c3ede305158e75510be50869b319550ab072008c13d64d4ab1e094fb286b6f44 \
+    --hash=sha256:c516cc5367ca3448995d42cb994bf3f4c9002d2a7c22eac9622551269ad1b807 \
+    --hash=sha256:c531166c42ea7bdfecc8c50049581f05dd1993b09cc7c52bb36a14e96deaec7d \
+    --hash=sha256:c73622ef819328873b53109ee4f77ceb598bffedd02daf916102be3228866b78 \
+    --hash=sha256:c8dce1f1e0e5358b682a6ad3fa5e31b31d4560997b8e61417e9217c8d60f8a0c \
+    --hash=sha256:cb57f304525a5e3c13333b772bf9a473f36326e9c821b2e8e1b2fd36f80ae2c3 \
+    --hash=sha256:ce8c25ca38cc0e3d7753ba180808de2c0c8cb24eae0df64491e40921454e9831 \
+    --hash=sha256:ceff0acc940be2715bd6ad17b24c0e5304abf44f6efd0f81ee8499e640f9dc86 \
+    --hash=sha256:cf356f70551d40374eaffb1aa63f1eb6d2006681cbd7a9faea173ce0f4dd7cd2 \
+    --hash=sha256:d2d82aa62521c55ddfb000ae70f88cdd8de974078f6024e821dfe5addd0c818f \
+    --hash=sha256:d32f3acc081cc3923386d88f422cde8892335e95f034e0104bb4cf9310d9915f \
+    --hash=sha256:d4193206b6587047437f6f11d7e776df23e1c1e23af2a54d9347275614791e10 \
+    --hash=sha256:d5c0e32fdbce7f1e8ef4d11f655694bf5f4175c757a9f1dc2be09b8864e5bcf5 \
+    --hash=sha256:d5e062c01286d861fd6a1c4ff6e063547b3e713067f2df033c0ff97ac2ca006b \
+    --hash=sha256:d8f9e8a6c4ab04b78d61f78627370d834eb004b2869dcb28cfffa647b4ea1980 \
+    --hash=sha256:d939de9c82e2126f7f48a7e658f8a85ed46d57662d53f44c49b8895fe94a3eb7 \
+    --hash=sha256:de531ce1e2a3364e8767878b58f4ff728a434b4fde089781fe30b1e08e2396e0 \
+    --hash=sha256:e50d7b94baac6c7d09927fa5ca5800a0c7ee5015c7fcff65beb3a1931b5a6e09 \
+    --hash=sha256:e5faeaee74a57d32b3ab3aebad2e348f06d3ba946fc5d28c1728455f00a3d13a \
+    --hash=sha256:e6f0cc1bb9900dc558960894adeb30b0c083366fc1d69b856209fb2ca5c36fe5 \
+    --hash=sha256:e8e1d6ce820aa23317e8209a86bd65a540973c12dc7552b48a4f6c8e9926815e \
+    --hash=sha256:ed1e728b39a383c81035b2459cfcb35d99dfb01f7d6ebe3a913bc1cc5b81e459 \
+    --hash=sha256:ee6db2fbed51a7991302e8fac498cd67e336246026d0dfa84cf5166ce1412760 \
+    --hash=sha256:efbecf43d321f7b9281441f1f213f7c21c66988b0e06c2730ba13ed47a46bb08 \
+    --hash=sha256:f2c634642694e6a0dad2ab1d375589fa671fd442edd5caf7d9737b8f6ca22906 \
+    --hash=sha256:f3377c8c2b3ce898423c5e5dd94c7982e30aa7717a7e6ab2470b9de364963709 \
+    --hash=sha256:f5187624823423e1d1b82b1072ac41dc837389e18d3d0572cc19bbee46cd550a \
+    --hash=sha256:f77ac30b19221cd9bd3fcfa3d4614eff93140d0572ab730cded17b64adca05f3 \
+    --hash=sha256:fe90228920fd8ff2be62622b6bb8a2b11acd65046d50c6b130614b5879605a20
+    # via
+    #   -c constraints.txt
+    #   pydantic
 pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
     --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c
@@ -2663,9 +2683,9 @@ tqdm==4.70.1 \
     #   mlx-audio
     #   mlx-whisper
     #   transformers
-transformers==5.21.1 \
-    --hash=sha256:53b5fd825d009cb7700285acbb4e36e745c7f7df859202ba1a4f21a10eda8e3a \
-    --hash=sha256:65e82dfbe8d0d0d6d09d402dca28e60b3f483beadbb7bdd259ea0e33a04e2efa
+transformers==5.21.0 \
+    --hash=sha256:43c971a3eb9ab68dc9dfff430f8ab8a0fba09af2f68b608fd70c6245d2ddb8e7 \
+    --hash=sha256:8803a8712932aa3441c1e8bb340e66d5e3eca079fe65d9b717ede2f3ead01c79
     # via
     #   -c constraints.txt
     #   mlx-audio
@@ -2717,7 +2737,7 @@ uvicorn==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
     --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
     # via -r requirements.txt
-__STUDIO_EOF_a1964c5cf742__
+__STUDIO_EOF_d2cda442365e__
 cat > "$DEST/requirements.txt" <<'__STUDIO_EOF_0150442fc879__'
 fastapi>=0.110,<1
 uvicorn>=0.29
@@ -2730,7 +2750,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_788d2ec1f2be__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_29d383fc8d2e__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -2739,13 +2759,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_788d2ec1f2be__
+__STUDIO_EOF_29d383fc8d2e__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -4580,7 +4600,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
     }
     return short_hash(dumps(payload), 16)
 __STUDIO_EOF_3c1ee291a313__
-cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_66f9ceaab118__'
+cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_b388aeab35b6__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
 
@@ -4633,12 +4653,22 @@ class Context:
             self.db.migrate(self.backups_dir / "db")
             if not self.settings_path.exists():
                 save_settings(self.settings_path, Settings())
+        try:  # every entry point (CLI, doctor, worker, server) must see the same configured model cache, before Hugging Face is imported
+            self.apply_model_cache_env()
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------- settings
-    def apply_model_cache_env(self) -> str | None:
-        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release."""
+    def apply_model_cache_env(self, force: bool = False) -> str | None:
+        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release.
+
+        The launcher (bin/audiobook-studio) sets HF_HOME *before* Python starts, which is the only reliable way: changing it after
+        huggingface_hub has been imported leaves the library with two cache locations (weights from one, tokenizer from the other:
+        "Tokenizer not loaded", found on the first Mac run). So this only acts while huggingface_hub is not imported yet, unless forced."""
+        import sys
+
         d = self.settings().models.cache_dir
-        if d:
+        if d and (force or "huggingface_hub" not in sys.modules):
             os.environ["HF_HOME"] = str(Path(d).expanduser())
         return os.environ.get("HF_HOME")
 
@@ -4729,7 +4759,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     sh._studio = True  # type: ignore[attr-defined]
     root.addHandler(fh)
     root.addHandler(sh)
-__STUDIO_EOF_66f9ceaab118__
+__STUDIO_EOF_b388aeab35b6__
 cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_be4c41185c85__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
@@ -6198,7 +6228,7 @@ def migrate_legacy(old_home: Path, layout: Layout, dry_run: bool = False, keep_n
          f"To go back: restore {bk / (LEGACY_LABEL + '.plist')} to ~/Library/LaunchAgents and stop the new service.")
     return 0
 __STUDIO_EOF_b799e3082700__
-cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_60f824b90959__'
+cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_d9d33993f68e__'
 """Command-line lifecycle: ``version``, ``start|stop|restart|status|logs``, ``service install|uninstall``, ``update``, ``migrate-legacy``.
 These talk to the per-user service through the platform layer; they never need sudo."""
 from __future__ import annotations
@@ -6236,7 +6266,7 @@ def service_spec(layout: Layout, port: int, host: str = "127.0.0.1") -> ServiceS
            "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1", "HOME": str(Path.home()),
            "PATH": os.pathsep.join([str(layout.tools_bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
     env.update({k: v for k, v in (info.get("env") or {}).items() if isinstance(k, str) and isinstance(v, str)})
-    return ServiceSpec(label=info.get("label") or DEFAULT_LABEL, program=[str(py), "-m", "studio", "serve"],
+    return ServiceSpec(label=info.get("label") or DEFAULT_LABEL, program=[str(layout.root / "audiobook-studio"), "serve"],
                        working_dir=str(layout.current_link), env=env, stdout_log=str(layout.logs / "launchd.out.log"), port=port, host=host)
 
 
@@ -6396,7 +6426,7 @@ def _write_manifest(layout: Layout) -> None:
     from .util import atomic_write_text
 
     info = layout.service_info()
-    info.update({"label": info.get("label") or DEFAULT_LABEL, "python": str(layout.app / "venv-python"), "schema": 1})
+    info.update({"label": info.get("label") or DEFAULT_LABEL, "python": str(layout.app / "venv" / "bin" / "python"), "schema": 1})
     atomic_write_text(layout.service_manifest, json.dumps(info, indent=2) + chr(10))
 
 
@@ -6479,7 +6509,7 @@ def register(sub) -> None:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--keep-network", action="store_true", help="keep serving the LAN if the old install did (default: loopback only)")
     sp.set_defaults(func=cmd_migrate_legacy)
-__STUDIO_EOF_60f824b90959__
+__STUDIO_EOF_d9d33993f68e__
   mkdir -p "$DEST/studio/narrative"
 cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
 """Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
@@ -15924,7 +15954,7 @@ class StatusFile:
                 continue
         return list(reversed(out))
 __STUDIO_EOF_1f126a21193f__
-cat > "$DEST/studio/update/store.py" <<'__STUDIO_EOF_16ce831ef9f1__'
+cat > "$DEST/studio/update/store.py" <<'__STUDIO_EOF_15d647851798__'
 """Immutable release directories and the atomic active-release pointer."""
 from __future__ import annotations
 
@@ -15988,8 +16018,10 @@ class ReleaseStore:
                 pass
 
     def link_python(self, python: Path) -> None:
-        """Keep ``app/venv-python`` (the interpreter launchd and the CLI run) pointing at the active release's private environment."""
-        self._swap_symlink(Path(python), self.layout.app / "venv-python", directory=False)
+        """Keep ``app/venv`` (a directory link; the interpreter launchd and the CLI run is ``app/venv/bin/python``) pointing at the active
+        release's private environment. It must be the *directory* that is linked: Python finds ``pyvenv.cfg`` next to the path it was started
+        through, so a symlink to the interpreter file alone would silently run without the environment's packages (found on the first Mac run)."""
+        self._swap_symlink(Path(python).parent.parent, self.layout.app / "venv", directory=True)
 
     def remove(self, version: str) -> None:
         if version in (self.current(), self.previous()):
@@ -16006,7 +16038,7 @@ class ReleaseStore:
             self.remove(v)
             gone.append(v)
         return gone
-__STUDIO_EOF_16ce831ef9f1__
+__STUDIO_EOF_15d647851798__
 cat > "$DEST/studio/update/trust.py" <<'__STUDIO_EOF_812c188aa106__'
 """Release authenticity. Public keys are pinned in ``pinned_keys.json`` inside the *installed* application,
 so a compromised download site cannot substitute its own key. A SHA-256 published next to an archive
@@ -16271,7 +16303,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_a4a05d4a3736__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_829d0a5bfa4d__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -16513,6 +16545,7 @@ class WorkerSupervisor:
         logf = open(self.ctx.logs_dir / "worker.out.log", "ab")
         env = dict(os.environ)
         env["AUDIOBOOK_STUDIO_HOME"] = str(self.ctx.home)
+        env["STUDIO_SUPERVISED_WORKER"] = "1"  # the worker exits (after its current segment) if this server disappears
         kw: dict[str, Any] = {}
         if os.name == "posix":
             kw["start_new_session"] = True
@@ -17179,7 +17212,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_a4a05d4a3736__
+__STUDIO_EOF_829d0a5bfa4d__
 cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5fd7f2dbd3bc__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
@@ -21645,7 +21678,7 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
         ctx.save_settings(s)
         return manager.status()
 __STUDIO_EOF_5b103fd18964__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_b96fb9268a61__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_526e2d3e99b0__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -21755,6 +21788,7 @@ class Worker:
         self._hb_thread: threading.Thread | None = None
         self._state = {"state": "idle", "job": None, "sid": None, "message": ""}
         self.caffeinate = _Caffeinate(ctx.settings().worker.prevent_sleep)
+        self._parent = os.getppid() if os.environ.get("STUDIO_SUPERVISED_WORKER") == "1" else None
         self.gate = FileQueueScheduler(ctx.run_dir)  # update drain: see scheduler.py
 
     # -------------------------------------------------------------- engines
@@ -21805,8 +21839,17 @@ class Worker:
             )
             return cur.rowcount == 1
 
+    def parent_gone(self) -> bool:
+        """A supervised worker whose server was killed is re-parented (to launchd/init). It must not linger holding the GPU lease with
+        a stale environment or old code: the restarted server starts a fresh worker. (Found on the Mac: a worker survived `kill -9` of its server.)"""
+        return self._parent is not None and os.getppid() != self._parent
+
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.wait(HEARTBEAT_S):
+            if self.parent_gone():
+                log.warning("the web server that started this worker is gone; finishing the current segment and exiting")
+                self.stop_event.set()
+                continue
             try:
                 if not self._write_state():
                     log.error("worker lease lost; stopping")
@@ -22188,7 +22231,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_b96fb9268a61__
+__STUDIO_EOF_526e2d3e99b0__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
@@ -22736,7 +22779,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_beef9cef3bdb__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_5c585e31bebf__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23121,13 +23164,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.1" and st["version_label"] == "v0.5.1"
+    assert st["version"] == "0.5.2" and st["version_label"] == "v0.5.2"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.1" and "stage" not in a
+    assert a["version_label"] == "v0.5.2" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_beef9cef3bdb__
+__STUDIO_EOF_5c585e31bebf__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -24702,7 +24745,7 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_fe9cb3bfda09__'
+cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_8809f0a6a6de__'
 """Update building blocks: signatures, release selection, hardened network and archive handling, release store, runtime provisioning,
 platform services, provider/storage interfaces. All local; no network, no macOS."""
 from __future__ import annotations
@@ -25179,7 +25222,7 @@ def test_model_cache_setting_is_applied_outside_releases(ctx, tmp_path, monkeypa
     s = ctx.settings().model_copy(deep=True)
     s.models.cache_dir = str(tmp_path / "SSD" / "hf cache")
     ctx.save_settings(s)
-    assert ctx.apply_model_cache_env() == str(tmp_path / "SSD" / "hf cache")
+    assert ctx.apply_model_cache_env(force=True) == str(tmp_path / "SSD" / "hf cache")
 
 
 def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monkeypatch):
@@ -25193,8 +25236,8 @@ def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monke
     monkeypatch.delenv("AUDIOBOOK_STUDIO_ROOT", raising=False)
     create_app(ctx, start_worker=False)
     assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
-__STUDIO_EOF_fe9cb3bfda09__
-cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_0f608c496581__'
+__STUDIO_EOF_8809f0a6a6de__
+cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_4a18f1347cef__'
 """Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
 queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
 from __future__ import annotations
@@ -25895,8 +25938,23 @@ def test_real_process_update_then_failed_update_rolls_back(live):
         assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
     assert pid1 != int((live.tmp / "Audiobook Studio" / "state" / "svc" / "t-app.pid").read_text())     # restarted, not duplicated
     assert ctx.db.schema_version() > 0
-__STUDIO_EOF_0f608c496581__
-cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_f61c128fb6d4__'
+
+
+def test_supervised_worker_exits_when_its_server_disappears(ctx, monkeypatch):
+    import os
+
+    from studio.engines import MockASR, MockEngine
+    from studio.worker import Worker
+
+    monkeypatch.setenv("STUDIO_SUPERVISED_WORKER", "1")
+    w = Worker(ctx, tts=MockEngine({}), asr=MockASR())
+    assert w.parent_gone() is False
+    monkeypatch.setattr(os, "getppid", lambda: 1)              # the server was killed: re-parented to launchd
+    assert w.parent_gone() is True
+    monkeypatch.delenv("STUDIO_SUPERVISED_WORKER")
+    assert Worker(ctx, tts=MockEngine({}), asr=MockASR()).parent_gone() is False     # foreground `studio worker` is never auto-stopped
+__STUDIO_EOF_4a18f1347cef__
+cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_5bb7bcacf24a__'
 """Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
 or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
 from __future__ import annotations
@@ -26324,7 +26382,7 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     s = json.loads((root / "state" / "config" / "settings.json").read_text())
     assert s["storage"]["library_root"].endswith("My Books") and s["models"]["cache_dir"].endswith("hf") and s["server"]["port"] == 7999
     man = json.loads((root / "app" / "service.json").read_text())
-    assert man["python"].endswith("venv-python") and man["label"] == "com.audiobookstudio.app"
+    assert man["python"].replace(chr(92), "/").endswith("app/venv/bin/python") and man["label"] == "com.audiobookstudio.app"
     r = _cli("configure", "--manifest-only", env_extra=env)
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
     r = _cli("doctor", "--json", env_extra=env)
@@ -26358,7 +26416,7 @@ def test_provider_boundaries_do_not_import_each_other_directly():
             assert "launchctl" not in t, p
         if "web" in p.parts:
             assert "github.com" not in t.replace("github.com/salbretsen", ""), p
-__STUDIO_EOF_f61c128fb6d4__
+__STUDIO_EOF_5bb7bcacf24a__
 cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_f5ccd3b476bf__'
 """Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
 (Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
@@ -26510,35 +26568,35 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_a192a0f81683__'
-20261029110146-7205162c
-__STUDIO_EOF_a192a0f81683__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_7e201cbd2da8__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_6b0f70a3b267__'
+20261029121938-4f4dd41b
+__STUDIO_EOF_6b0f70a3b267__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_5b2e197c9ebc__'
 {
-  "version": "0.5.1",
+  "version": "0.5.2",
   "schema_version": 2,
-  "runtime_id": "a1964c5cf7429b65",
-  "build": "20261029110146-7205162c",
+  "runtime_id": "d2cda442365e8c51",
+  "build": "20261029121938-4f4dd41b",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_7e201cbd2da8__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e797bca5c6a9__'
+__STUDIO_EOF_5b2e197c9ebc__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_15ecb92d6063__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
-94ed4bd3459375e05a3df9b4a962537066a91d32942bdf5f74eaad078077ac76  bin/audiobook-studio
+2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 39a3966fcd35d41ab88375809ba46214365ee14b1e07a7f7eff14799f02dfe73  bin/start-studio
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-587b0a3bbf6adbb4fd8d9adc3a03db69dbd02ed91b5c9f02706f339886bc23f3  CHANGELOG.md
+d2c41a64a9d1282043f446e274399b9677708916f2449e0b6cfe6647d51a8f8f  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-c6815649c778531ae2347999e5cb240b230eade97edc0fedbdc93b6ee585a6f5  README.md
+babc06ffbe7660e8968fec27c8b59c11ecc6e94a28e78ea11033b3d743d7ff88  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
-a1964c5cf7429b65b7f8e5f900ce93e88164ca027daaa2cb33f88da716f8eb63  requirements.lock
+d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-788d2ec1f2be03253a446b6829d1befac98b07504a2d887e48e80998760fe78c  studio/__init__.py
+29d383fc8d2ef1bba8aa0f4c9258ef476ae8fbaf9c1e05f1909fa956bf60e8d3  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -26546,13 +26604,13 @@ c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.p
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 7ce437e62ff89d0641c6ad43841ffc2a7ba50d02aa3d45a771853dd59bcbb1cd  studio/cli.py
 3c1ee291a3134db98a59eb5ae232eaffdd9b7722995e6b3cdbdc4fed22edf1c5  studio/config.py
-66f9ceaab118a06aed0501e29d6593289097b25fbc47aa2485750bff64adee89  studio/context.py
+b388aeab35b65f3947e58c9e74267af3518b971195a487185a01cd21cebf95dc  studio/context.py
 be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
 5385954828543ca6765fd4a0dd1ae525d4c9aea182833fa6324e5153462b4ccf  studio/doctor.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
 b799e30827000692564e06be6b625527b617e24f96fa01579dafc9d547a259ad  studio/legacy.py
-60f824b909596836a00fc9e0793a8552f59470ddc98b47a7701414d111fd6e29  studio/lifecycle_cli.py
+d9d33993f68e0a811710bde26ef0ad7fe2aef808a6ecc7eeb6a2a7fe6bda7f01  studio/lifecycle_cli.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
 91b51363ce097d3d38f1702bb996dbccd6947fc62038d0a698f040416f2338f7  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
@@ -26591,11 +26649,11 @@ b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/
 9aac2ab730c9b792a5fdf13f1598dd1a7f44714ee8b13a0ff5a4d24e1359163c  studio/update/repository.py
 5b0fe9ea649c04a158cfd4b9404b446d2f543540d3885d86634fbf8ae0a1b33a  studio/update/runtime.py
 1f126a21193fd4773fd5e789f262664d67d4a80692a501cdc8f219e5a015a1a1  studio/update/status.py
-16ce831ef9f1799c798118cd3d4427a37f1ebb55160c0fa346fa0566955b91f8  studio/update/store.py
+15d647851798a7a65473059753e30f0da9b4ff322bbc7e535d6b59dd2d1f6d53  studio/update/store.py
 812c188aa1067635eb61988c51320a107c49e9cd428a697d1cc872e4745468a0  studio/update/trust.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-a4a05d4a3736ad57c590b466cc0fd4c32a08a392e23400711b6ae1165bab5e90  studio/web/app.py
+829d0a5bfa4d7ceff7b16abf85367c87b5396e59a23820ee501aaebe8f35931c  studio/web/app.py
 5fd7f2dbd3bc7004cace51a787508a0f322590d8483dff350f0f1d8950fd9380  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
@@ -26620,22 +26678,22 @@ ecb83b1aa9b645bf02514ea4589597f384c2d64e550bca1cda8814b93b76a195  studio/web/sta
 513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
 5b103fd18964b237befbb368c8e9ca9ed100209b962dda1d3d06eeaacbeb85f6  studio/web/update_api.py
-b96fb9268a619a4f2cd7f29e289184d78c144cc0788c13fd99294c22255a8cfc  studio/worker.py
+526e2d3e99b0d3af5529a536e2048c2e6a26dd06e3e0afecb01fe3933ee091c5  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-beef9cef3bdb67ac0ee73eeac53c6b7c3f8d861c0fd5156b29514921889fff7b  tests/test_integration.py
+5c585e31bebf707a8cbeedea68647b17c2d7f3387728acd776ae3241328cf322  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-fe9cb3bfda090ad2ee4e5219b083e38d071d108f1e680d3e8d8e9e3a6b436498  tests/test_update_core.py
-0f608c49658109191e88f9fac47c4c9d910659de911513cd9ce9758403739a84  tests/test_update_flow.py
-f61c128fb6d4a619bed81d4cca5132c6d87229769aedfec8dd9610a5da856425  tests/test_update_install.py
+8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
+4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
+5bb7bcacf24aa1f38a8db4b53969001082ea56c0ce39d2f2340a4e756467a31f  tests/test_update_install.py
 f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-a192a0f81683125edb8156f4987d99b8d8fe6b9bef45dd6dc2030011f5c83500  BUILD
-7e201cbd2da8d17c69c6dcce9f20d3a37c479ba6462c88ca93626dab0524e02a  release.json
-__STUDIO_EOF_e797bca5c6a9__
+6b0f70a3b267bffdb5b5ebde023d0715f7fe2276c95b93c73b14ce85b83c5bb6  BUILD
+5b2e197c9ebc96788cb339ff90d2bebcad2359dfb9c3060f48c08f1b18ae2ee8  release.json
+__STUDIO_EOF_15ecb92d6063__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.
@@ -26699,7 +26757,7 @@ fetch_pinned() {
 # ----------------------------------------------------------------------------- uninstall
 if [ "$UNINSTALL" = 1 ]; then
   say "Removing the Audiobook Studio login service"
-  PY="$ROOT/app/venv-python"
+  PY="$ROOT/app/venv/bin/python"
   if [ -x "$PY" ] && [ -d "$ROOT/app/current" ]; then
     AUDIOBOOK_STUDIO_ROOT="$ROOT" "$ROOT/audiobook-studio" service uninstall || true
   else
@@ -26823,7 +26881,8 @@ uv_env() {
 install_release() {
   say "Installing Audiobook Studio $STUDIO_VERSION"
   local rel="$ROOT/app/releases/$STUDIO_VERSION" stage
-  if [ -d "$rel" ] && verify_manifest "$rel"; then ok "release $STUDIO_VERSION already unpacked and verified"
+  # reuse only the very same build (a folder is always consistent with its own manifest, so that alone proves nothing about WHICH build it is)
+  if [ -d "$rel" ] && [ "$(cat "$rel/BUILD" 2>/dev/null)" = "$BUILD_ID" ] && verify_manifest "$rel"; then ok "release $STUDIO_VERSION (build $BUILD_ID) already unpacked and verified"
   else
     stage="$ROOT/app/releases/.stage-$$"
     rm -rf "$stage"; mkdir -p "$ROOT/app/releases"
@@ -26858,7 +26917,7 @@ install_runtime() {
     ok "environment $id ready"
   fi
   PY="$venv/bin/python"
-  ln -sfn "$PY" "$ROOT/app/venv-python.new" && mv -f -h "$ROOT/app/venv-python.new" "$ROOT/app/venv-python"
+  ln -sfn "$venv" "$ROOT/app/venv.new" && mv -f -h "$ROOT/app/venv.new" "$ROOT/app/venv"
   info "Checking Apple Silicon / MLX compatibility ..."
   if "$PY" -c 'import mlx.core as mx, sys; sys.exit(0 if mx.metal.is_available() else 3)' 2>/dev/null; then ok "MLX imports and Metal is available"
   else die "MLX could not use the GPU on this Mac (Metal unavailable or MLX failed to import). Apple Silicon with macOS $MIN_MACOS or later is required."; fi

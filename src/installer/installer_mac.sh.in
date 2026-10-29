@@ -25,6 +25,7 @@ set -Eeuo pipefail
 umask 022
 
 STUDIO_VERSION="@@VERSION@@"
+STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
 BUILD_ID="@@BUILD_ID@@"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
@@ -204,7 +205,7 @@ fetch_pinned() {
 # ----------------------------------------------------------------------------- uninstall
 if [ "$UNINSTALL" = 1 ]; then
   say "Removing the Audiobook Studio login service"
-  PY="$ROOT/app/venv-python"
+  PY="$ROOT/app/venv/bin/python"
   if [ -x "$PY" ] && [ -d "$ROOT/app/current" ]; then
     AUDIOBOOK_STUDIO_ROOT="$ROOT" "$ROOT/audiobook-studio" service uninstall || true
   else
@@ -328,7 +329,8 @@ uv_env() {
 install_release() {
   say "Installing Audiobook Studio $STUDIO_VERSION"
   local rel="$ROOT/app/releases/$STUDIO_VERSION" stage
-  if [ -d "$rel" ] && verify_manifest "$rel"; then ok "release $STUDIO_VERSION already unpacked and verified"
+  # reuse only the very same build (a folder is always consistent with its own manifest, so that alone proves nothing about WHICH build it is)
+  if [ -d "$rel" ] && [ "$(cat "$rel/BUILD" 2>/dev/null)" = "$BUILD_ID" ] && verify_manifest "$rel"; then ok "release $STUDIO_VERSION (build $BUILD_ID) already unpacked and verified"
   else
     stage="$ROOT/app/releases/.stage-$$"
     rm -rf "$stage"; mkdir -p "$ROOT/app/releases"
@@ -363,7 +365,7 @@ install_runtime() {
     ok "environment $id ready"
   fi
   PY="$venv/bin/python"
-  ln -sfn "$PY" "$ROOT/app/venv-python.new" && mv -f -h "$ROOT/app/venv-python.new" "$ROOT/app/venv-python"
+  ln -sfn "$venv" "$ROOT/app/venv.new" && mv -f -h "$ROOT/app/venv.new" "$ROOT/app/venv"
   info "Checking Apple Silicon / MLX compatibility ..."
   if "$PY" -c 'import mlx.core as mx, sys; sys.exit(0 if mx.metal.is_available() else 3)' 2>/dev/null; then ok "MLX imports and Metal is available"
   else die "MLX could not use the GPU on this Mac (Metal unavailable or MLX failed to import). Apple Silicon with macOS $MIN_MACOS or later is required."; fi

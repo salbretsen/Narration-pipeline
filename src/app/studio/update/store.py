@@ -61,8 +61,10 @@ class ReleaseStore:
                 pass
 
     def link_python(self, python: Path) -> None:
-        """Keep ``app/venv-python`` (the interpreter launchd and the CLI run) pointing at the active release's private environment."""
-        self._swap_symlink(Path(python), self.layout.app / "venv-python", directory=False)
+        """Keep ``app/venv`` (a directory link; the interpreter launchd and the CLI run is ``app/venv/bin/python``) pointing at the active
+        release's private environment. It must be the *directory* that is linked: Python finds ``pyvenv.cfg`` next to the path it was started
+        through, so a symlink to the interpreter file alone would silently run without the environment's packages (found on the first Mac run)."""
+        self._swap_symlink(Path(python).parent.parent, self.layout.app / "venv", directory=True)
 
     def remove(self, version: str) -> None:
         if version in (self.current(), self.previous()):

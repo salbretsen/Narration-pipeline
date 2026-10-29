@@ -107,6 +107,7 @@ class Worker:
         self._hb_thread: threading.Thread | None = None
         self._state = {"state": "idle", "job": None, "sid": None, "message": ""}
         self.caffeinate = _Caffeinate(ctx.settings().worker.prevent_sleep)
+        self._parent = os.getppid() if os.environ.get("STUDIO_SUPERVISED_WORKER") == "1" else None
         self.gate = FileQueueScheduler(ctx.run_dir)  # update drain: see scheduler.py
 
     # -------------------------------------------------------------- engines
@@ -157,8 +158,17 @@ class Worker:
             )
             return cur.rowcount == 1
 
+    def parent_gone(self) -> bool:
+        """A supervised worker whose server was killed is re-parented (to launchd/init). It must not linger holding the GPU lease with
+        a stale environment or old code: the restarted server starts a fresh worker. (Found on the Mac: a worker survived `kill -9` of its server.)"""
+        return self._parent is not None and os.getppid() != self._parent
+
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.wait(HEARTBEAT_S):
+            if self.parent_gone():
+                log.warning("the web server that started this worker is gone; finishing the current segment and exiting")
+                self.stop_event.set()
+                continue
             try:
                 if not self._write_state():
                     log.error("worker lease lost; stopping")

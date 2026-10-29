@@ -35,7 +35,7 @@ def service_spec(layout: Layout, port: int, host: str = "127.0.0.1") -> ServiceS
            "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1", "HOME": str(Path.home()),
            "PATH": os.pathsep.join([str(layout.tools_bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
     env.update({k: v for k, v in (info.get("env") or {}).items() if isinstance(k, str) and isinstance(v, str)})
-    return ServiceSpec(label=info.get("label") or DEFAULT_LABEL, program=[str(py), "-m", "studio", "serve"],
+    return ServiceSpec(label=info.get("label") or DEFAULT_LABEL, program=[str(layout.root / "audiobook-studio"), "serve"],
                        working_dir=str(layout.current_link), env=env, stdout_log=str(layout.logs / "launchd.out.log"), port=port, host=host)
 
 
@@ -195,7 +195,7 @@ def _write_manifest(layout: Layout) -> None:
     from .util import atomic_write_text
 
     info = layout.service_info()
-    info.update({"label": info.get("label") or DEFAULT_LABEL, "python": str(layout.app / "venv-python"), "schema": 1})
+    info.update({"label": info.get("label") or DEFAULT_LABEL, "python": str(layout.app / "venv" / "bin" / "python"), "schema": 1})
     atomic_write_text(layout.service_manifest, json.dumps(info, indent=2) + chr(10))
 
 

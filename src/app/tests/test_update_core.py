@@ -474,7 +474,7 @@ def test_model_cache_setting_is_applied_outside_releases(ctx, tmp_path, monkeypa
     s = ctx.settings().model_copy(deep=True)
     s.models.cache_dir = str(tmp_path / "SSD" / "hf cache")
     ctx.save_settings(s)
-    assert ctx.apply_model_cache_env() == str(tmp_path / "SSD" / "hf cache")
+    assert ctx.apply_model_cache_env(force=True) == str(tmp_path / "SSD" / "hf cache")
 
 
 def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monkeypatch):

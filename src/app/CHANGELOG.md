@@ -3,6 +3,16 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.5.2
+- Fixes found by the first real run on the M3 Max (macOS 27; results in doc 10):
+  - Model cache: `HF_HOME` is now set by the launcher (and the LaunchAgent runs the launcher) before Python starts, instead of being changed in-process after
+    `huggingface_hub` was imported (that produced "Tokenizer not loaded"). `Context.apply_model_cache_env` only acts if the library is not imported yet.
+  - A supervised worker exits (after its current segment) when its server disappears, so `kill -9` of the server no longer leaves a stale worker holding the GPU lease.
+  - `requirements.lock` pins `transformers 5.21.0`, `huggingface-hub 2.3.0`, `pydantic 2.14.1` (the combination verified on the Mac).
+  - Re-running an installer build of the same version re-extracts the files (compares the build id).
+- The stable interpreter path is now the directory link `app/venv` (a link to the interpreter file alone ran without the environment).
+- Installer: the version carried a `v` prefix that the release store rejected; the bare version is used for release folders.
+
 ## v0.5.1
 - **Production release-signing key pinned** (id `23bb536587702e29`, public half in `studio/update/pinned_keys.json`). The private key is held outside the
   repository by the owner's assistant session and must be set as the CI secret `RELEASE_SIGNING_KEY`; no release has been signed yet. The updater is
@@ -10,7 +20,7 @@ additions or overhauls inside the current major release; PATCH = minor adjustmen
 
 ## v0.5.0
 Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
-**Not yet run on a Mac** (see `docs/10-installation-and-updates.md`, checks M1-M10) and **no release has been signed** (no production key exists).
+**Verified on the production M3 Max in v0.5.2** (`docs/10-installation-and-updates.md`, "Results of the first hardware run"); no release has been published or signed on GitHub yet.
 - **No-prerequisites installer** `install_audiobook_studio_mac.sh`: needs no Homebrew, Git, Python, pip, FFmpeg, Node, Xcode or Command Line Tools,
   no sudo, and edits no shell profile or system directory. Installs a private Python 3.12 with the pinned `uv`, FFmpeg/FFprobe 9.0.2 (GPLv3 build,
   downloaded not bundled, AAC and MP3 encoders verified) into the app folder, and hash-locked prebuilt wheels (`requirements.lock`, 88 packages,

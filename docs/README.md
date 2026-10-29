@@ -39,5 +39,5 @@ the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end s
 - **Before adding features:** run the baseline checklist in doc 7 so you know what "working" looks like.
 - **v0.5 changes how the app is installed and updated** (doc 10): `install_audiobook_studio_mac.sh` needs no Homebrew/Git/Python/FFmpeg/Xcode; releases live in
   `~/Library/Application Support/Audiobook Studio/app/releases/<ver>`, user data in `state/` and the chosen library; updates are Ed25519-signed and applied by a
-  separate updater. **No production signing key exists yet and nothing has been run on a Mac**: read doc 10's limits before claiming otherwise.
+  separate updater. **Hardware-verified on the M3 Max on 2026-10-29 (doc 10, "Results of the first hardware run"); not verified: real Safari, a truly clean Mac, the real GitHub download path (nothing is published yet).**
 - **v0.3 adds an opt-in narrative layer** (multi-character voices, delivery direction, segment inspector). It is off by default; doc 9 is its reference.

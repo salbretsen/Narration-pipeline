@@ -425,7 +425,7 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     s = json.loads((root / "state" / "config" / "settings.json").read_text())
     assert s["storage"]["library_root"].endswith("My Books") and s["models"]["cache_dir"].endswith("hf") and s["server"]["port"] == 7999
     man = json.loads((root / "app" / "service.json").read_text())
-    assert man["python"].endswith("venv-python") and man["label"] == "com.audiobookstudio.app"
+    assert man["python"].replace(chr(92), "/").endswith("app/venv/bin/python") and man["label"] == "com.audiobookstudio.app"
     r = _cli("configure", "--manifest-only", env_extra=env)
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
     r = _cli("doctor", "--json", env_extra=env)
