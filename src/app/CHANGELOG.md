@@ -3,6 +3,11 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.5.3
+- First release delivered through the real update path (GitHub Releases, signed index, in-app Update Center, new private Python environment built by
+  the updater). No functional change to narration, QA, review or export. Repository history was scrubbed of local network details before this release;
+  the screenshots were removed and the lock tool no longer writes the developer's temp path into `requirements.lock`.
+
 ## v0.5.2
 - Fixes found by the first real run on the M3 Max (macOS 27; results in doc 10):
   - Model cache: `HF_HOME` is now set by the launcher (and the LaunchAgent runs the launcher) before Python starts, instead of being changed in-process after
