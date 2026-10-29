@@ -681,6 +681,7 @@ def get_book(ctx, book_id: int) -> dict:
             ch = r["chapter"]
             st = {x["status"]: x["n"] for x in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE chapter_id=? GROUP BY status", (ch["id"],))}
             out["chapters"].append({"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
+                                    "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
                                     "est_duration_s": ch["est_duration_s"], "status_counts": st, "missing_audio": len(r["problems"]),
                                     "render_current": r["render_current"],
                                     "renders": {k: {"id": v_["id"], "duration_s": v_["duration_s"], "draft": bool(v_["draft"]), "created_at": v_["created_at"],

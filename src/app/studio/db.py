@@ -451,6 +451,7 @@ CREATE TABLE analysis_stages (
 );
 """
 
+# v0.6: pronunciation dictionary + per-voice pace, and chapters.original_title (the parsed title once a chapter title is overridden).
 SCHEMA_V3 = """
 CREATE TABLE IF NOT EXISTS pronunciations (
     id INTEGER PRIMARY KEY,
@@ -466,6 +467,7 @@ CREATE TABLE IF NOT EXISTS pronunciations (
 );
 CREATE INDEX IF NOT EXISTS ix_pron_book ON pronunciations(book_id);
 ALTER TABLE voices ADD COLUMN pace REAL NOT NULL DEFAULT 1.0;
+ALTER TABLE chapters ADD COLUMN original_title TEXT;
 """
 
 # Each migration is (version, sql). Append only; never edit a released migration.
