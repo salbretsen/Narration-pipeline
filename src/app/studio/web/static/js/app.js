@@ -12,8 +12,9 @@ import * as narrative from "./views/narrative.js";
 import * as inspector from "./views/inspector.js";
 import * as updates from "./views/updates.js";
 import * as disk from "./views/disk.js";
+import * as pronunciation from "./views/pronunciation.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
 let cleanup = null;
 let currentKey = "";
 

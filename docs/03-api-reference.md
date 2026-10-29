@@ -117,6 +117,21 @@ List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/
 | POST | `/api/recordings/{rid}/job` | `{mode: check|audition, text?}` → a preview-kind job. `check` = Whisper vs transcript; `audition` = Base-model clone of `text` |
 | POST | `/api/voices/from-recording` | `{recording_id, name, rights_holder, owner_attest, statement}`; `422` if not attested or rated poor |
 
+## Pronunciation and voice pace (C2; `web/pronunciation_api.py`, logic in `pronunciation.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/pronunciations[?book_id=N]` | `{global: [...], book: [...] (only with book_id), pace_range: [0.8, 1.25]}`; an entry is `{id, book_id, scope, written, spoken, case_sensitive, whole_word, enabled, note}` |
+| POST | `/api/pronunciations` | `{written, spoken, book_id?, case_sensitive=false, whole_word=true, note, confirm_invalidate=false}`; `book_id` omitted = global; `409` if the same written form already exists in that dictionary |
+| PATCH | `/api/pronunciations/{id}` | any of `written, spoken, case_sensitive, whole_word, enabled, note, confirm_invalidate` |
+| DELETE | `/api/pronunciations/{id}[?confirm_invalidate=true]` | remove an entry |
+| POST | `/api/pronunciations/try` | `{text, book_id?}` -> `{input, output, changed}`: what the dictionary would hand the voice (nothing is stored) |
+| PUT | `/api/voices/{id}/pace` | `{pace 0.8-1.25, confirm_invalidate}`; `GET /api/voices` items now carry `pace` |
+
+Every write that changes the spoken text of already-rendered segments answers **`409` with `details: {stale_segments, books}`** and changes nothing
+until repeated with `confirm_invalidate: true` (then only those segments go back to `pending`, old takes remain as history, any release approval is
+revoked). Writes that affect no rendered segment succeed immediately with `stale_segments: 0`. Re-queue the book (`POST /api/queue`) to regenerate.
+
 ## Media (all support GET and HEAD, single-range requests, correct MIME)
 
 `/media/attempt/{id}` (a take; `?download=1`) · `/media/chapter/{chapter_id}.{wav|mp3}` · `/media/export/{id}` ·

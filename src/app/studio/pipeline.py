@@ -237,7 +237,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         reusable = reusable_take(conn, book, seg, plan.gen_key)
     check_storage(book)
     max_attempts = int(qa.get("max_attempts", 3))
-    text = spoken_text(seg)
+    text = plan.text  # manuscript/override text after pronunciation-dictionary respellings
+    pace = plan.pace
     if reusable is not None:
         with db.tx() as conn:
             conn.execute("UPDATE segments SET status='passed', selected_attempt_id=?, flag_reason=NULL, attempts_used=0, updated_at=? WHERE id=?",
@@ -287,6 +288,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
 
         audio_arr = A.to_mono_float(res.audio)
         sr = res.sample_rate
+        if abs(pace - 1.0) > 1e-6:  # per-voice pace: pitch-preserving time stretch (the model has no pace control)
+            audio_arr = A.time_stretch(audio_arr, sr, pace)
         seg_path, _alt = take_paths(book, seg, chapter["idx"], f"r{seg['round']}a{attempt_no}.wav")
         seg_path.parent.mkdir(parents=True, exist_ok=True)
         A.write_wav(seg_path, audio_arr, sr)
@@ -299,7 +302,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         }
         atomic_write_text(str(seg_path) + ".json", json.dumps(provenance, ensure_ascii=False, indent=1))
 
-        acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm), qa)
+        acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm * pace), qa)
         issues = list(acoustic["issues"])
         asr_out, ev = None, None
         if verify:

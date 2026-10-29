@@ -57,6 +57,7 @@ Per-book data lives under the book's own recorded directories (the **per-project
 |---|---|
 | `__init__.py` | Version (single source of truth), app name, developer, company, copyright |
 | `config.py` | Pydantic `Settings` (storage, chunking, qa, pauses, models, export, server, worker), `book_snapshot`, `synth_fingerprint`, atomic load/save, loopback check |
+| `pronunciation.py` | Pronunciation dictionary (apply/CRUD/preview) and per-voice pace; reconciles stale segments through `narrative.store.invalidate_changed` |
 | `context.py` | `Context`: home dirs, settings cache (by mtime), `Database`, `event()/audit()/job_log()` helpers, logging setup |
 | `db.py` | SQLite connection (WAL, FK, busy timeout), `tx()` (BEGIN IMMEDIATE), ordered migrations tracked by `PRAGMA user_version` with a pre-migration backup. Schema v1 (see below) |
 | `parsing.py` | `.txt/.md/.docx/.epub` parsers. Chapters of blocks, each block `read` or skipped with a reason (manifest). EPUB: container→OPF→**spine order**, nav/non-linear excluded, notes/images/tables skipped, DRM rejected |
@@ -86,7 +87,7 @@ Per-book data lives under the book's own recorded directories (the **per-project
 **Rule:** business logic belongs in `services.py` (or the domain modules it calls), raising `ServiceError(message, status, details)`.
 Endpoints stay thin. The CLI and smoke test call the same functions.
 
-## Data model (SQLite schema v1, `db.py`)
+## Data model (SQLite schema v1 + v2 + v3, `db.py`)
 
 `voices`, `voice_versions` (immutable versions: model_id, speaker, language, instruct, reference paths/sha, consent JSON);
 `books` (metadata, `settings_json` snapshot, `synth_fingerprint`, `storage_json`, derived `state`); `manuscripts` (original file
@@ -95,6 +96,15 @@ path + SHA-256 + parse manifest); `chapters`; `segments` (`sid` stable id `bk_xx
 model, seed, temperature, spoken text, ASR text/JSON, WER, issues, acoustics, score, passed, RTF, peak memory, fingerprint,
 versions); `jobs`; `job_logs`; `events`; `review_actions`; `audit_log`; `worker_state` (single row lease); `chapter_renders`;
 `exports`; `releases`; `imports` (uploaded manuscripts awaiting confirmation).
+
+**Schema v3 (C2)** adds `pronunciations` (`book_id` NULL = global; `written`, `spoken`, `case_sensitive`, `whole_word`, `enabled`, `note`) and `voices.pace` (REAL, default 1.0).
+Pronunciation entries are applied in `narrative.store.plan_for_segment` (the text handed to the TTS is the dictionary-rewritten `override_text`/`narration_text`/`original_text`; the stored
+texts are never modified; per-book entries override global ones; one regex pass, longest written form first, no chained rewrites). The rewritten text and the voice `pace` (only when not 1.0, so
+existing keys are unchanged) are part of the `gen_key`, so an edit goes through `invalidate_changed` and resets exactly the segments whose key changed (`pronunciation._commit`, rolled back
+and reported as `409` until confirmed). Pace: the Qwen3-TTS API has no pace/speed control, so `pipeline.process_segment` time-stretches the finished take with `audio.time_stretch`
+(NumPy WSOLA, pitch-preserving, bounded 0.8-1.25) before QA, and scales the expected-duration check by the pace. Known limits: ASR is compared with the respelled text, so a
+respelling Whisper writes differently (for example "Her-my-oh-nee" heard as "Hermione") can raise a WER flag, prefer plain-word respellings; the time stretch is not audited on real speech;
+previews ignore pace.
 
 **Schema v2 (v0.3.0)** adds `chapter_text`, `characters`, `nar_spans`, `story_notes`, `directions`, `direction_log`, `director_cache`, `seg_edits`, `segment_history`,
 `analysis_stages`, and columns on `books` (`narrative_json`), `segments` (offsets, speaker, scene, review flags) and `attempts` (`gen_key`, `instruct_used`, ...). Jobs gained the kind
@@ -127,7 +137,7 @@ only that book. `caffeinate -i -w <pid>` holds off idle sleep while work is queu
 
 ## The QA pipeline (`pipeline.process_segment`)
 
-1. Build the spoken text: `override_text` else `narration_text` (a pronounceable rendition of the immutable `original_text`).
+1. Build the spoken text: `override_text` else `narration_text` (a pronounceable rendition of the immutable `original_text`), then the pronunciation dictionary (`plan.text`). A voice `pace` other than 1.0 time-stretches the take after synthesis.
 2. Commit a new `attempts` row and `attempts_used += 1`; derive a deterministic seed from `sid:round:attempt` and, for retries,
    temperature from `models.retry_temperatures`.
 3. Synthesize (preset → `generate_custom_voice`; design → `generate_voice_design`; clone → `generate(ref_audio, ref_text)` and

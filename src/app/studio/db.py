@@ -451,10 +451,28 @@ CREATE TABLE analysis_stages (
 );
 """
 
+SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS pronunciations (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER REFERENCES books(id),
+    written TEXT NOT NULL,
+    spoken TEXT NOT NULL,
+    case_sensitive INTEGER NOT NULL DEFAULT 0,
+    whole_word INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    note TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pron_book ON pronunciations(book_id);
+ALTER TABLE voices ADD COLUMN pace REAL NOT NULL DEFAULT 1.0;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
     (2, SCHEMA_V2),
+    (3, SCHEMA_V3),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

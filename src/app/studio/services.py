@@ -70,7 +70,7 @@ def _voice_dict(conn, v: dict) -> dict:
     used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
     return {
         "id": v["id"], "uid": v["uid"], "name": v["name"], "kind": v["kind"], "description": v["description"], "builtin": bool(v["builtin"]),
-        "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used,
+        "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used, "pace": float(v.get("pace") or 1.0),
         "version": {"id": vv.get("id"), "version": vv.get("version"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                     "language": vv.get("language"), "instruct": vv.get("instruct"), "ref_text": vv.get("ref_text"),
                     "ref_duration_s": vv.get("ref_duration_s"), "has_reference": bool(vv.get("ref_audio_path")),

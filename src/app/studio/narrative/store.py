@@ -350,6 +350,7 @@ class Plan:
     direction: dict | None
     text: str
     voice_kind: str = "preset"
+    pace: float = 1.0
 
 
 def spoken_text(seg: dict) -> str:
@@ -390,14 +391,17 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
             delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery)
         else:
             info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
-    text = spoken_text(seg)
+    from ..pronunciation import apply_for_book
+
+    text = apply_for_book(conn, book["id"], spoken_text(seg))  # dictionary respellings; the stored text is untouched
+    pace = float(v.get("pace") or 1.0)
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
     snap = loads(book["settings_json"], {}).get("models", {})
     key = short_hash(dumps({
         "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
         "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
-        "r": snap.get("repetition_penalty")}), 20)
-    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"])
+        "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {})}), 20)
+    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
