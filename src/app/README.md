@@ -1,6 +1,6 @@
 # Audiobook Studio
 
-**v0.5.5** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.6** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac

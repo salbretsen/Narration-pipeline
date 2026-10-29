@@ -93,7 +93,7 @@ Reset lower parts when a higher part increments. The version appears in the Abou
 Day-to-day work happens on `dev` (or topic/version branches merged into it). Promotion to stable is a fast-forward of `main` to the verified
 commit, then the plain tag. `main` therefore always equals what stable users run. The Release workflow refuses a plain `vX.Y.Z` tag whose
 commit is not already on `origin/main` (beta tags: `origin/dev` or `origin/main`) and refuses to re-create an existing release.
-Owner-side settings still to apply (roadmap B3): protect `main` and `v*` tags, require the CI check.
+No GitHub branch or tag protection is used; the workflow guard is the only enforcement. This is a deliberately simple tool.
 
 ## Working-style notes for AI sessions
 

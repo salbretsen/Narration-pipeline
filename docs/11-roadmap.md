@@ -29,11 +29,11 @@ triggers on any `v*` tag from any branch and does not check that the commit has 
 3. **Promotion** to stable is a fast-forward of `main` to the verified `dev` commit, followed by the plain tag `v0.6.0`. The gate is the checklist in doc 10
    (tests, installer shellcheck, signed update through the real path, smoke test on the Mac). `main` therefore always equals "what stable users run".
 4. Workflow guard: the Release workflow refuses a plain `vX.Y.Z` tag unless its commit is an ancestor of `origin/main`, and refuses to move or re-create an
-   existing release. Protect `main` (no force-push, require the CI check) and protect `v*` tags in repository settings.
+   existing release. No GitHub branch or tag protection rules: the owner chose to keep setup simple, so the guard is the only enforcement.
 5. Versioning is X.Y.Z: X = Major (owner only), Y = Feature (any new feature), Z = Minor/Patch (bug fix, feature alteration, docs, housekeeping). I bump Y and Z; CHANGELOG and version-pinned tests move with every bump.
 
 **Done in v0.5.5 (locally, nothing pushed):** `main` fast-forwarded to the verified release v0.5.3, `dev` created at v0.5.5, workflow guard added.
-**Still yours:** push `main`, `dev` and the tags, and apply the repository settings in B3 (protect `main` and `v*` tags, require the CI check).
+Nothing else is required of the owner; pushing is done only when asked.
 
 ## 2. Roadmap
 
@@ -54,7 +54,7 @@ triggers on any `v*` tag from any branch and does not check that the commit has 
 |---|---|---|---|---|
 | B1 | Add a `LICENSE` | S | P1 | *needs owner decision* (the repo is public and has none, so by default all rights are reserved) |
 | B2 | Ask GitHub Support to purge the old unreachable commits (`98117b6`, `64c1b8d`) | S | P1 | only Support can; hashes are in the sweep notes |
-| B3 | Branch and tag protection, required reviewers on the `release` environment, pin Actions to commit SHAs | S | P1 | owner-side settings; I can write the exact steps |
+| B3 | ~~Branch and tag protection~~ dropped by the owner (too much setup for a simple tool). Optional later: pin Actions to commit SHAs | S | P3 | no owner work |
 | B4 | Key hygiene: offline backup of the signing key, rotation rehearsal (add a second key, sign with it, drop the first) | M | P2 | procedure is in doc 10; never rehearsed |
 | B5 | Public-repo scrub rule in CI: fail on private IPs, `.lan` hostnames, home paths and key blocks | S | P2 | turns today's manual sweep into a check |
 | B6 | Move the commit email to the GitHub no-reply address | S | P3 | optional; applies to future commits only |
@@ -90,7 +90,7 @@ triggers on any `v*` tag from any branch and does not check that the commit has 
 5. Is the Mac meant to serve the LAN permanently (today: yes, HTTP 8080 and HTTPS 8443, sign-in required)? If not, loopback-only is the safer default.
 
 ## 3. Suggested order
-1. Decide E2, then B1-B3 and A4 (small, remove the sharpest edges).
+1. Decide E2, then B1, B2 and A4 (small, remove the sharpest edges).
 2. A1, A2, A3 and A5 (finish proving v0.5 and the channel model; A1 and A2 need you or hardware).
 3. C1, then C2 and C3 as the next feature releases (each a beta first, then promoted).
 4. C5 and C6 when you have time for long hardware runs; D-items only on demand.

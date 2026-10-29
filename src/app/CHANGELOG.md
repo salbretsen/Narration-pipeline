@@ -3,6 +3,9 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.5.6
+- Documentation only: dropped the GitHub branch/tag protection setup (roadmap B3) as unnecessary for this tool. The automatic workflow guard stays; no owner-side configuration is required.
+
 ## v0.5.5
 - Branch and channel policy adopted (docs/11-roadmap.md section 1, owner-approved): `main` = stable (`vX.Y.Z` tags), `dev` = beta (`vX.Y.Z-beta.N` tags),
   day-to-day work on `dev`, promotion to stable by fast-forwarding `main`.

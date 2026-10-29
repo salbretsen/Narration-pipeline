@@ -173,7 +173,7 @@ installer out of band. Never reuse a leaked key.
 3. Tag `vX.Y.Z` matching `__version__`. `release.yml` tests, builds, then (in the protected environment) signs, **verifies the produced index against the
    pinned key** (`tools/verify_index.py`, which also checks archive size/hash), and only then publishes the release and replaces the rolling
    `index-<channel>` asset. With no secret it publishes a clearly labelled **UNSIGNED prerelease and no index**; nothing is ever reported as signed
-   unless a key was present. Hardening to consider: pin the actions to commit SHAs, restrict who can push `v*` tags (tag protection rules).
+   unless a key was present. Optional hardening: pin the actions to commit SHAs. Tag/branch protection rules are intentionally not used.
 
 ## 5. The Update Center
 
