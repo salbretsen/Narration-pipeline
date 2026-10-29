@@ -20,6 +20,7 @@ If you are a new session (human or AI), read these in order. Each file is self-c
 | 8 | [08-decisions-gotchas-backlog.md](08-decisions-gotchas-backlog.md) | Why things are the way they are, traps already hit, known limits, backlog |
 | 9 | [09-narrative-pipeline.md](09-narrative-pipeline.md) | v0.3 semantic segmentation, Narrative Director, continuity, characters, per-model delivery, caching |
 | 10 | [10-installation-and-updates.md](10-installation-and-updates.md) | v0.5 no-prerequisite macOS installer, per-user launchd service, signed in-app updates, migration, release/CI/signing, provider interfaces, **manual Mac checklist** |
+| 11 | [11-roadmap.md](11-roadmap.md) | **Draft for owner review:** proposed branch/tag/channel policy, the full remaining roadmap with sizes and priorities, and the questions waiting on the owner |
 
 Also: `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
 the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end scripts), `screenshots/`.

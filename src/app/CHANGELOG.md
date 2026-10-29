@@ -3,6 +3,9 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.5.4
+- Documentation only: `docs/11-roadmap.md` (draft for owner review: branch/tag/channel policy, remaining roadmap, open owner decisions). Not yet tagged or published.
+
 ## v0.5.3
 - First release delivered through the real update path (GitHub Releases, signed index, in-app Update Center, new private Python environment built by
   the updater). No functional change to narration, QA, review or export. Repository history was scrubbed of local network details before this release;

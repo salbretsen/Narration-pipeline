@@ -6,7 +6,7 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
