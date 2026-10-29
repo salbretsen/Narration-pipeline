@@ -31,7 +31,8 @@ ALLOWED_USERS = {"user", "username", "you", "yourname", "your-name", "name", "me
                  "shared", "runner", "public", "default", "all", "admin", "example", "test", "tester", "x", "foo",
                  "u"}  # "u": dummy user in updater path tests
 # This script and its test spell out the patterns on purpose.
-SELF_EXEMPT = {"tools/scrub_check.py", "src/app/tests/test_scrub_check.py"}
+# The generated installers embed the exempt files above verbatim; their sources are scanned directly, so the copies are skipped.
+SELF_EXEMPT = {"tools/scrub_check.py", "src/app/tests/test_scrub_check.py", "install_audiobook_studio_mac.sh", "install_audiobook_studio_claude.sh"}
 
 IP_RE = re.compile(r"(?<![\d.])(10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})(?![\d])")
 HOST_RE = re.compile(r"(?<![\w.-])([A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*\.(?:lan|local))(?![\w-])", re.I)

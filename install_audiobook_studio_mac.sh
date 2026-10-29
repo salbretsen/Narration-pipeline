@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.9 (build 20261029134344-ffeba3b1)
+#  Version v0.6.0 (build 20261029140304-348e7bba)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.9"
+STUDIO_VERSION="v0.6.0"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261029134344-ffeba3b1"
+BUILD_ID="20261029140304-348e7bba"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,34 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_d077c533c49d__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_006062d92868__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.6.0
+First feature release after v0.5 (built by six parallel work streams; mock engine only, nothing in this release has been run on the Mac).
+- Settings > Narrative > Local LLM: **Test connection** button. Checks the address and model name typed in the form (saved or not): reachable, key accepted,
+  model listed, one tiny question answered. Touches no book.
+- Pronunciation dictionary, global and per book: respellings change only the text sent to the voice, never the manuscript. A Pronunciation page adds entries
+  and has a Try box. Changing an entry re-renders only the passages that contain it, after you confirm. Per-voice pace (0.8-1.25) applied as a pitch-preserving
+  time stretch, because the speech model has no pace control.
+- Disk & Backups (admin): per-book and per-category usage with free space; purge superseded takes, exports or masters (selected and approved takes always kept) and
+  delete a book, with explicit confirmation, audited, refused while queued or rendering; single-zip book backup and restore-as-new-book; verified SQLite backup.
+- Per-chapter tools: regenerate a whole chapter (confirmation; revokes release approval) and edit chapter titles (parsed title preserved and restorable; the
+  chapter master is marked outdated until re-assembled). Single-chapter M4B export and cover upload are documented and covered by tests; generated placeholder
+  covers are not included (Pillow is not a dependency).
+- Reference lab: compare several takes side by side (verdict, length, peak/clipping, noise, voice-to-noise, Whisper match, audition) with an advisory suggestion;
+  pick the one to use. `GET /api/recordings/compare`.
+- Audit and review records carry the signed-in user's name instead of "operator" (work done by the background worker stays "system"); the QA report lists each
+  review action's actor.
+- Manual rollback: `audiobook-studio update --rollback` and a "Roll back to previous version" button in Updates (admin only, confirmation, refuses if the
+  previous release cannot open the current database schema). After each install or rollback the updater deletes tool archives in `app/downloads`, prunes unused
+  runtimes and empty staging folders.
+- `tools/scrub_check.py` (private IPs, `.lan`/`.local` hosts, home paths, PEM private keys) runs in CI.
+- Container image definition (`Dockerfile`, `docs/12-container.md`): mock/CPU only, tag-based upgrades; written, NOT built, NOT tested.
+- Database schema v3 (`pronunciations`, `voices.pace`, `chapters.original_title`); the migration is applied automatically and keeps all data.
 
 ## v0.5.9
 - The installer's final summary now lists every web address: HTTP and HTTPS on this Mac, and on the network by IP address and `.local` name, read from the saved settings.
@@ -622,7 +645,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_d077c533c49d__
+__STUDIO_EOF_006062d92868__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -652,10 +675,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_8e870dd41b8f__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_d632224bbc14__'
 # Audiobook Studio
 
-**v0.5.9** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.6.0** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -987,7 +1010,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_8e870dd41b8f__
+__STUDIO_EOF_d632224bbc14__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2786,7 +2809,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_ee5a6bb93068__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_02cdff442882__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2795,13 +2818,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.5.9"
+__version__ = "0.6.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_ee5a6bb93068__
+__STUDIO_EOF_02cdff442882__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -2983,7 +3006,7 @@ def evaluate(ref_text: str, hyp_text: str, words: list[dict] | None = None, dura
 def _issue(severity: str, kind: str, message: str, at: float | None, words: list) -> dict:
     return {"severity": severity, "kind": kind, "message": message, "at_s": at, "words": words, "source": "asr"}
 __STUDIO_EOF_c9c866d2c8aa__
-cat > "$DEST/studio/assembly.py" <<'__STUDIO_EOF_6cc996855af9__'
+cat > "$DEST/studio/assembly.py" <<'__STUDIO_EOF_75ffff87704b__'
 """Chapter mastering and book export (WAV master, MP3, chapter-marked M4B, ZIP).
 
 Assembly never hides gaps: a chapter with any segment lacking a usable selected take, or
@@ -3041,6 +3064,9 @@ def takes_digest(conn, book: dict, chapter_id: int) -> str:
     snap = loads(book["settings_json"], {})
     payload = {"sel": [(r["sid"], r["selected_attempt_id"]) for r in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
                "meta": [book["title"], book["author"]]}
+    ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    if ov:  # only retitled chapters, so digests of existing renders stay unchanged
+        payload["chapter_title"] = ov["title"]
     return short_hash(dumps(payload), 16)
 
 
@@ -3308,8 +3334,8 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
                            (book_id, kind, label + (" (DRAFT)" if draft else ""), str(out), 1 if draft else 0, size, info.get("duration_s"), dumps(info), now()))
         ctx.event(conn, "export", f"{label}{' (draft)' if draft else ''} exported for '{book['title']}'", book_id)
     return {"export_id": cur.lastrowid, "path": str(out), "draft": draft, "size_bytes": size, "probe": info}
-__STUDIO_EOF_6cc996855af9__
-cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_3d4d07dc9ae9__'
+__STUDIO_EOF_75ffff87704b__
+cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_837ab7a7fa97__'
 """Audio I/O, acoustic QA and FFmpeg/ffprobe helpers.
 
 All intermediate takes are 16-bit PCM mono WAV written atomically. Reading uses the stdlib
@@ -3400,6 +3426,42 @@ def resample_linear(a: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     x_old = np.linspace(0.0, 1.0, num=a.size, endpoint=False)
     x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False)
     return np.interp(x_new, x_old, a).astype(np.float32)
+
+
+def time_stretch(a: np.ndarray, sr: int, rate: float) -> np.ndarray:
+    """Change speaking pace without changing pitch (WSOLA, NumPy only). ``rate`` > 1 is faster/shorter,
+    < 1 is slower/longer. Intended for modest factors (about 0.8-1.25); quality degrades beyond that."""
+    a = np.asarray(a, dtype=np.float32).reshape(-1)
+    if abs(rate - 1.0) < 1e-3 or a.size < int(sr * 0.2) or rate <= 0:
+        return a
+    n = int(sr * 0.04) // 2 * 2          # 40 ms frames
+    hs = n // 2                            # synthesis hop (50% overlap, periodic Hann sums to 1)
+    tol = int(sr * 0.012)                  # search +-12 ms for the best-matching splice point
+    ha = hs * rate                         # analysis hop
+    win = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)).astype(np.float32)
+    pad = n + tol
+    x = np.concatenate([np.zeros(pad, np.float32), a, np.zeros(pad + n, np.float32)])
+    out_len = int(a.size / rate)
+    out = np.zeros(out_len + 3 * n, np.float32)
+    prev = None
+    m = 0
+    while True:
+        o = m * hs
+        nominal = pad + int(round((m - 1) * ha))
+        if o + n > out.size or nominal + n + tol > x.size:
+            break
+        if prev is None:
+            pos = nominal
+        else:
+            target = x[prev + hs: prev + hs + n]
+            lo = max(0, nominal - tol)
+            cand = np.lib.stride_tricks.sliding_window_view(x[lo: nominal + tol + n], n)
+            score = cand @ target / np.sqrt(np.einsum("ij,ij->i", cand, cand) + 1e-6)
+            pos = lo + int(np.argmax(score))
+        out[o: o + n] += win * x[pos: pos + n]
+        prev = pos
+        m += 1
+    return out[hs: hs + out_len].astype(np.float32)
 
 
 # ---------------------------------------------------------------- acoustic QA
@@ -3667,7 +3729,81 @@ def convert_reference(src: Path, dst: Path, sr: int = 24000, min_s: float = 3.0,
     if info.get("sample_rate") and info["sample_rate"] < 16000:
         warnings.append(f"Source sample rate is only {info['sample_rate']} Hz; cloning quality may suffer.")
     return {"duration_s": round(dur, 2), "source": info, "sample_rate": rate, "warnings": warnings}
-__STUDIO_EOF_3d4d07dc9ae9__
+__STUDIO_EOF_837ab7a7fa97__
+cat > "$DEST/studio/chapters.py" <<'__STUDIO_EOF_2a0318ca98f9__'
+"""Per-chapter tools: regenerate a whole chapter, edit chapter titles (override), cover capability.
+
+Single-chapter export already exists as export kind ``chapter_m4b`` (assembly.export_book); it is
+gated by the same "no segment without usable audio" rule as the book export and is labelled DRAFT
+until the book has an active release approval.
+
+Titles: ``chapters.title`` always holds the *effective* title (so markers, exports, reports and
+file names need no change). ``chapters.original_title`` holds the parsed title once overridden and
+is NULL otherwise. A title change never touches segments or takes; it only makes the chapter
+master outdated (its tags/markers change), which a re-assemble fixes without any re-synthesis.
+"""
+from __future__ import annotations
+
+from .db import row, rows
+from .services import NeedsConfirmation, ServiceError, _review, _revoke, enqueue_book, get_book
+from .util import now
+from .worker import refresh_book_state
+
+
+def placeholder_cover_available() -> bool:
+    """Generated placeholder covers need Pillow, which is not a dependency; so: unavailable."""
+    try:
+        import PIL  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def regenerate_chapter(ctx, book_id: int, chapter_id: int, confirm: bool = False) -> dict:
+    with ctx.db.tx() as conn:
+        ch = row(conn, "SELECT * FROM chapters WHERE id=? AND book_id=?", (chapter_id, book_id))
+        if not ch:
+            raise ServiceError("Chapter not found", 404)
+        if not row(conn, "SELECT id FROM books WHERE id=? AND archived=0", (book_id,)):
+            raise ServiceError("Book not found", 404)
+        segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+        if any(s["status"] == "synthesizing" for s in segs):
+            raise ServiceError("A segment of this chapter is rendering right now. Pause the job first.", 409)
+        rendered = [s for s in segs if s["status"] != "pending"]
+        if not rendered:
+            return {"ok": True, "regenerated": 0, "already_pending": True, "chapter_id": chapter_id}
+        if not confirm:
+            raise NeedsConfirmation(f"{len(rendered)} rendered segment(s) of chapter {ch['idx']} '{ch['title']}' will be regenerated. "
+                                    "Old takes are kept as history. Any release approval will be revoked.", {"rendered_segments": len(rendered)})
+        conn.execute("""UPDATE segments SET round=round+1, attempts_used=0, status='pending', selected_attempt_id=NULL, flag_reason=NULL, updated_at=?
+                        WHERE chapter_id=? AND status<>'pending'""", (now(), chapter_id))
+        conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (chapter_id,))
+        for s in rendered:
+            _review(conn, ctx, s, "regenerate", {"previous_status": s["status"], "previous_attempt": s["selected_attempt_id"], "scope": "chapter"})
+        _revoke(conn, ctx, book_id, f"chapter {ch['idx']} regenerated")
+        refresh_book_state(conn, book_id)
+    enqueue_book(ctx, book_id, front=True)
+    return {"ok": True, "regenerated": len(rendered), "chapter_id": chapter_id}
+
+
+def set_chapter_title(ctx, book_id: int, chapter_id: int, title: str | None) -> dict:
+    """Set a title override (non-empty) or restore the parsed title (empty/None)."""
+    new = " ".join((title or "").split())[:300]
+    with ctx.db.tx() as conn:
+        ch = row(conn, "SELECT * FROM chapters WHERE id=? AND book_id=?", (chapter_id, book_id))
+        if not ch:
+            raise ServiceError("Chapter not found", 404)
+        original = ch["original_title"] if ch["original_title"] is not None else ch["title"]
+        if not new or new == original:
+            conn.execute("UPDATE chapters SET title=?, original_title=NULL WHERE id=?", (original, chapter_id))
+            effective = original
+        else:
+            conn.execute("UPDATE chapters SET title=?, original_title=? WHERE id=?", (new, original, chapter_id))
+            effective = new
+        if effective != ch["title"]:
+            ctx.audit(conn, "chapter", str(chapter_id), "title", {"from": ch["title"], "to": effective, "original": original})
+    return get_book(ctx, book_id)
+__STUDIO_EOF_2a0318ca98f9__
 cat > "$DEST/studio/chunker.py" <<'__STUDIO_EOF_9f5f1545af60__'
 """Split chapter text into natural narration segments (default 150-400 characters).
 
@@ -4638,7 +4774,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
     }
     return short_hash(dumps(payload), 16)
 __STUDIO_EOF_3c1ee291a313__
-cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_b388aeab35b6__'
+cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_2e4a2a1622be__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
 
@@ -4646,6 +4782,7 @@ import logging
 import os
 import sys
 import threading
+from contextvars import ContextVar
 from pathlib import Path
 
 from .config import STORAGE_CATEGORIES, Settings, load_settings, save_settings
@@ -4655,6 +4792,8 @@ from .util import dumps, now
 
 DEFAULT_HOME = "~/audiobook-studio-claude"
 log = logging.getLogger("studio")
+# Name of the signed-in user for the request being handled (set by the web guard middleware; unset for CLI/worker).
+current_actor: ContextVar[str | None] = ContextVar("studio_current_actor", default=None)
 
 
 def resolve_home() -> Path:
@@ -4769,7 +4908,8 @@ class Context:
             (kind, book_id, message[:2000], level, now()),
         )
 
-    def audit(self, conn, entity: str, entity_id, action: str, detail: dict | None = None, actor: str = "operator") -> None:
+    def audit(self, conn, entity: str, entity_id, action: str, detail: dict | None = None, actor: str | None = None) -> None:
+        actor = resolve_actor(actor)
         conn.execute(
             "INSERT INTO audit_log(entity, entity_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?,?)",
             (entity, None if entity_id is None else str(entity_id), action, dumps(detail or {}), actor, now()),
@@ -4781,6 +4921,13 @@ class Context:
             (job_id, book_id, level, message[:4000], now()),
         )
         log.log(logging.WARNING if level in ("warning", "error") else logging.INFO, "[job %s] %s", job_id, message)
+
+
+def resolve_actor(actor: str | None = None) -> str:
+    """Explicit actor wins; "operator" (the legacy default) and None fall back to the signed-in user of this request."""
+    if actor and actor != "operator":
+        return actor
+    return current_actor.get() or "operator"
 
 
 def setup_logging(ctx: Context, name: str) -> None:
@@ -4797,8 +4944,8 @@ def setup_logging(ctx: Context, name: str) -> None:
     sh._studio = True  # type: ignore[attr-defined]
     root.addHandler(fh)
     root.addHandler(sh)
-__STUDIO_EOF_b388aeab35b6__
-cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_be4c41185c85__'
+__STUDIO_EOF_2e4a2a1622be__
+cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_0220cc10f9e4__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
 
@@ -5252,10 +5399,30 @@ CREATE TABLE analysis_stages (
 );
 """
 
+# v0.6: pronunciation dictionary + per-voice pace, and chapters.original_title (the parsed title once a chapter title is overridden).
+SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS pronunciations (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER REFERENCES books(id),
+    written TEXT NOT NULL,
+    spoken TEXT NOT NULL,
+    case_sensitive INTEGER NOT NULL DEFAULT 0,
+    whole_word INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    note TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_pron_book ON pronunciations(book_id);
+ALTER TABLE voices ADD COLUMN pace REAL NOT NULL DEFAULT 1.0;
+ALTER TABLE chapters ADD COLUMN original_title TEXT;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
     (2, SCHEMA_V2),
+    (3, SCHEMA_V3),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 
@@ -5370,7 +5537,739 @@ def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), defau
 
 def copy_db_file(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
-__STUDIO_EOF_be4c41185c85__
+__STUDIO_EOF_0220cc10f9e4__
+cat > "$DEST/studio/diskmgmt.py" <<'__STUDIO_EOF_21edb86c1d00__'
+"""Disk management (roadmap C3): usage report, delete/purge, and book/database backup and restore.
+
+Safety rules shared by every destructive function here:
+
+* nothing is deleted unless the caller passes ``confirm=True`` (without it a :class:`NeedsConfirmation` carrying a preview is raised);
+* a book with a queued, running or paused job is refused (HTTP 409);
+* every file path read from the database is resolved and must lie inside one of the book's own registered storage directories
+  (``pipeline.book_dirs``) before it is touched, so a tampered row can never reach unrelated files;
+* every action is written to the audit log.
+
+Backup format ("audiobook-studio-book-backup", version 1) is documented in docs/03-api-reference.md and docs/06-deployment-and-operations.md.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import time
+import zipfile
+from pathlib import Path
+
+from .config import STORAGE_CATEGORIES
+from .db import LATEST_VERSION, row, rows
+from .pipeline import book_dirs, resolve_take
+from .services import NeedsConfirmation, ServiceError, _book_storage
+from .storage import SYSTEM_PREFIXES
+from .util import dumps, new_uid, now, safe_filename
+from .worker import refresh_book_state
+
+BACKUP_FORMAT = "audiobook-studio-book-backup"
+BACKUP_VERSION = 1
+BUSY_STATUSES = ("queued", "running", "paused")
+PURGE_SCOPES = ("takes", "exports", "masters")
+_BACKUP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.zip$")
+_UID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_NO_COMPRESS = {".mp3", ".m4b", ".m4a", ".zip", ".png", ".jpg", ".jpeg", ".flac"}
+MAX_RESTORE_BYTES = 200 * 1024**3
+
+# Take (attempt) and per-book category labels shown in the usage report.
+BOOK_CATEGORY_LABELS = {
+    "manuscripts": "Manuscripts", "references": "Voices (book references)", "segments": "Segments (selected takes)",
+    "alternates": "Takes / attempts (alternates)", "reports": "Reports", "masters": "Masters", "exports": "Exports",
+}
+
+
+# ------------------------------------------------------------------ helpers
+
+
+def dir_size(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def file_size(path) -> int:
+    try:
+        return os.lstat(path).st_size if path and os.path.isfile(path) else 0
+    except OSError:
+        return 0
+
+
+def _free(path: Path) -> dict | None:
+    p = Path(path)
+    while not p.exists() and p.parent != p:
+        p = p.parent
+    try:
+        du = shutil.disk_usage(p)
+        return {"path": str(path), "free_bytes": du.free, "total_bytes": du.total, "used_bytes": du.used}
+    except OSError:
+        return None
+
+
+def _inside(path: Path, roots) -> Path | None:
+    """The real path of ``path`` if it lies strictly inside one of ``roots`` (symlinks resolved), else None."""
+    rp = Path(os.path.realpath(path))
+    for r in roots:
+        rr = Path(os.path.realpath(r))
+        if rr in rp.parents:
+            return rp
+    return None
+
+
+def _book(conn, book_id: int) -> dict:
+    b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    if not b:
+        raise ServiceError("Book not found", 404)
+    return b
+
+
+def _assert_idle(conn, book_id: int, what: str) -> None:
+    if row(conn, f"SELECT id FROM jobs WHERE book_id=? AND status IN ({','.join('?' * len(BUSY_STATUSES))})", (book_id, *BUSY_STATUSES)):
+        raise ServiceError(f"Cannot {what} while the book has a queued, rendering or paused job. Cancel or finish it in the Queue first.", 409)
+
+
+def _need_confirm(confirm: bool, message: str, preview: dict) -> None:
+    if confirm is not True:
+        raise NeedsConfirmation(message + " Send confirm=true to proceed.", preview)
+
+
+def _safe_book_dirs(ctx, book: dict) -> dict[str, Path]:
+    """The book's own storage directories, validated: must be named after the book uid, deep enough and not a system location."""
+    out: dict[str, Path] = {}
+    for cat, d in book_dirs(book).items():
+        rd = Path(os.path.realpath(d))
+        s = str(rd)
+        if rd.name != book["uid"] or len(rd.parts) < 3 or any(s == p or s.startswith(p + "/") for p in SYSTEM_PREFIXES):
+            raise ServiceError(f"Refusing to touch {d}: not a per-book storage folder.", 422)
+        if rd == Path(os.path.realpath(ctx.category_dir(cat))):
+            raise ServiceError(f"Refusing to touch {d}: it is a category root.", 422)
+        out[cat] = rd
+    return out
+
+
+def _remove_file(path: Path, roots) -> int:
+    """Delete one file (and its .json sidecar) if it lies inside ``roots``. Returns bytes freed."""
+    freed = 0
+    real = _inside(path, roots)
+    if real is None:
+        return 0
+    for p in (real, Path(str(real) + ".json")):
+        try:
+            if p.is_file():
+                freed += p.stat().st_size
+                os.chmod(p, 0o600)
+                p.unlink()
+        except OSError:
+            pass
+    return freed
+
+
+def _force_remove(func, path, _exc) -> None:
+    """rmtree error hook: manuscripts are stored read-only (0444); lift that on the one file and retry."""
+    os.chmod(path, 0o700)
+    func(path)
+
+
+def _prune_empty(root: Path) -> None:
+    for d, _dirs, _files in os.walk(root, topdown=False):
+        if Path(d) != root:
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+
+
+# ------------------------------------------------------------------ usage
+
+
+def _purgeable(conn, book: dict, dirs: dict[str, Path]) -> dict:
+    keep = {r["selected_attempt_id"] for r in rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (book["id"],))}
+    n, size = 0, 0
+    for a in rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],)):
+        if a["id"] in keep:
+            continue
+        n += 1
+        if a["wav_path"]:
+            t = resolve_take(book, a)
+            size += file_size(t)
+    return {"takes": n, "takes_bytes": size}
+
+
+def usage(ctx) -> dict:
+    """Per-book and global disk usage plus free space of the library volume and model cache."""
+    s = ctx.settings()
+    with ctx.db.session() as conn:
+        books_rows = rows(conn, "SELECT * FROM books ORDER BY id")
+        books = []
+        totals = {c: 0 for c in STORAGE_CATEGORIES}
+        for b in books_rows:
+            dirs = book_dirs(b)
+            cats, total = {}, 0
+            for c in STORAGE_CATEGORIES:
+                size = dir_size(dirs[c]) if c in dirs and dirs[c].exists() else 0
+                cats[c] = size
+                totals[c] += size
+                total += size
+            purge = _purgeable(conn, b, dirs)
+            cats_exports = cats.get("exports", 0)
+            books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "archived": bool(b["archived"]), "state": b["state"],
+                          "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats_exports, "masters_bytes": cats.get("masters", 0)},
+                          "busy": bool(row(conn, "SELECT id FROM jobs WHERE book_id=? AND status IN ('queued','running','paused')", (b["id"],)))})
+        vfiles = set()
+        for v in rows(conn, "SELECT ref_audio_path, ref_original_path FROM voice_versions"):
+            for k in ("ref_audio_path", "ref_original_path"):
+                if v[k]:
+                    vfiles.add(v[k])
+    voices_bytes = sum(file_size(p) for p in vfiles)
+    models = Path(s.models.cache_dir or os.environ.get("HF_HOME") or (ctx.cache_dir / "huggingface")).expanduser()
+    db_bytes = sum(file_size(str(ctx.db.path) + suf) for suf in ("", "-wal", "-shm"))
+    backups_dir = ctx.backups_dir
+    other = {
+        "voices": voices_bytes,
+        "recordings": dir_size(ctx.data_dir / "recordings") if (ctx.data_dir / "recordings").exists() else 0,
+        "previews": dir_size(ctx.data_dir / "previews") if (ctx.data_dir / "previews").exists() else 0,
+        "imports": dir_size(ctx.data_dir / "imports") if (ctx.data_dir / "imports").exists() else 0,
+        "database": db_bytes,
+        "backups": dir_size(backups_dir) if backups_dir.exists() else 0,
+        "logs": dir_size(ctx.logs_dir) if ctx.logs_dir.exists() else 0,
+        "model_cache": dir_size(models) if models.exists() else 0,
+    }
+    return {
+        "books": books,
+        "category_labels": BOOK_CATEGORY_LABELS,
+        "category_totals": totals,
+        "other": other,
+        "library_bytes": sum(totals.values()),
+        "free": {"library": _free(ctx.library_root(s)), "model_cache": _free(models), "backups": _free(backups_dir)},
+        "paths": {"library": str(ctx.library_root(s)), "model_cache": str(models), "backups": str(backups_dir)},
+        "backups": list_backups(ctx),
+    }
+
+
+# ------------------------------------------------------------------ delete / purge
+
+_BOOK_DELETE_ORDER = [
+    ("direction_log", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
+    ("directions", "book_id=?"),
+    ("review_actions", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
+    ("attempts", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
+    ("nar_spans", "book_id=?"),
+    ("story_notes", "book_id=?"),
+    ("characters", "book_id=?"),
+    ("seg_edits", "book_id=?"),
+    ("segment_history", "book_id=?"),
+    ("chapter_text", "book_id=?"),
+    ("chapter_renders", "chapter_id IN (SELECT id FROM chapters WHERE book_id=?)"),
+    ("segments", "book_id=?"),
+    ("chapters", "book_id=?"),
+    ("analysis_stages", "book_id=?"),
+    ("exports", "book_id=?"),
+    ("releases", "book_id=?"),
+    ("manuscripts", "book_id=?"),
+    ("job_logs", "book_id=? OR job_id IN (SELECT id FROM jobs WHERE book_id=?)"),
+    ("jobs", "book_id=?"),
+    ("events", "book_id=?"),
+]
+
+
+def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
+    with ctx.db.session() as conn:
+        b = _book(conn, book_id)
+        _assert_idle(conn, book_id, "delete it")
+    dirs = _safe_book_dirs(ctx, b)
+    sizes = {c: dir_size(d) if d.exists() else 0 for c, d in dirs.items()}
+    _need_confirm(confirm, f"This permanently deletes '{b['title']}' with all its audio, exports and history.",
+                  {"book": b["title"], "bytes": sum(sizes.values()), "categories": sizes})
+    with ctx.db.tx() as conn:
+        _assert_idle(conn, book_id, "delete it")
+        imports = rows(conn, "SELECT id, stored_path FROM imports WHERE consumed_book_id=?", (book_id,))
+        for table, where in _BOOK_DELETE_ORDER:
+            n_params = where.count("?")
+            conn.execute(f"DELETE FROM {table} WHERE {where}", (book_id,) * n_params)
+        conn.execute("DELETE FROM imports WHERE consumed_book_id=?", (book_id,))
+        conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+        ctx.audit(conn, "book", book_id, "deleted", {"title": b["title"], "uid": b["uid"], "bytes": sum(sizes.values())}, actor)
+        ctx.event(conn, "disk", f"Deleted book '{b['title']}' ({sum(sizes.values())} bytes freed).", None, "warning")
+    freed, errors = 0, []
+    for cat, d in dirs.items():
+        if d.exists():
+            try:
+                shutil.rmtree(d, onerror=_force_remove)
+                freed += sizes[cat]
+            except OSError as exc:
+                errors.append(f"{d}: {exc}")
+    imp_root = ctx.imports_dir()
+    for imp in imports:
+        if imp["stored_path"]:
+            freed += _remove_file(Path(imp["stored_path"]), [imp_root])
+    return {"deleted": True, "title": b["title"], "freed_bytes": freed, "errors": errors}
+
+
+def purge(ctx, book_id: int, scope: str, confirm: bool = False, actor: str = "operator") -> dict:
+    if scope not in PURGE_SCOPES:
+        raise ServiceError(f"scope must be one of {', '.join(PURGE_SCOPES)}", 422)
+    with ctx.db.session() as conn:
+        b = _book(conn, book_id)
+        _assert_idle(conn, book_id, "purge it")
+    dirs = _safe_book_dirs(ctx, b)
+    if scope == "takes":
+        plan = _plan_takes(ctx, b, dirs)
+    else:
+        plan = _plan_files(ctx, b, dirs, scope)
+    preview = {"scope": scope, "items": len(plan["rows"]), "bytes": plan["bytes"]}
+    if scope == "takes":
+        preview["kept_selected"] = plan["kept"]
+    _need_confirm(confirm, f"This permanently removes {len(plan['rows'])} {scope} ({plan['bytes']} bytes) from '{b['title']}'.", preview)
+    freed = 0
+    with ctx.db.tx() as conn:
+        _assert_idle(conn, book_id, "purge it")
+        table = {"takes": "attempts", "exports": "exports", "masters": "chapter_renders"}[scope]
+        for r in plan["rows"]:
+            conn.execute(f"DELETE FROM {table} WHERE id=?", (r["id"],))
+        if scope == "masters":
+            refresh_book_state(conn, book_id)
+        ctx.audit(conn, "book", book_id, f"purge_{scope}", {"items": len(plan["rows"]), "bytes": plan["bytes"]}, actor)
+        ctx.event(conn, "disk", f"Purged {len(plan['rows'])} {scope} from '{b['title']}'.", book_id)
+    roots = [dirs["segments"], dirs["alternates"]] if scope == "takes" else [dirs[{"exports": "exports", "masters": "masters"}[scope]]]
+    for f in plan["files"]:
+        freed += _remove_file(f, roots)
+    for r in roots:
+        if r.exists():
+            _prune_empty(r)
+    return {"purged": True, "scope": scope, "items": len(plan["rows"]), "freed_bytes": freed}
+
+
+def _plan_takes(ctx, book: dict, dirs: dict[str, Path]) -> dict:
+    with ctx.db.session() as conn:
+        keep = {r["selected_attempt_id"] for r in rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (book["id"],))}
+        # approved segments always keep their selected take; a segment with no selection (never approved) keeps nothing special
+        atts = rows(conn, "SELECT a.id, a.wav_path, a.status FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=?", (book["id"],))
+    kept_paths = set()
+    for a in atts:
+        if a["id"] in keep and a["wav_path"]:
+            t = resolve_take(book, a)
+            kept_paths.add(os.path.realpath(t if t else a["wav_path"]))
+            kept_paths.add(os.path.realpath(a["wav_path"]))
+    victims, files, size = [], [], 0
+    for a in atts:
+        if a["id"] in keep or a["status"] == "in_progress":
+            continue
+        victims.append({"id": a["id"]})
+        if a["wav_path"]:
+            t = resolve_take(book, a) or Path(a["wav_path"])
+            if os.path.realpath(t) in kept_paths:
+                continue
+            files.append(t)
+            size += file_size(t)
+    return {"rows": victims, "files": files, "bytes": size, "kept": len(keep)}
+
+
+def _plan_files(ctx, book: dict, dirs: dict[str, Path], scope: str) -> dict:
+    with ctx.db.session() as conn:
+        if scope == "exports":
+            rs = rows(conn, "SELECT id, path FROM exports WHERE book_id=?", (book["id"],))
+        else:
+            rs = rows(conn, "SELECT cr.id, cr.path FROM chapter_renders cr JOIN chapters c ON c.id=cr.chapter_id WHERE c.book_id=?", (book["id"],))
+    files, size = [], 0
+    for r in rs:
+        p = Path(r["path"])
+        files.append(p)
+        size += file_size(p)
+    return {"rows": [{"id": r["id"]} for r in rs], "files": files, "bytes": size}
+
+
+# ------------------------------------------------------------------ backup / restore
+
+# (table, how it hangs off the book). Order is the restore order.
+_BACKUP_TABLES = [
+    ("manuscripts", "book_id=?"), ("chapters", "book_id=?"), ("characters", "book_id=?"), ("segments", "book_id=?"),
+    ("attempts", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"), ("nar_spans", "book_id=?"), ("story_notes", "book_id=?"),
+    ("directions", "book_id=?"), ("direction_log", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"), ("seg_edits", "book_id=?"),
+    ("segment_history", "book_id=?"), ("chapter_text", "book_id=?"), ("analysis_stages", "book_id=?"),
+    ("review_actions", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
+    ("chapter_renders", "chapter_id IN (SELECT id FROM chapters WHERE book_id=?)"), ("exports", "book_id=?"),
+]
+_PATH_COLS = {"books": ["cover_path"], "manuscripts": ["stored_path"], "attempts": ["wav_path"], "chapter_renders": ["path"], "exports": ["path"]}
+_PATH_REQUIRED = {"manuscripts"}  # rows kept even if their file is missing; other tables drop the row (or null the path for attempts)
+
+
+def backups_root(ctx) -> Path:
+    d = ctx.backups_dir / "books"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _backup_path(ctx, name: str) -> Path:
+    if not isinstance(name, str) or not _BACKUP_NAME.match(name) or ".." in name:
+        raise ServiceError("Invalid backup file name.", 422)
+    root = backups_root(ctx)
+    p = root / name
+    if _inside(p, [root]) is None:
+        raise ServiceError("Backup must be inside the backups folder.", 422)
+    if not p.is_file():
+        raise ServiceError("Backup not found", 404)
+    return p
+
+
+def list_backups(ctx) -> dict:
+    out = {"books": [], "databases": []}
+    root = backups_root(ctx)
+    for p in sorted(root.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
+        meta = {}
+        try:
+            with zipfile.ZipFile(p) as zf:
+                m = json.loads(zf.read("manifest.json"))
+                meta = {"title": m.get("title"), "book_uid": m.get("book_uid"), "created_at": m.get("created_at"), "app_version": m.get("app_version")}
+        except Exception:
+            meta = {"title": None, "invalid": True}
+        out["books"].append({"name": p.name, "size_bytes": p.stat().st_size, "modified": p.stat().st_mtime, **meta})
+    dbdir = ctx.backups_dir / "db"
+    if dbdir.is_dir():
+        for p in sorted(dbdir.glob("*.db"), key=lambda x: x.stat().st_mtime, reverse=True):
+            out["databases"].append({"name": p.name, "size_bytes": p.stat().st_size, "modified": p.stat().st_mtime})
+    return out
+
+
+def backup_database(ctx, actor: str = "operator") -> dict:
+    """Consistent copy of studio.db (SQLite online backup API) into backups/db, verified with integrity_check."""
+    dbdir = ctx.backups_dir / "db"
+    dbdir.mkdir(parents=True, exist_ok=True)
+    dest = dbdir / f"studio-v{ctx.db.schema_version()}-manual-{time.strftime('%Y%m%d-%H%M%S')}.db"
+    with ctx.db.session() as src:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+            ok = dst.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            dst.close()
+    if ok != "ok":
+        dest.unlink(missing_ok=True)
+        raise ServiceError(f"The database copy failed its integrity check ({ok}); it was discarded.", 500)
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "database", None, "backup", {"file": dest.name, "bytes": dest.stat().st_size}, actor)
+    return {"name": dest.name, "size_bytes": dest.stat().st_size, "path": str(dest), "integrity": ok}
+
+
+def _sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def backup_book(ctx, book_id: int, actor: str = "operator") -> dict:
+    with ctx.db.session() as conn:
+        b = _book(conn, book_id)
+        if row(conn, "SELECT id FROM jobs WHERE book_id=? AND status='running'", (book_id,)):
+            raise ServiceError("The book is rendering right now; back it up when the job has finished or is paused.", 409)
+        conn.execute("BEGIN")  # one consistent read snapshot for every table
+        tables = {name: rows(conn, f"SELECT * FROM {name} WHERE {where}", (book_id,)) for name, where in _BACKUP_TABLES}
+        vref = []
+        for v in rows(conn, "SELECT id, uid, name, builtin, current_version_id FROM voices"):
+            vref.append(v)
+        vvref = rows(conn, "SELECT id, voice_id FROM voice_versions")
+        conn.execute("COMMIT")
+    dirs = _safe_book_dirs(ctx, b)
+    # path tokens: "@cat/<category>/<relative path>" so a restore can re-root every file
+    roots = {c: d for c, d in dirs.items()}
+
+    def tokenize(p: str | None) -> str | None:
+        if not p:
+            return None
+        real = Path(os.path.realpath(p))
+        for c, d in roots.items():
+            if d in real.parents:
+                return f"@cat/{c}/{real.relative_to(d).as_posix()}"
+        return None
+
+    def with_paths(table: str, rws: list[dict]) -> list[dict]:
+        cols = _PATH_COLS.get(table)
+        if not cols:
+            return rws
+        out = []
+        for r in rws:
+            r = dict(r)
+            for c in cols:
+                r[c] = tokenize(r.get(c))
+            out.append(r)
+        return out
+
+    brow = dict(b)
+    brow["cover_path"] = tokenize(b.get("cover_path"))
+    # a take that resolve_take can find under the other folder is recorded where it really is
+    for a in tables["attempts"]:
+        if a.get("wav_path"):
+            t = resolve_take(b, a)
+            if t:
+                a["wav_path"] = str(t)
+    db_doc = {"book": brow, "tables": {k: with_paths(k, v) for k, v in tables.items()}, "voices": vref, "voice_versions": vvref}
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    name = f"{safe_filename(b['title'], 'book', 60)}-{b['uid']}-{ts}.zip"
+    dest = backups_root(ctx) / name
+    part = dest.with_suffix(".zip.part")
+    files_meta, total = [], 0
+    try:
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
+            for cat, d in dirs.items():
+                if not d.exists():
+                    continue
+                for f in sorted(d.rglob("*")):
+                    if f.is_symlink() or not f.is_file():
+                        continue
+                    rel = f.relative_to(d).as_posix()
+                    arc = f"media/{cat}/{rel}"
+                    ct = zipfile.ZIP_STORED if f.suffix.lower() in _NO_COMPRESS else zipfile.ZIP_DEFLATED
+                    try:
+                        size, digest = f.stat().st_size, _sha(f)
+                        zf.write(f, arc, compress_type=ct)
+                    except OSError:
+                        continue  # vanished mid-backup
+                    files_meta.append({"path": arc, "size": size, "sha256": digest})
+                    total += size
+            from . import __version__
+            manifest = {"format": BACKUP_FORMAT, "version": BACKUP_VERSION, "app_version": __version__, "schema_version": LATEST_VERSION,
+                        "created_at": now(), "book_uid": b["uid"], "title": b["title"], "created_by": actor, "files": files_meta,
+                        "media_bytes": total, "table_rows": {k: len(v) for k, v in tables.items()}}
+            zf.writestr("manifest.json", dumps(manifest))
+            zf.writestr("db.json", dumps(db_doc))
+        os.replace(part, dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "book", book_id, "backup", {"file": name, "bytes": dest.stat().st_size, "files": len(files_meta)}, actor)
+    return {"name": name, "size_bytes": dest.stat().st_size, "files": len(files_meta), "media_bytes": total, "path": str(dest)}
+
+
+def delete_backup(ctx, name: str, confirm: bool = False, actor: str = "operator") -> dict:
+    p = _backup_path(ctx, name)
+    size = p.stat().st_size
+    _need_confirm(confirm, f"This permanently deletes the backup file {name}.", {"name": name, "bytes": size})
+    p.unlink()
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "backup", name, "deleted", {"bytes": size}, actor)
+    return {"deleted": True, "freed_bytes": size}
+
+
+def _clean_member(name: str) -> tuple[str, str] | None:
+    """Validate a zip member name; returns (category, relative path) for media entries."""
+    if "\\" in name or name.startswith("/") or re.match(r"^[A-Za-z]:", name) or "\x00" in name:
+        raise ServiceError(f"Unsafe path in backup: {name!r}", 422)
+    parts = name.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise ServiceError(f"Unsafe path in backup: {name!r}", 422)
+    if name in ("manifest.json", "db.json"):
+        return None
+    if len(parts) >= 3 and parts[0] == "media" and parts[1] in STORAGE_CATEGORIES:
+        return parts[1], "/".join(parts[2:])
+    raise ServiceError(f"Unexpected entry in backup: {name!r}", 422)
+
+
+def restore_book(ctx, name: str, actor: str = "operator") -> dict:
+    """Restore a backup zip as a NEW book (new uid, new ids). The original book is never touched."""
+    src = _backup_path(ctx, name)
+    try:
+        zf = zipfile.ZipFile(src)
+    except zipfile.BadZipFile:
+        raise ServiceError("The backup is not a valid zip file.", 422)
+    with zf:
+        infos = {i.filename: i for i in zf.infolist()}
+        for n in infos:
+            _clean_member(n)
+        if "manifest.json" not in infos or "db.json" not in infos:
+            raise ServiceError("The zip is not an Audiobook Studio book backup (manifest.json or db.json missing).", 422)
+        try:
+            manifest = json.loads(zf.read("manifest.json"))
+            doc = json.loads(zf.read("db.json"))
+        except ValueError:
+            raise ServiceError("The backup metadata is unreadable.", 422)
+        if manifest.get("format") != BACKUP_FORMAT or int(manifest.get("version", 0)) > BACKUP_VERSION:
+            raise ServiceError("Unsupported backup format or version.", 422)
+        if int(manifest.get("schema_version", 0)) > LATEST_VERSION:
+            raise ServiceError("This backup was made by a newer version of Audiobook Studio; update first.", 422)
+        old_uid = str(manifest.get("book_uid", ""))
+        if not _UID_RE.match(old_uid):
+            raise ServiceError("Backup has an invalid book id.", 422)
+        declared = {f["path"]: f for f in manifest.get("files", [])}
+        for p in declared:
+            if p not in infos:
+                raise ServiceError(f"Backup is incomplete: {p} is missing.", 422)
+        need = sum(int(f["size"]) for f in declared.values())
+        if need > MAX_RESTORE_BYTES:
+            raise ServiceError("Backup is implausibly large.", 422)
+        new_uid_ = new_uid("bk")
+        storage = _book_storage(ctx, new_uid_)
+        free = _free(Path(storage["segments"]))
+        if free and free["free_bytes"] < need * 1.05 + 50 * 1024 * 1024:
+            raise ServiceError("Not enough free disk space to restore this backup.", 507)
+        created: list[Path] = []
+        try:
+            for d in storage.values():
+                Path(d).mkdir(parents=True, exist_ok=True)
+                created.append(Path(d))
+            for arc, meta in declared.items():
+                cm = _clean_member(arc)
+                if cm is None:
+                    continue
+                cat, rel = cm
+                if cat not in storage:
+                    continue  # category not stored per book
+                dest = Path(storage[cat]) / rel
+                if _inside(dest, [Path(storage[cat])]) is None:
+                    raise ServiceError(f"Unsafe path in backup: {arc!r}", 422)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                h, got = hashlib.sha256(), 0
+                with zf.open(arc) as fin, open(dest, "wb") as fout:
+                    for chunk in iter(lambda: fin.read(1024 * 1024), b""):
+                        got += len(chunk)
+                        if got > int(meta["size"]):
+                            raise ServiceError(f"{arc} is larger than declared in the manifest.", 422)
+                        h.update(chunk)
+                        fout.write(chunk)
+                if got != int(meta["size"]) or h.hexdigest() != meta["sha256"]:
+                    raise ServiceError(f"Checksum mismatch for {arc}; the backup is damaged.", 422)
+            result = _restore_rows(ctx, doc, old_uid, new_uid_, storage, actor, name)
+        except BaseException:
+            for d in created:
+                shutil.rmtree(d, ignore_errors=True)
+            raise
+    return result
+
+
+def _table_cols(conn, table: str) -> list[str]:
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _insert(conn, table: str, rec: dict, drop=("id",), **over) -> int:
+    cols = [c for c in _table_cols(conn, table) if c in rec and c not in drop]
+    data = {c: rec[c] for c in cols}
+    data.update(over)
+    cs = list(data)
+    cur = conn.execute(f"INSERT INTO {table}({','.join(cs)}) VALUES ({','.join('?' * len(cs))})", [data[c] for c in cs])
+    return cur.lastrowid
+
+
+def _restore_rows(ctx, doc: dict, old_uid: str, uid: str, storage: dict, actor: str, backup_name: str) -> dict:
+    tables = doc.get("tables", {})
+    old_book = doc["book"]
+    warnings: list[str] = []
+
+    def path_of(tok: str | None) -> str | None:
+        if not tok or not tok.startswith("@cat/"):
+            return None
+        _, cat, rel = tok.split("/", 2)
+        if cat not in storage:
+            return None
+        p = Path(storage[cat]) / rel
+        return str(p) if _inside(p, [Path(storage[cat])]) is not None and p.exists() else None
+
+    def reuid(s: str) -> str:
+        return uid + s[len(old_uid):] if s.startswith(old_uid) else f"{uid}-{s}"
+
+    with ctx.db.tx() as conn:
+        # voices: map by uid, then by name for built-ins; otherwise unlinked (the operator picks a narrator again)
+        vmap: dict[int, int | None] = {}
+        for v in doc.get("voices", []):
+            hit = row(conn, "SELECT id FROM voices WHERE uid=?", (v["uid"],))
+            if not hit and v.get("builtin"):
+                hit = row(conn, "SELECT id FROM voices WHERE builtin=1 AND name=?", (v["name"],))
+            vmap[v["id"]] = hit["id"] if hit else None
+        vv_voice = {v["id"]: v["voice_id"] for v in doc.get("voice_versions", [])}
+
+        def voice(old):
+            return vmap.get(old) if old is not None else None
+
+        def version(old_vv, new_voice):
+            if new_voice is None:
+                return None
+            if old_vv and row(conn, "SELECT id FROM voice_versions WHERE id=? AND voice_id=?", (old_vv, new_voice)):
+                return old_vv
+            r = row(conn, "SELECT current_version_id FROM voices WHERE id=?", (new_voice,))
+            return r["current_version_id"] if r else None
+
+        nv = voice(old_book.get("voice_id"))
+        if old_book.get("voice_id") is not None and nv is None:
+            warnings.append("The narrator voice of this book does not exist here; choose a narrator before queueing it.")
+        bid = _insert(conn, "books", old_book, uid=uid, title=f"{old_book['title']} (restored)", voice_id=nv,
+                      voice_version_id=version(old_book.get("voice_version_id"), nv), storage_json=dumps(storage),
+                      cover_path=path_of(old_book.get("cover_path")), state="imported", archived=0, created_at=now(), updated_at=now())
+        chmap: dict[int, int] = {}
+        for c in tables.get("chapters", []):
+            chmap[c["id"]] = _insert(conn, "chapters", c, book_id=bid)
+        charmap: dict[int, int] = {}
+        for c in tables.get("characters", []):
+            cv = voice(c.get("voice_id"))
+            charmap[c["id"]] = _insert(conn, "characters", c, book_id=bid, uid=new_uid("ch"), merged_into=None, voice_id=cv,
+                                       voice_version_id=version(c.get("voice_version_id"), cv))
+        for c in tables.get("characters", []):
+            if c.get("merged_into") in charmap:
+                conn.execute("UPDATE characters SET merged_into=? WHERE id=?", (charmap[c["merged_into"]], charmap[c["id"]]))
+        for m in tables.get("manuscripts", []):
+            p = path_of(m.get("stored_path"))
+            if p is None:
+                warnings.append(f"Manuscript file {m.get('original_name')} was not in the backup.")
+            _insert(conn, "manuscripts", m, book_id=bid, stored_path=p or str(Path(storage["manuscripts"]) / safe_filename(m.get("original_name") or "manuscript")))
+        segmap: dict[int, int] = {}
+        for s in tables.get("segments", []):
+            segmap[s["id"]] = _insert(conn, "segments", s, book_id=bid, chapter_id=chmap[s["chapter_id"]], sid=reuid(s["sid"]),
+                                      selected_attempt_id=None, character_id=charmap.get(s.get("character_id")), voice_override_id=voice(s.get("voice_override_id")))
+        attmap: dict[int, int] = {}
+        for a in tables.get("attempts", []):
+            vo = a.get("voice_id_used")
+            attmap[a["id"]] = _insert(conn, "attempts", a, segment_id=segmap[a["segment_id"]], wav_path=path_of(a.get("wav_path")),
+                                      voice_version_id=None, voice_id_used=voice(vo))
+        for s in tables.get("segments", []):
+            if s.get("selected_attempt_id") in attmap:
+                conn.execute("UPDATE segments SET selected_attempt_id=? WHERE id=?", (attmap[s["selected_attempt_id"]], segmap[s["id"]]))
+        for sp in tables.get("nar_spans", []):
+            _insert(conn, "nar_spans", sp, book_id=bid, uid=reuid(sp["uid"]), chapter_id=chmap[sp["chapter_id"]],
+                    speaker_id=charmap.get(sp.get("speaker_id")), guess_id=charmap.get(sp.get("guess_id")))
+        for n in tables.get("story_notes", []):
+            _insert(conn, "story_notes", n, book_id=bid, character_id=charmap.get(n.get("character_id")))
+        for d in tables.get("directions", []):
+            if d["segment_id"] in segmap:
+                _insert(conn, "directions", d, book_id=bid, segment_id=segmap[d["segment_id"]])
+        for d in tables.get("direction_log", []):
+            if d["segment_id"] in segmap:
+                _insert(conn, "direction_log", d, segment_id=segmap[d["segment_id"]])
+        for e in tables.get("seg_edits", []):
+            _insert(conn, "seg_edits", e, book_id=bid, chapter_id=chmap[e["chapter_id"]])
+        for h in tables.get("segment_history", []):
+            _insert(conn, "segment_history", h, book_id=bid, chapter_id=chmap.get(h["chapter_id"], 0), sid=reuid(h["sid"]))
+        for t in tables.get("chapter_text", []):
+            _insert(conn, "chapter_text", t, drop=(), chapter_id=chmap[t["chapter_id"]], book_id=bid)
+        for st in tables.get("analysis_stages", []):
+            _insert(conn, "analysis_stages", st, drop=(), book_id=bid)
+        for r in tables.get("review_actions", []):
+            if r["segment_id"] in segmap:
+                _insert(conn, "review_actions", r, segment_id=segmap[r["segment_id"]])
+        for cr in tables.get("chapter_renders", []):
+            p = path_of(cr.get("path"))
+            if p:
+                _insert(conn, "chapter_renders", cr, chapter_id=chmap[cr["chapter_id"]], path=p)
+        for ex in tables.get("exports", []):
+            p = path_of(ex.get("path"))
+            if p:
+                _insert(conn, "exports", ex, book_id=bid, path=p)
+        refresh_book_state(conn, bid)
+        ctx.audit(conn, "book", bid, "restored", {"from_backup": backup_name, "old_uid": old_uid, "uid": uid, "warnings": warnings}, actor)
+        ctx.event(conn, "disk", f"Restored '{old_book['title']}' from {backup_name} as a new book.", bid)
+    return {"restored": True, "book_id": bid, "uid": uid, "title": f"{old_book['title']} (restored)", "warnings": warnings}
+__STUDIO_EOF_21edb86c1d00__
 cat > "$DEST/studio/doctor.py" <<'__STUDIO_EOF_538595482854__'
 """Environment diagnostics shared by `studio doctor` and the About page."""
 from __future__ import annotations
@@ -6266,7 +7165,7 @@ def migrate_legacy(old_home: Path, layout: Layout, dry_run: bool = False, keep_n
          f"To go back: restore {bk / (LEGACY_LABEL + '.plist')} to ~/Library/LaunchAgents and stop the new service.")
     return 0
 __STUDIO_EOF_b799e3082700__
-cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_17909c976256__'
+cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_4215ca34ace5__'
 """Command-line lifecycle: ``version``, ``start|stop|restart|status|logs``, ``service install|uninstall``, ``update``, ``migrate-legacy``.
 These talk to the per-user service through the platform layer; they never need sudo."""
 from __future__ import annotations
@@ -6429,6 +7328,25 @@ def cmd_update(a):
     if a.status:
         show(mgr.status())
         return
+    if a.rollback:
+        prev = mgr.can_rollback()
+        if not layout.managed:
+            sys.exit(mgr.status()["not_managed_reason"])
+        if not prev:
+            sys.exit("There is no previous version kept on this Mac to roll back to.")
+        if not a.yes:
+            if not sys.stdin.isatty():
+                sys.exit("Refusing to roll back without --yes when not run interactively.")
+            if input(f"Roll back from {mgr.installed} to {prev}? [y/N] ").strip().lower() not in ("y", "yes"):
+                sys.exit("Cancelled.")
+        layout.update_dir.mkdir(parents=True, exist_ok=True)
+        (layout.update_dir / "request.json").write_text(json.dumps({"version": prev, "mode": a.when, "requested_at": time.time(), "rollback": True}))
+        try:
+            ok = Applier(layout, ctx, ps).run(prev, a.when, rollback=True)
+        except ApplyError as exc:
+            sys.exit(str(exc))
+        show(mgr.status())
+        sys.exit(0 if ok else 1)
     st = mgr.check()
     show(st)
     if st["state"] in ("failed", "offline", "incompatible", "disabled"):
@@ -6539,6 +7457,7 @@ def register(sub) -> None:
     sp.add_argument("--check", action="store_true", help="check only (default)")
     sp.add_argument("--install", action="store_true", help="download, verify and install the update")
     sp.add_argument("--status", action="store_true", help="show the last known status without contacting the server")
+    sp.add_argument("--rollback", action="store_true", help="switch back to the previous version that is kept on this Mac")
     sp.add_argument("--when", choices=["now", "after_job"], default="after_job", help="install at the next segment boundary or after the current job")
     sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     sp.set_defaults(func=cmd_update)
@@ -6555,7 +7474,7 @@ def register(sub) -> None:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--keep-network", action="store_true", help="keep serving the LAN if the old install did (default: loopback only)")
     sp.set_defaults(func=cmd_migrate_legacy)
-__STUDIO_EOF_17909c976256__
+__STUDIO_EOF_4215ca34ace5__
   mkdir -p "$DEST/studio/narrative"
 cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
 """Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
@@ -7723,7 +8642,7 @@ class Director:
         cache_put(key, d, "rules")
         return d, key
 __STUDIO_EOF_4f4935b0c20f__
-cat > "$DEST/studio/narrative/llm.py" <<'__STUDIO_EOF_1fbb590e5503__'
+cat > "$DEST/studio/narrative/llm.py" <<'__STUDIO_EOF_c4b523e50337__'
 """Minimal OpenAI-compatible chat client for a local LLM (LM Studio, Ollama's /v1, mlx_lm.server,
 llama.cpp server...). Uses httpx, which the application already depends on."""
 from __future__ import annotations
@@ -7811,6 +8730,71 @@ class LLMClient:
         except Exception as exc:
             raise LLMError(f"Unexpected LLM response shape: {str(data)[:200]}") from exc
 
+    def test_connection(self) -> dict:
+        """Check the endpoint and model name without touching any book: list the models (informational; not every server offers it),
+        then ask one tiny question. Returns ``{ok, checks:[{name, ok, detail}], seconds}``; never raises."""
+        import httpx
+
+        checks: list[dict] = []
+        t0 = time.time()
+
+        def done(ok: bool) -> dict:
+            return {"ok": ok, "checks": checks, "seconds": round(time.time() - t0, 2)}
+
+        if not self.cfg.model.strip():
+            checks.append({"name": "Model name", "ok": False, "detail": "Enter the model name first."})
+            return done(False)
+        try:
+            headers = self._headers()
+        except LLMError as exc:
+            checks.append({"name": "API key", "ok": False, "detail": str(exc)})
+            return done(False)
+        base = self.cfg.base_url
+        try:
+            with httpx.Client(timeout=min(self.cfg.timeout_s, 30.0), transport=self._transport) as c:
+                try:
+                    r = c.get(f"{base}/models", headers=headers)
+                except httpx.HTTPError as exc:
+                    checks.append({"name": "Reach the endpoint", "ok": False,
+                                   "detail": f"Could not connect to {base}: {type(exc).__name__}. Is the server running, and is the address and port right?"})
+                    return done(False)
+                if r.status_code in (401, 403):
+                    checks.append({"name": "Reach the endpoint", "ok": False, "detail": f"The server answered HTTP {r.status_code}: the API key is missing or wrong."})
+                    return done(False)
+                checks.append({"name": "Reach the endpoint", "ok": True, "detail": f"{base} answered (HTTP {r.status_code})."})
+                ids: list[str] = []
+                if r.status_code == 200:
+                    try:
+                        ids = [str(m.get("id")) for m in r.json().get("data", []) if isinstance(m, dict)]
+                    except ValueError:
+                        ids = []
+                if ids:
+                    listed = self.cfg.model in ids
+                    checks.append({"name": "Model is listed", "ok": listed,
+                                   "detail": f"'{self.cfg.model}' is available." if listed else
+                                   f"'{self.cfg.model}' is not in the server's list. Available: {', '.join(ids[:8])}{' ...' if len(ids) > 8 else ''}"})
+                else:
+                    checks.append({"name": "Model is listed", "ok": True, "detail": "The server does not list its models; trying the model directly."})
+                body = {"model": self.cfg.model, "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+                        "temperature": 0, "max_tokens": 16, "stream": False}
+                try:
+                    r = c.post(f"{base}/chat/completions", headers=headers, json=body)
+                except httpx.HTTPError as exc:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"No answer: {type(exc).__name__}. A slow model may need a longer timeout."})
+                    return done(False)
+                if r.status_code != 200:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"HTTP {r.status_code}: {r.text[:200]}"})
+                    return done(False)
+                try:
+                    reply = str(r.json()["choices"][0]["message"]["content"] or "").strip()
+                except Exception:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"The reply was not a chat completion: {r.text[:160]}"})
+                    return done(False)
+                checks.append({"name": "Ask the model", "ok": True, "detail": f"Replied: {reply[:80] or '(empty)'}"})
+        except Exception as exc:  # defensive: a test must report, never crash
+            checks.append({"name": "Unexpected error", "ok": False, "detail": f"{type(exc).__name__}: {exc}"})
+        return done(all(c["ok"] for c in checks))
+
     def chat_json(self, system: str, user: str, validate: Callable[[dict], T], retries: int = 1) -> T:
         """Ask for one JSON object and validate it. One repair round is attempted with the
         validation error fed back to the model."""
@@ -7857,7 +8841,7 @@ def extract_json(text: str) -> dict:
                     raise ValueError("JSON reply is not an object")
                 return obj
     raise ValueError("unterminated JSON object")
-__STUDIO_EOF_1fbb590e5503__
+__STUDIO_EOF_c4b523e50337__
 cat > "$DEST/studio/narrative/segmenter.py" <<'__STUDIO_EOF_42741318923c__'
 """Pass 2 - narration segment construction from the Pass 1 structure.
 
@@ -8129,7 +9113,7 @@ def check_coverage(struct: ChapterStructure, segs: list[Seg]) -> list[str]:
             break
     return problems[:10]
 __STUDIO_EOF_42741318923c__
-cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_0f322d908c44__'
+cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_56869a1a1440__'
 """Persistence and orchestration for semantic segmentation (Pass 1 + Pass 2).
 
 Segments keep stable ids. Re-segmentation (after a voice assignment, a merge of characters, a
@@ -8482,6 +9466,7 @@ class Plan:
     direction: dict | None
     text: str
     voice_kind: str = "preset"
+    pace: float = 1.0
 
 
 def spoken_text(seg: dict) -> str:
@@ -8522,14 +9507,17 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
             delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery)
         else:
             info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
-    text = spoken_text(seg)
+    from ..pronunciation import apply_for_book
+
+    text = apply_for_book(conn, book["id"], spoken_text(seg))  # dictionary respellings; the stored text is untouched
+    pace = float(v.get("pace") or 1.0)
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
     snap = loads(book["settings_json"], {}).get("models", {})
     key = short_hash(dumps({
         "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
         "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
-        "r": snap.get("repetition_penalty")}), 20)
-    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"])
+        "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {})}), 20)
+    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -8859,7 +9847,7 @@ def narrative_status(ctx, book_id: int) -> dict:
             "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
             "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
                          "semantic_segmentation": ns.semantic_segmentation}}
-__STUDIO_EOF_0f322d908c44__
+__STUDIO_EOF_56869a1a1440__
 cat > "$DEST/studio/narrative/structure.py" <<'__STUDIO_EOF_e99ef7430c0a__'
 """Pass 1 - manuscript structure and speaker analysis.
 
@@ -10977,7 +11965,7 @@ def _epub_toc_labels(zf: zipfile.ZipFile, manifest: dict, toc_id: str | None) ->
             pass
     return labels
 __STUDIO_EOF_1b54c58a2a23__
-cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_5a45663174ae__'
+cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_83bb30268f7a__'
 """Per-segment attempt lifecycle: synthesize -> transcribe -> QA -> score -> retry/flag.
 
 Budget rules (crash-safe):
@@ -11217,7 +12205,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         reusable = reusable_take(conn, book, seg, plan.gen_key)
     check_storage(book)
     max_attempts = int(qa.get("max_attempts", 3))
-    text = spoken_text(seg)
+    text = plan.text  # manuscript/override text after pronunciation-dictionary respellings
+    pace = plan.pace
     if reusable is not None:
         with db.tx() as conn:
             conn.execute("UPDATE segments SET status='passed', selected_attempt_id=?, flag_reason=NULL, attempts_used=0, updated_at=? WHERE id=?",
@@ -11267,6 +12256,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
 
         audio_arr = A.to_mono_float(res.audio)
         sr = res.sample_rate
+        if abs(pace - 1.0) > 1e-6:  # per-voice pace: pitch-preserving time stretch (the model has no pace control)
+            audio_arr = A.time_stretch(audio_arr, sr, pace)
         seg_path, _alt = take_paths(book, seg, chapter["idx"], f"r{seg['round']}a{attempt_no}.wav")
         seg_path.parent.mkdir(parents=True, exist_ok=True)
         A.write_wav(seg_path, audio_arr, sr)
@@ -11279,7 +12270,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         }
         atomic_write_text(str(seg_path) + ".json", json.dumps(provenance, ensure_ascii=False, indent=1))
 
-        acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm), qa)
+        acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm * pace), qa)
         issues = list(acoustic["issues"])
         asr_out, ev = None, None
         if verify:
@@ -11370,7 +12361,7 @@ def recover_interrupted(conn) -> dict:
 
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
-__STUDIO_EOF_5a45663174ae__
+__STUDIO_EOF_83bb30268f7a__
 cat > "$DEST/studio/platform_services.py" <<'__STUDIO_EOF_6d7f7e457f3b__'
 """PlatformService implementations.
 
@@ -11605,6 +12596,256 @@ def _alive(pid: int) -> bool:
 def default_platform(state_dir: Path) -> PlatformService:
     return MacPlatformService() if sys.platform == "darwin" else ProcessPlatformService(state_dir)
 __STUDIO_EOF_6d7f7e457f3b__
+cat > "$DEST/studio/pronunciation.py" <<'__STUDIO_EOF_8b16a5d5b9c0__'
+"""Pronunciation dictionary (global and per book) and per-voice pace (roadmap C2).
+
+An entry maps a *written form* (word or phrase) to a *spoken rendition* (a plain respelling such as
+``Hermione`` -> ``Her-my-oh-nee``). Entries are applied only when the text sent to the TTS model is
+built (``narrative.store.plan_for_segment``): the manuscript text, ``narration_text`` and any operator
+``override_text`` are never modified. Because the rendition is part of the generation key, editing the
+dictionary changes the key of exactly the segments whose spoken text changes, and those (and only those)
+are sent back for regeneration through the usual ``invalidate_changed`` mechanism.
+
+Per-book entries override global entries with the same written form.
+"""
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+
+from .db import row, rows, scalar
+from .util import now
+
+MAX_ENTRIES = 2000
+PACE_MIN, PACE_MAX = 0.8, 1.25
+
+
+def _err(message: str, status: int = 422, details=None):
+    from .services import ServiceError
+
+    return ServiceError(message, status, details)
+
+
+# ------------------------------------------------------------------ applying
+
+
+@lru_cache(maxsize=64)
+def _compile(entries: tuple):
+    """entries: tuple of (written, spoken, case_sensitive, whole_word). One alternation, longest first,
+    so a phrase beats its own words and a replacement is never re-scanned (no chained rewrites)."""
+    ordered = sorted(entries, key=lambda e: -len(e[0]))
+    parts, spoken = [], []
+    for written, spk, cs, ww in ordered:
+        body = re.escape(written).replace(r"\ ", r"\s+")
+        if ww:
+            body = r"(?<!\w)" + body + r"(?!\w)"
+        parts.append("(" + ("" if cs else "(?i:") + body + ("" if cs else ")") + ")")
+        spoken.append(spk)
+    return re.compile("|".join(parts)), spoken
+
+
+def apply(entries: list[dict], text: str) -> str:
+    """Return ``text`` with every enabled entry applied. ``entries`` are dict rows (already merged)."""
+    if not entries or not text:
+        return text
+    key = tuple((e["written"], e["spoken"], bool(e["case_sensitive"]), bool(e["whole_word"])) for e in entries)
+    rx, spoken = _compile(key)
+    return rx.sub(lambda m: spoken[m.lastindex - 1], text)
+
+
+def effective_entries(conn, book_id: int | None) -> list[dict]:
+    """Enabled global entries, overlaid by the book's own (same written form and case rule: the book wins)."""
+    out: dict[tuple, dict] = {}
+    for r in rows(conn, "SELECT * FROM pronunciations WHERE enabled=1 AND book_id IS NULL ORDER BY id"):
+        out[(r["written"].lower() if not r["case_sensitive"] else r["written"], bool(r["case_sensitive"]))] = r
+    if book_id:
+        for r in rows(conn, "SELECT * FROM pronunciations WHERE enabled=1 AND book_id=? ORDER BY id", (book_id,)):
+            out[(r["written"].lower() if not r["case_sensitive"] else r["written"], bool(r["case_sensitive"]))] = r
+    return list(out.values())
+
+
+def apply_for_book(conn, book_id: int, text: str) -> str:
+    return apply(effective_entries(conn, book_id), text)
+
+
+# ------------------------------------------------------------------ CRUD
+
+
+def _clean(written: str, spoken: str) -> tuple[str, str]:
+    written = " ".join((written or "").split())
+    spoken = " ".join((spoken or "").split())
+    if not 1 <= len(written) <= 80:
+        raise _err("The written form must be 1-80 characters.")
+    if not 1 <= len(spoken) <= 200:
+        raise _err("The spoken form must be 1-200 characters.")
+    return written, spoken
+
+
+def _entry(r: dict) -> dict:
+    return {"id": r["id"], "book_id": r["book_id"], "scope": "book" if r["book_id"] else "global", "written": r["written"], "spoken": r["spoken"],
+            "case_sensitive": bool(r["case_sensitive"]), "whole_word": bool(r["whole_word"]), "enabled": bool(r["enabled"]), "note": r["note"],
+            "created_at": r["created_at"], "updated_at": r["updated_at"]}
+
+
+def list_entries(ctx, book_id: int | None = None) -> dict:
+    """book_id None -> the global dictionary. Otherwise the book's own entries plus the global ones."""
+    with ctx.db.session() as conn:
+        if book_id is not None and not row(conn, "SELECT 1 FROM books WHERE id=?", (book_id,)):
+            raise _err("Book not found", 404)
+        glob = [_entry(r) for r in rows(conn, "SELECT * FROM pronunciations WHERE book_id IS NULL ORDER BY lower(written), id")]
+        out = {"global": glob}
+        if book_id is not None:
+            out["book"] = [_entry(r) for r in rows(conn, "SELECT * FROM pronunciations WHERE book_id=? ORDER BY lower(written), id", (book_id,))]
+        return out
+
+
+def preview(ctx, text: str, book_id: int | None = None) -> dict:
+    with ctx.db.session() as conn:
+        res = apply_for_book(conn, book_id, text)
+    return {"input": text, "output": res, "changed": res != text}
+
+
+def _affected_books(conn, book_id: int | None) -> list[int]:
+    if book_id is not None:
+        return [book_id]
+    return [r["id"] for r in rows(conn, "SELECT id FROM books WHERE archived=0")]
+
+
+def reconcile(conn, ctx, book_ids: list[int]) -> dict[int, int]:
+    """Send segments whose generation key changed back for regeneration (others untouched).
+    -> {book_id: segments reset}. Old takes stay as history, never mixed into the book."""
+    from . import services as S
+    from .narrative import store as ST
+
+    out = {}
+    for bid in book_ids:
+        if not scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND status IN ('passed','flagged')", (bid,), 0):
+            continue
+        reset = ST.invalidate_changed(conn, ctx, bid)
+        if reset:
+            out[bid] = len(reset)
+            S.refresh_book_state(conn, bid)
+    return out
+
+
+def _commit(ctx, book_id: int | None, confirm: bool, mutate, what: str) -> dict:
+    """Run ``mutate(conn)`` and then reconcile affected segments in one transaction. Without ``confirm`` and
+    with segments affected, the transaction is rolled back and a 409 reports how many would be regenerated."""
+    from .services import NeedsConfirmation
+
+    with ctx.db.tx() as conn:
+        result = mutate(conn)
+        reset = reconcile(conn, ctx, _affected_books(conn, book_id))
+        n = sum(reset.values())
+        if n and not confirm:
+            raise NeedsConfirmation(f"This pronunciation change alters how {n} already-rendered segment(s) are spoken; they would be marked for regeneration "
+                                    "(earlier takes are kept as history).", {"stale_segments": n, "books": len(reset)})
+        ctx.audit(conn, "pronunciation", book_id or 0, what, {"stale_segments": n})
+        if n:
+            ctx.event(conn, "pronunciation", f"Pronunciation change: {n} segment(s) marked for regeneration.", book_id, "warning")
+    return {**result, "stale_segments": n, "books_affected": len(reset)}
+
+
+def _find_dupe(conn, book_id, written, cs, exclude=None):
+    sql = "SELECT id FROM pronunciations WHERE " + ("book_id IS NULL" if book_id is None else "book_id=?") + \
+          " AND case_sensitive=? AND " + ("written=?" if cs else "lower(written)=lower(?)")
+    params = ([] if book_id is None else [book_id]) + [1 if cs else 0, written]
+    r = row(conn, sql + (" AND id<>?" if exclude else ""), params + ([exclude] if exclude else []))
+    return r
+
+
+def create_entry(ctx, written: str, spoken: str, book_id: int | None = None, case_sensitive: bool = False, whole_word: bool = True,
+                 note: str = "", confirm: bool = False) -> dict:
+    written, spoken = _clean(written, spoken)
+
+    def mutate(conn):
+        if book_id is not None and not row(conn, "SELECT 1 FROM books WHERE id=?", (book_id,)):
+            raise _err("Book not found", 404)
+        if scalar(conn, "SELECT COUNT(*) FROM pronunciations", (), 0) >= MAX_ENTRIES:
+            raise _err(f"At most {MAX_ENTRIES} pronunciation entries are supported.")
+        if _find_dupe(conn, book_id, written, case_sensitive):
+            raise _err(f"'{written}' already has an entry in this dictionary; edit it instead.", 409)
+        t = now()
+        eid = conn.execute("""INSERT INTO pronunciations(book_id, written, spoken, case_sensitive, whole_word, enabled, note, created_at, updated_at)
+                              VALUES (?,?,?,?,?,1,?,?,?)""", (book_id, written, spoken, 1 if case_sensitive else 0, 1 if whole_word else 0, (note or "")[:200], t, t)).lastrowid
+        return {"id": eid}
+
+    res = _commit(ctx, book_id, confirm, mutate, "entry_created")
+    return {**res, "entry": get_entry(ctx, res["id"])}
+
+
+def get_entry(ctx, entry_id: int) -> dict:
+    with ctx.db.session() as conn:
+        r = row(conn, "SELECT * FROM pronunciations WHERE id=?", (entry_id,))
+        if not r:
+            raise _err("Entry not found", 404)
+        return _entry(r)
+
+
+def update_entry(ctx, entry_id: int, fields: dict, confirm: bool = False) -> dict:
+    with ctx.db.session() as conn:
+        cur = row(conn, "SELECT * FROM pronunciations WHERE id=?", (entry_id,))
+    if not cur:
+        raise _err("Entry not found", 404)
+
+    def mutate(conn):
+        w, s = _clean(fields.get("written", cur["written"]), fields.get("spoken", cur["spoken"]))
+        cs = bool(fields.get("case_sensitive", cur["case_sensitive"]))
+        ww = bool(fields.get("whole_word", cur["whole_word"]))
+        en = bool(fields.get("enabled", cur["enabled"]))
+        note = (fields.get("note", cur["note"]) or "")[:200]
+        if _find_dupe(conn, cur["book_id"], w, cs, exclude=entry_id):
+            raise _err(f"'{w}' already has an entry in this dictionary.", 409)
+        conn.execute("UPDATE pronunciations SET written=?, spoken=?, case_sensitive=?, whole_word=?, enabled=?, note=?, updated_at=? WHERE id=?",
+                     (w, s, 1 if cs else 0, 1 if ww else 0, 1 if en else 0, note, now(), entry_id))
+        return {"id": entry_id}
+
+    res = _commit(ctx, cur["book_id"], confirm, mutate, "entry_updated")
+    return {**res, "entry": get_entry(ctx, entry_id)}
+
+
+def delete_entry(ctx, entry_id: int, confirm: bool = False) -> dict:
+    with ctx.db.session() as conn:
+        cur = row(conn, "SELECT * FROM pronunciations WHERE id=?", (entry_id,))
+    if not cur:
+        raise _err("Entry not found", 404)
+
+    def mutate(conn):
+        conn.execute("DELETE FROM pronunciations WHERE id=?", (entry_id,))
+        return {"deleted": entry_id}
+
+    return _commit(ctx, cur["book_id"], confirm, mutate, "entry_deleted")
+
+
+# ------------------------------------------------------------------ per-voice pace
+
+
+def clamp_pace(value: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise _err("Pace must be a number.")
+    if not PACE_MIN <= v <= PACE_MAX:
+        raise _err(f"Pace must be between {PACE_MIN} and {PACE_MAX} (1.0 is the model's natural pace).")
+    return round(v, 3)
+
+
+def set_voice_pace(ctx, voice_id: int, pace: float, confirm: bool = False) -> dict:
+    """Change a voice's pace. Segments rendered with the voice become stale (generation key includes pace)."""
+    pace = clamp_pace(pace)
+    with ctx.db.session() as conn:
+        v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+    if not v:
+        raise _err("Voice not found", 404)
+    if abs(float(v.get("pace") or 1.0) - pace) < 1e-9:
+        return {"voice_id": voice_id, "pace": pace, "stale_segments": 0, "books_affected": 0}
+
+    def mutate(conn):
+        conn.execute("UPDATE voices SET pace=?, updated_at=? WHERE id=?", (pace, now(), voice_id))
+        return {"voice_id": voice_id, "pace": pace}
+
+    return _commit(ctx, None, confirm, mutate, "voice_pace")
+__STUDIO_EOF_8b16a5d5b9c0__
 cat > "$DEST/studio/providers.py" <<'__STUDIO_EOF_c422f9cf89b9__'
 """Concrete provider-side implementations of the contracts in interfaces.py.
 
@@ -11761,7 +13002,7 @@ class StudioStorageManager(StorageManager):
             p = p.parent
         return shutil.disk_usage(p).free
 __STUDIO_EOF_c422f9cf89b9__
-cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_0c3b6d21e950__'
+cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_b80b30d1c5e8__'
 """Reference-voice lab: sample scripts to read aloud and an objective quality report for a recording.
 
 The scripts are original texts chosen for phonetic variety (plosives, sibilants, long vowels),
@@ -11917,8 +13158,35 @@ def quality_report(metrics: dict) -> dict:
                "good": "Good. One small improvement is possible.",
                "excellent": "Excellent reference quality."}[verdict]
     return {"verdict": verdict, "summary": summary, "checks": checks}
-__STUDIO_EOF_0c3b6d21e950__
-cat > "$DEST/studio/reports.py" <<'__STUDIO_EOF_5c7f622586db__'
+
+
+_VERDICT_RANK = {"excellent": 3, "good": 2, "usable": 1, "poor": 0}
+
+
+def compare_takes(takes: list[dict]) -> dict:
+    """Side-by-side comparison of several takes of the same reference (their saved metadata).
+
+    Ranking is advisory: verdict first, then fewer warnings, then signal-to-noise. Poor takes are never recommended.
+    Transcript match (Whisper) is run per take by the existing check job and merged by the client."""
+    rows = []
+    for t in takes:
+        m, q = t.get("metrics", {}), t.get("quality", {})
+        checks = q.get("checks", [])
+        snr = round(m.get("rms_dbfs", -90) - m.get("noise_floor_dbfs", -90), 1)
+        rows.append({"id": t["id"], "label": t.get("label", ""), "script_title": t.get("script_title", ""), "verdict": q.get("verdict", "poor"),
+                     "duration_s": t.get("duration_s", m.get("duration_s", 0.0)), "peak_dbfs": m.get("peak_dbfs"), "rms_dbfs": m.get("rms_dbfs"),
+                     "noise_floor_dbfs": m.get("noise_floor_dbfs"), "snr_db": snr, "clip_ratio": m.get("clip_ratio", 0.0),
+                     "warnings": sum(1 for c in checks if c["status"] == "warn"), "fails": sum(1 for c in checks if c["status"] == "fail"),
+                     "ref_text": t.get("ref_text", "")})
+    order = sorted(rows, key=lambda r: (-_VERDICT_RANK.get(r["verdict"], 0), r["warnings"], -r["snr_db"], r["clip_ratio"]))
+    for i, r in enumerate(order):
+        r["rank"] = i + 1
+    best = order[0] if order and order[0]["verdict"] != "poor" else None
+    for r in rows:
+        r["recommended"] = bool(best and r["id"] == best["id"])
+    return {"rows": rows, "recommended_id": best["id"] if best else None}
+__STUDIO_EOF_b80b30d1c5e8__
+cat > "$DEST/studio/reports.py" <<'__STUDIO_EOF_4a097193cb72__'
 """Review summary reports (JSON + self-contained, escaped HTML)."""
 from __future__ import annotations
 
@@ -11954,6 +13222,7 @@ def build_report(ctx, book_id: int) -> dict:
         chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))
         counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (book_id,))}
         release = active_release(conn, book_id)
+        rel_audit = row(conn, "SELECT actor FROM audit_log WHERE entity='book' AND entity_id=? AND action='release_approved' ORDER BY id DESC LIMIT 1", (str(book_id),)) if release else None
         segs = rows(conn, """SELECT s.*, c.idx AS chapter_idx, c.title AS chapter_title FROM segments s JOIN chapters c ON c.id=s.chapter_id
                              WHERE s.book_id=? ORDER BY c.idx, s.idx""", (book_id,))
         attempts_by_seg: dict[int, list] = {}
@@ -12015,10 +13284,11 @@ def build_report(ctx, book_id: int) -> dict:
         "mean_wer": round(sum(wers) / len(wers), 4) if wers else None,
         "audio_duration_s": round(book_t, 2),
         "release": {"approved": bool(release), "approved_by": release["approved_by"] if release else None,
+                    "approved_by_account": rel_audit["actor"] if rel_audit else None,
                     "approved_at": release["approved_at"] if release else None, "listen_scope": release["listen_scope"] if release else None},
         "chapters": chapter_rows,
         "findings": findings,
-        "review_actions": [{"sid": r["sid"], "action": r["action"], "detail": loads(r["detail_json"], {}), "at": r["created_at"]} for r in reviews],
+        "review_actions": [{"sid": r["sid"], "action": r["action"], "actor": r["actor"], "detail": loads(r["detail_json"], {}), "at": r["created_at"]} for r in reviews],
         "qa_limitations": QA_LIMITATIONS,
     }
 
@@ -12088,7 +13358,7 @@ def write_report(ctx, book_id: int) -> dict:
                                (book_id, kind, "QA report (" + kind.split("_")[1].upper() + ")", str(p), 1 if draft else 0, p.stat().st_size, now()))
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
-__STUDIO_EOF_5c7f622586db__
+__STUDIO_EOF_4a097193cb72__
 cat > "$DEST/studio/scheduler.py" <<'__STUDIO_EOF_0827980c61c8__'
 """QueueScheduler implementation used to drain the queue for an update.
 
@@ -12257,7 +13527,7 @@ class SecretStore:
             out[slot] = {"label": label, "configured": has, "updated_at": entry.get("updated_at") if has else None}
         return out
 __STUDIO_EOF_ae0d5bdc74d1__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_25a38aa77f47__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_f82c05c99e89__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -12275,6 +13545,7 @@ from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
 from .narrative import cast as N_cast
 from .narrative import store as N_store
+from .context import resolve_actor
 from .config import (CATEGORY_LABELS, ENGLISH_SPEAKERS, PRESET_SPEAKERS, STORAGE_CATEGORIES, Settings, book_snapshot,
                      merge_patch, synth_fingerprint)
 from .db import row, rows, scalar
@@ -12329,7 +13600,7 @@ def _voice_dict(conn, v: dict) -> dict:
     used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
     return {
         "id": v["id"], "uid": v["uid"], "name": v["name"], "kind": v["kind"], "description": v["description"], "builtin": bool(v["builtin"]),
-        "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used,
+        "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used, "pace": float(v.get("pace") or 1.0),
         "version": {"id": vv.get("id"), "version": vv.get("version"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                     "language": vv.get("language"), "instruct": vv.get("instruct"), "ref_text": vv.get("ref_text"),
                     "ref_duration_s": vv.get("ref_duration_s"), "has_reference": bool(vv.get("ref_audio_path")),
@@ -12557,6 +13828,16 @@ def get_recording(ctx, rid: str) -> dict:
     if not p.exists():
         raise ServiceError("Recording not found", 404)
     return loads(p.read_text("utf-8"), {})
+
+
+def compare_recordings(ctx, ids: list[str]) -> dict:
+    """Compare 2-8 saved takes side by side (metrics, verdicts, advisory ranking)."""
+    from . import reference as R
+
+    ids = list(dict.fromkeys(ids))
+    if not 2 <= len(ids) <= 8:
+        raise ServiceError("Choose 2 to 8 takes to compare.", 422)
+    return R.compare_takes([get_recording(ctx, i) for i in ids])
 
 
 def list_recordings(ctx) -> list[dict]:
@@ -12930,6 +14211,7 @@ def get_book(ctx, book_id: int) -> dict:
             ch = r["chapter"]
             st = {x["status"]: x["n"] for x in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE chapter_id=? GROUP BY status", (ch["id"],))}
             out["chapters"].append({"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
+                                    "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
                                     "est_duration_s": ch["est_duration_s"], "status_counts": st, "missing_audio": len(r["problems"]),
                                     "render_current": r["render_current"],
                                     "renders": {k: {"id": v_["id"], "duration_s": v_["duration_s"], "draft": bool(v_["draft"]), "created_at": v_["created_at"],
@@ -13351,6 +14633,7 @@ def _seg_and_book(conn, segment_id: int):
 
 
 def _review(conn, ctx, seg: dict, action: str, detail: dict | None = None, actor: str = "operator") -> None:
+    actor = resolve_actor(actor)
     conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
                  (seg["id"], action, dumps(detail or {}), actor, now()))
     ctx.audit(conn, "segment", seg["sid"], action, detail, actor)
@@ -13479,7 +14762,9 @@ def approve_release(ctx, book_id: int, approved_by: str, listen_scope: str, atte
         conn.execute("INSERT INTO releases(book_id, approved_by, listen_scope, statement, checklist_json, approved_at) VALUES (?,?,?,?,?,?)",
                      (book_id, approved_by, listen_scope, statement, dumps({"notes": notes[:2000], "counts": chk["counts"]}), now()))
         conn.execute("UPDATE chapter_renders SET draft=0 WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id=?)", (book_id,))
-        ctx.audit(conn, "book", book_id, "release_approved", {"by": approved_by, "listen_scope": listen_scope}, approved_by)
+        signed_in = resolve_actor(None)
+        ctx.audit(conn, "book", book_id, "release_approved", {"by": approved_by, "signed_in_user": signed_in, "listen_scope": listen_scope},
+                  signed_in if signed_in != "operator" else approved_by)
         ctx.event(conn, "release", f"'{b['title']}' approved for publication by {approved_by} ({listen_scope} listen). Export again to get final (non-draft) files.", book_id)
         refresh_book_state(conn, book_id)
     return get_book(ctx, book_id)
@@ -13567,6 +14852,21 @@ def get_settings(ctx) -> dict:
             "secrets": ctx.secrets.status()}
 
 
+def test_llm(ctx, base_url: str, model: str, transport=None) -> dict:
+    """Try the endpoint and model currently typed in Settings (saved or not); uses the saved key slot and key-env setting."""
+    from pydantic import ValidationError
+
+    from .config import LLMSettings
+    from .narrative.llm import LLMClient
+
+    saved = ctx.settings().narrative.llm
+    try:
+        cfg = LLMSettings(provider="openai_compatible", base_url=base_url, model=model, api_key_env=saved.api_key_env, timeout_s=30.0)
+    except ValidationError as exc:
+        raise ServiceError("; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()), 422)
+    return LLMClient(cfg, transport=transport, secrets=ctx.secrets).test_connection()
+
+
 def set_secret(ctx, slot: str, value: str | None, actor: str = "operator") -> dict:
     """Save (or, with value=None, remove) the API key in a slot. The key itself is never audited or returned."""
     try:
@@ -13617,7 +14917,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_25a38aa77f47__
+__STUDIO_EOF_f82c05c99e89__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -14496,7 +15796,7 @@ def verify_tree_manifest(tree: Path) -> int:
         raise ArchiveError(f"The release contains files not listed in its manifest: {sorted(extra)[:3]}")
     return len(listed)
 __STUDIO_EOF_492b24e47d39__
-cat > "$DEST/studio/update/helper.py" <<'__STUDIO_EOF_7127a109413a__'
+cat > "$DEST/studio/update/helper.py" <<'__STUDIO_EOF_7bca892de0a3__'
 """The separate updater process. It is started by the web process through the platform (a one-shot launchd job on macOS) or
 by ``studio update --install``; it is never a thread of the server, so stopping the server cannot interrupt it.
 
@@ -14528,6 +15828,7 @@ from typing import Callable
 from ..scheduler import FileQueueScheduler
 from ..util import atomic_write_text, now
 from .archive import ArchiveError, verify_tree_manifest
+from . import housekeeping
 from .layout import Layout
 from .runtime import runtime_python, runtime_ready
 from .status import StatusFile
@@ -14574,6 +15875,7 @@ class Applier:
         self.journal = layout.update_dir / "journal.json"
         self.request = layout.update_dir / "request.json"
         self._had_request = False
+        self._rollback_mode = False
 
     # ---------------------------------------------------------------- utilities
     def _python_for(self, release_dir: Path) -> Path:
@@ -14665,6 +15967,15 @@ class Applier:
     # ----------------------------------------------------------------- preflight
     def preflight(self, version: str) -> list[str]:
         problems: list[str] = []
+        if self._rollback_mode:
+            try:
+                need = int(json.loads((self.layout.release_dir(version) / "release.json").read_text("utf-8")).get("schema_version", 0))
+            except (OSError, ValueError):
+                need = 0
+            have = self.ctx.db.schema_version()
+            if need and need < have:
+                problems.append(f"Release {version} uses an older database layout (schema {need}) than your data (schema {have}), so it cannot open it. "
+                                "Roll back is not possible; no changes were made.")
         rel = self.layout.release_dir(version)
         if not self.store.has(version):
             problems.append(f"Release {version} is not staged.")
@@ -14683,7 +15994,8 @@ class Applier:
         return problems
 
     # ---------------------------------------------------------------------- run
-    def run(self, version: str, mode: str) -> bool:
+    def run(self, version: str, mode: str, rollback: bool = False) -> bool:
+        self._rollback_mode = rollback
         lock = self.layout.update_dir / "apply.lock"
         self.layout.update_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -14781,10 +16093,12 @@ class Applier:
             warnings.append("Storage is unavailable (" + str(storage.get("detail", "disconnected")) + "); affected jobs stay paused until it returns.")
         self.scheduler.release()
         pruned = self.store.prune(self.ctx.settings().updates.keep_releases)
-        msg = f"Updated to {version}." + (" " + " ".join(warnings) if warnings else "")
-        self.status.update(state="succeeded", message=msg, error=None, error_kind=None, mode=None, staged_version=None, latest=None,
+        housekeeping.run(self.layout)
+        msg = (f"Rolled back to {version}." if self._rollback_mode else f"Updated to {version}.") + (" " + " ".join(warnings) if warnings else "")
+        extra = {} if self._rollback_mode else {"staged_version": None, "latest": None}
+        self.status.update(state="succeeded", message=msg, error=None, error_kind=None, mode=None, **extra,
                            last_installed=version, last_installed_at=now(), warnings=warnings)
-        self.status.add_history("install", version, True, msg, previous=old, backup=str(backup), pruned=pruned)
+        self.status.add_history("rollback" if self._rollback_mode else "install", version, True, msg, previous=old, backup=str(backup), pruned=pruned)
         self._journal(step="done", version=version, old=old)
         return True
 
@@ -14807,7 +16121,7 @@ class Applier:
             reason += f" (rollback error: {exc})"
         if h:
             self.scheduler.release()
-            msg = f"Update to {version} failed and was rolled back to {old}: {reason}"
+            msg = f"{'Rollback' if self._rollback_mode else 'Update'} to {version} failed and was reverted to {old}: {reason}"
             self.status.update(state="rolled_back", message=msg, error=reason, error_kind="rolled_back", mode=None)
             self.status.add_history("install", version, False, msg, rolled_back_to=old)
             return False
@@ -14848,6 +16162,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError):
         pass
     version = a.version or req.get("version")
+    rollback = bool(req.get("rollback")) and req.get("version") == version
     mode = a.mode or req.get("mode") or "after_job"
     if not version:
         print("No update request found.", file=sys.stderr)
@@ -14856,7 +16171,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx = Context(layout.state, migrate=False)
     ap_ = Applier(layout, ctx, default_platform(layout.state))
     try:
-        return 0 if ap_.run(version, mode) else 1
+        return 0 if ap_.run(version, mode, rollback) else 1
     except ApplyError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -14864,7 +16179,111 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-__STUDIO_EOF_7127a109413a__
+__STUDIO_EOF_7bca892de0a3__
+cat > "$DEST/studio/update/housekeeping.py" <<'__STUDIO_EOF_8b9d8389d836__'
+"""Conservative clean-up after a successful install or rollback. It only ever removes things that can be re-created:
+tool archives the installer downloaded (``app/downloads``), private Python environments (``app/runtimes/<id>``) that no kept release
+names, and empty staging folders. It never touches ``releases/`` (that is ``ReleaseStore.prune``), ``state/``, books, voices or models."""
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import time
+from pathlib import Path
+
+from .layout import Layout
+from .store import ReleaseStore
+
+RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".part", ".tmp")
+RECENT_SECONDS = 3600      # something touched in the last hour may be a build in progress elsewhere; leave it
+
+
+def referenced_runtimes(layout: Layout) -> set[str]:
+    """Runtime ids named by every release still on disk (current, previous and any staged one), plus the one ``app/venv`` points at."""
+    keep: set[str] = set()
+    for v in ReleaseStore(layout).installed():
+        try:
+            rid = json.loads((layout.release_dir(v) / "release.json").read_text("utf-8")).get("runtime_id")
+        except (OSError, ValueError):
+            rid = None
+        if rid:
+            keep.add(str(rid))
+    try:
+        target = (layout.app / "venv").resolve()
+        for part in target.parts:
+            if RUNTIME_ID_RE.match(part):
+                keep.add(part)
+    except OSError:
+        pass
+    return keep
+
+
+def prune_runtimes(layout: Layout, now: float | None = None) -> list[str]:
+    if not layout.runtimes.exists():
+        return []
+    store = ReleaseStore(layout)
+    if not store.current():
+        return []                    # without a known active release we cannot tell what is in use: remove nothing
+    keep = referenced_runtimes(layout)
+    t = now if now is not None else time.time()
+    gone = []
+    for p in sorted(layout.runtimes.iterdir()):
+        if not p.is_dir() or p.is_symlink() or not RUNTIME_ID_RE.match(p.name) or p.name in keep:
+            continue
+        try:
+            if t - p.stat().st_mtime < RECENT_SECONDS:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(p, ignore_errors=True)
+        gone.append(p.name)
+    return gone
+
+
+def tidy_downloads(layout: Layout) -> list[str]:
+    d = layout.app / "downloads"
+    if not d.is_dir() or d.is_symlink():
+        return []
+    gone = []
+    for p in sorted(d.iterdir()):
+        if p.is_file() and not p.is_symlink() and p.name.lower().endswith(ARCHIVE_SUFFIXES):
+            try:
+                p.unlink()
+                gone.append(p.name)
+            except OSError:
+                pass
+    try:
+        d.rmdir()                    # only succeeds when empty
+    except OSError:
+        pass
+    return gone
+
+
+def tidy_staging(layout: Layout) -> int:
+    n = 0
+    if layout.staging.is_dir():
+        for p in layout.staging.iterdir():
+            if p.is_dir() and not any(p.iterdir()):
+                try:
+                    p.rmdir()
+                    n += 1
+                except OSError:
+                    pass
+    return n
+
+
+def run(layout: Layout) -> dict:
+    """Never raises: housekeeping must not turn a successful install into a failure."""
+    out: dict = {"downloads": [], "runtimes": [], "staging": 0}
+    for key, fn in (("downloads", tidy_downloads), ("runtimes", prune_runtimes), ("staging", tidy_staging)):
+        try:
+            out[key] = fn(layout)
+        except Exception:
+            pass
+    return out
+__STUDIO_EOF_8b9d8389d836__
 cat > "$DEST/studio/update/launch.py" <<'__STUDIO_EOF_59a27258dea9__'
 """Starting the separate updater process, and the health payload both the server and the updater agree on."""
 from __future__ import annotations
@@ -15052,7 +16471,7 @@ class Layout:
         except (OSError, ValueError):
             return {}
 __STUDIO_EOF_f8cdc1305a61__
-cat > "$DEST/studio/update/manager.py" <<'__STUDIO_EOF_7bc7a50ec889__'
+cat > "$DEST/studio/update/manager.py" <<'__STUDIO_EOF_ac7714bff567__'
 """ReleaseUpdateManager: check, download, verify and stage a release. Runs in the web process (or the CLI) and only ever
 *adds* a new directory under ``releases/``; it never touches the running release. Switching and restarting is the helper's job."""
 from __future__ import annotations
@@ -15160,7 +16579,7 @@ class ReleaseUpdateManager(UpdateManager):
             "installed_version": self.installed, "build": self._build(), "channel": s.channel, "managed": managed,
             "repository": s.repository, "signing_configured": self.trust.configured or self.trust.allow_unsigned,
             "auto_check": s.auto_check, "check_interval_hours": s.check_interval_hours,
-            "previous_version": pointer.get("previous"), "installed_releases": self.store.installed(),
+            "previous_version": pointer.get("previous"), "can_rollback": self.can_rollback(), "installed_releases": self.store.installed(),
             "state": d.get("state", "idle"), "message": d.get("message", ""), "error": d.get("error"), "error_kind": d.get("error_kind"),
             "latest": d.get("latest"), "selection": d.get("selection"), "staged_version": d.get("staged_version"),
             "target_version": d.get("target_version"), "mode": d.get("mode"), "phases": d.get("phases") or {},
@@ -15380,6 +16799,43 @@ class ReleaseUpdateManager(UpdateManager):
             self.status_file.add_history("cancel", None, True, "Pending installation cancelled")
         return self.status()
 
+    # ----------------------------------------------------------------- rollback
+    def can_rollback(self) -> str | None:
+        """Return the kept previous version, or None when there is nothing to go back to."""
+        prev = self.store.previous()
+        if prev and prev != self.store.current() and self.store.has(prev):
+            return prev
+        return None
+
+    def request_rollback(self, mode: str = "now", confirm_version: str = "") -> dict:
+        """Switch back to the kept previous release through the same updater process (drain, backup, switch, health check, automatic
+        revert on failure). The user's explicit confirmation names the version they are going back to."""
+        if mode not in ("now", "after_job"):
+            raise UpdateError("mode must be 'now' or 'after_job'", 422)
+        if not self.layout.managed:
+            raise UpdateError(self.status()["not_managed_reason"])
+        if self._busy or (self.layout.update_dir / "request.json").exists():
+            raise UpdateError("An update operation is already in progress.")
+        prev = self.can_rollback()
+        if not prev:
+            raise UpdateError("There is no previous version kept on this Mac to roll back to.")
+        if confirm_version != prev:
+            raise UpdateError(f"Confirmation does not match the previous version ({prev}).", 422)
+        req = {"version": prev, "mode": mode, "requested_at": now(), "from_version": self.installed, "rollback": True}
+        atomic_write_text(self.layout.update_dir / "request.json", json.dumps(req))
+        self._set(state="waiting", mode=mode, target_version=prev, error=None, error_kind=None,
+                  message=f"Rolling back to {prev} after the current job finishes." if mode == "after_job"
+                  else f"Rolling back to {prev} at the next safe segment boundary.")
+        self.status_file.add_history("rollback_requested", prev, True, f"mode={mode}")
+        if self.launch_helper:
+            try:
+                self.launch_helper(prev, mode)
+            except Exception as exc:
+                (self.layout.update_dir / "request.json").unlink(missing_ok=True)
+                self._set(state="failed", message=f"Could not start the updater: {exc}", error=str(exc), error_kind="failed")
+                raise UpdateError(f"Could not start the updater process: {exc}") from exc
+        return self.status()
+
     # ------------------------------------------------------------------ install
     def request_install(self, mode: str, confirm_version: str) -> dict:
         """Record the user's explicit intent and hand off to the separate updater process."""
@@ -15410,7 +16866,7 @@ class ReleaseUpdateManager(UpdateManager):
                 self._set(state="failed", message=f"Could not start the updater: {exc}", error=str(exc), error_kind="failed")
                 raise UpdateError(f"Could not start the updater process: {exc}") from exc
         return self.status()
-__STUDIO_EOF_7bc7a50ec889__
+__STUDIO_EOF_ac7714bff567__
 cat > "$DEST/studio/update/manifest.py" <<'__STUDIO_EOF_493d0f087608__'
 """The signed release-index contract and update selection.
 
@@ -16349,7 +17805,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_05f09b46abf6__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_ea1f003be68c__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -16372,6 +17828,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import chapters as CH
 from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
@@ -16489,6 +17946,10 @@ class SelectTakeReq(_Req):
     attempt_id: int
 
 
+class ChapterTitleReq(_Req):
+    title: Optional[str] = Field(None, max_length=300)
+
+
 class ExportReq(_Req):
     kind: Literal["m4b", "chapter_m4b", "mp3_zip"] = "m4b"
     chapter_id: Optional[int] = None
@@ -16531,6 +17992,11 @@ class PasswordReq(_Req):
     current: str = Field("", max_length=200)   # may be empty only while a temporary password is in force
     new: str = Field(min_length=10, max_length=200)
     confirm: str = Field(max_length=200)
+
+
+class LLMTestReq(_Req):
+    base_url: str = Field(max_length=300)
+    model: str = Field("", max_length=200)
 
 
 class UserReq(_Req):
@@ -16811,7 +18277,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         except ValueError as exc:
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:
-            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name", "operator"))
+            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name") or "operator")
         return {"users": app.state.auth.list_users()}
 
     # ------------------------------------------------------------------ pages
@@ -16912,6 +18378,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     async def api_book_cover(book_id: int, file: UploadFile = File(...)):
         data = await read_upload(file, 10 * 1024 * 1024)
         return await run_in_threadpool(S.set_cover, ctx, book_id, file.filename or "cover.jpg", data)
+
+    @app.post("/api/books/{book_id}/chapters/{chapter_id}/regenerate")
+    def api_chapter_regenerate(book_id: int, chapter_id: int, req: ConfirmReq):
+        return CH.regenerate_chapter(ctx, book_id, chapter_id, req.confirm_invalidate)
+
+    @app.patch("/api/books/{book_id}/chapters/{chapter_id}")
+    def api_chapter_title(book_id: int, chapter_id: int, req: ChapterTitleReq):
+        return CH.set_chapter_title(ctx, book_id, chapter_id, req.title)
 
     @app.post("/api/books/{book_id}/assemble")
     def api_book_assemble(book_id: int):
@@ -17033,6 +18507,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_recordings():
         return {"recordings": S.list_recordings(ctx)}
 
+    @app.get("/api/recordings/compare")
+    def api_recordings_compare(ids: str = Query("", max_length=400)):
+        return S.compare_recordings(ctx, [i for i in ids.split(",") if i])
+
     @app.patch("/api/recordings/{rid}")
     def api_recording_text(rid: str, req: RecordingTextReq):
         return S.update_recording_text(ctx, rid, req.ref_text)
@@ -17097,6 +18575,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     from .narrative_api import register as register_narrative
 
     register_narrative(app, ctx)
+
+    from .disk_api import register as register_disk
+
+    register_disk(app, ctx)
+
+    from .pronunciation_api import register as register_pronunciation
+
+    register_pronunciation(app, ctx)
 
     from ..platform_services import default_platform
     from ..update.launch import make_launcher
@@ -17203,13 +18689,17 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_settings_put(patch: dict[str, Any]):
         return S.update_settings(ctx, patch)
 
+    @app.post("/api/narrative/llm/test")
+    def api_llm_test(req: LLMTestReq):
+        return S.test_llm(ctx, req.base_url, req.model)
+
     @app.put("/api/secrets/{slot}")
     def api_secret_put(slot: str, req: SecretReq, request: Request):
-        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name", "operator"))
+        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name") or "operator")
 
     @app.delete("/api/secrets/{slot}")
     def api_secret_delete(slot: str, request: Request):
-        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name", "operator"))
+        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name") or "operator")
 
     @app.get("/api/storage")
     def api_storage():
@@ -17228,7 +18718,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_storage_mkdir(req: MkdirReq, request: Request):
         created = make_folder(req.parent, req.name)
         with ctx.db.tx() as conn:
-            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name", "operator"))
+            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name") or "operator")
         return {"path": created}
 
     @app.post("/api/storage/choose-folder")
@@ -17259,8 +18749,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_05f09b46abf6__
-cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_f82331510b34__'
+__STUDIO_EOF_ea1f003be68c__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_b4d5862fc864__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
 from __future__ import annotations
@@ -17286,6 +18776,7 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
 ADMIN_RULES = [
     ("PUT", re.compile(r"^/api/settings$")),
     ("PUT", re.compile(r"^/api/books/\d+/narrative/settings$")),
+    ("POST", re.compile(r"^/api/narrative/llm/test$")),
     ("PUT", re.compile(r"^/api/secrets/")),
     ("DELETE", re.compile(r"^/api/secrets/")),
     ("GET", re.compile(r"^/api/storage$")),
@@ -17293,12 +18784,14 @@ ADMIN_RULES = [
     ("POST", re.compile(r"^/api/storage/")),
     ("POST", re.compile(r"^/api/books/\d+/(move|archive)$")),
     ("POST", re.compile(r"^/api/worker/restart$")),
-    ("POST", re.compile(r"^/api/update/(check|download|install|cancel|restart)$")),
+    ("POST", re.compile(r"^/api/update/(check|download|install|rollback|cancel|restart)$")),
     ("PUT", re.compile(r"^/api/update/preferences$")),
     ("POST", re.compile(r"^/api/voices/\d+/archive$")),
     ("GET", re.compile(r"^/api/auth/users$")),
     ("POST", re.compile(r"^/api/auth/users$")),
     ("GET", re.compile(r"^/api/doctor$")),
+    ("GET", re.compile(r"^/api/disk/")),
+    ("POST", re.compile(r"^/api/disk/")),
 ]
 
 
@@ -17454,7 +18947,77 @@ class LoginLimiter:
 def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-__STUDIO_EOF_f82331510b34__
+__STUDIO_EOF_b4d5862fc864__
+cat > "$DEST/studio/web/disk_api.py" <<'__STUDIO_EOF_5925211de4ae__'
+"""HTTP API for disk management (roadmap C3). Every route here is administrator-only (auth.ADMIN_RULES).
+Destructive routes need ``"confirm": true`` in the body; without it they answer 409 with a preview of what would be removed."""
+from __future__ import annotations
+
+from typing import Literal
+
+from fastapi import Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+
+from .. import diskmgmt as D
+
+
+class _Req(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ConfirmReq(_Req):
+    confirm: StrictBool = False
+
+
+class PurgeReq(_Req):
+    scope: Literal["takes", "exports", "masters"]
+    confirm: StrictBool = False
+
+
+class NameReq(_Req):
+    name: str = Field(min_length=5, max_length=160)
+
+
+class NameConfirmReq(NameReq):
+    confirm: StrictBool = False
+
+
+def register(app, ctx) -> None:
+    def actor(request: Request) -> str:
+        return (getattr(request.state, "user", None) or {}).get("name", "operator")
+
+    @app.get("/api/disk/usage")
+    def api_disk_usage():
+        return D.usage(ctx)
+
+    @app.get("/api/disk/backups")
+    def api_disk_backups():
+        return D.list_backups(ctx)
+
+    @app.post("/api/disk/books/{book_id}/delete")
+    def api_disk_delete_book(book_id: int, req: ConfirmReq, request: Request):
+        return D.delete_book(ctx, book_id, req.confirm, actor(request))
+
+    @app.post("/api/disk/books/{book_id}/purge")
+    def api_disk_purge(book_id: int, req: PurgeReq, request: Request):
+        return D.purge(ctx, book_id, req.scope, req.confirm, actor(request))
+
+    @app.post("/api/disk/books/{book_id}/backup")
+    def api_disk_backup_book(book_id: int, request: Request):
+        return D.backup_book(ctx, book_id, actor(request))
+
+    @app.post("/api/disk/restore")
+    def api_disk_restore(req: NameReq, request: Request):
+        return D.restore_book(ctx, req.name, actor(request))
+
+    @app.post("/api/disk/backups/delete")
+    def api_disk_backup_delete(req: NameConfirmReq, request: Request):
+        return D.delete_backup(ctx, req.name, req.confirm, actor(request))
+
+    @app.post("/api/disk/db-backup")
+    def api_disk_db_backup(request: Request):
+        return D.backup_database(ctx, actor(request))
+__STUDIO_EOF_5925211de4ae__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -17794,7 +19357,78 @@ def narrative_metadata(ctx, book_id: int) -> dict:
                       "status": s["status"], "duration_s": s["duration_s"], "wer": s["wer"], "direction": dirs.get(s["id"]), "instruct": s["instruct_used"]} for s in segs],
     }
 __STUDIO_EOF_51ac6d84b25c__
-cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_a4cffc340b43__'
+cat > "$DEST/studio/web/pronunciation_api.py" <<'__STUDIO_EOF_ecfd1a546971__'
+"""HTTP API for the pronunciation dictionary and per-voice pace (roadmap C2). Logic: ``studio.pronunciation``."""
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .. import pronunciation as PR
+
+
+class _Req(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class EntryReq(_Req):
+    written: str = Field(min_length=1, max_length=80)
+    spoken: str = Field(min_length=1, max_length=200)
+    book_id: Optional[int] = None
+    case_sensitive: bool = False
+    whole_word: bool = True
+    note: str = Field("", max_length=200)
+    confirm_invalidate: bool = False
+
+
+class EntryPatchReq(_Req):
+    written: Optional[str] = Field(None, min_length=1, max_length=80)
+    spoken: Optional[str] = Field(None, min_length=1, max_length=200)
+    case_sensitive: Optional[bool] = None
+    whole_word: Optional[bool] = None
+    enabled: Optional[bool] = None
+    note: Optional[str] = Field(None, max_length=200)
+    confirm_invalidate: bool = False
+
+
+class TryReq(_Req):
+    text: str = Field(min_length=1, max_length=2000)
+    book_id: Optional[int] = None
+
+
+class PaceReq(_Req):
+    pace: float = Field(ge=PR.PACE_MIN, le=PR.PACE_MAX)
+    confirm_invalidate: bool = False
+
+
+def register(app, ctx) -> None:
+    @app.get("/api/pronunciations")
+    def api_pron_list(book_id: Optional[int] = None):
+        return {**PR.list_entries(ctx, book_id), "pace_range": [PR.PACE_MIN, PR.PACE_MAX]}
+
+    @app.post("/api/pronunciations")
+    def api_pron_create(req: EntryReq):
+        return PR.create_entry(ctx, req.written, req.spoken, req.book_id, req.case_sensitive, req.whole_word, req.note, req.confirm_invalidate)
+
+    @app.patch("/api/pronunciations/{entry_id}")
+    def api_pron_patch(entry_id: int, req: EntryPatchReq):
+        fields = {k: v for k, v in req.model_dump().items() if v is not None and k != "confirm_invalidate"}
+        return PR.update_entry(ctx, entry_id, fields, req.confirm_invalidate)
+
+    @app.delete("/api/pronunciations/{entry_id}")
+    def api_pron_delete(entry_id: int, confirm_invalidate: bool = False):
+        return PR.delete_entry(ctx, entry_id, confirm_invalidate)
+
+    @app.post("/api/pronunciations/try")
+    def api_pron_try(req: TryReq):
+        return PR.preview(ctx, req.text, req.book_id)
+
+    @app.put("/api/voices/{voice_id}/pace")
+    def api_voice_pace(voice_id: int, req: PaceReq):
+        return PR.set_voice_pace(ctx, voice_id, req.pace, req.confirm_invalidate)
+__STUDIO_EOF_ecfd1a546971__
+cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_5cd414f9fcb1__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
 mutating requests (CSRF), session authentication with admin-only routes, strict headers.
 
@@ -17811,6 +19445,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..config import is_loopback
+from ..context import current_actor
 from .auth import COOKIE, AuthStore, LoginLimiter, is_admin_only
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -17900,7 +19535,11 @@ def install(app, ctx) -> None:
                 return JSONResponse({"error": "This action needs an administrator account."}, status_code=403)
         elif not is_loopback(s.host):
             return JSONResponse({"error": "Refusing to serve: network binding without any user account."}, status_code=503)
-        response = await call_next(request)
+        tok = current_actor.set((request.state.user or {}).get("name"))
+        try:
+            response = await call_next(request)
+        finally:
+            current_actor.reset(tok)
         response.headers.setdefault("Content-Security-Policy", CSP)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -17910,9 +19549,9 @@ def install(app, ctx) -> None:
         if path.startswith("/api/") or path.startswith("/media/"):
             response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response
-__STUDIO_EOF_a4cffc340b43__
+__STUDIO_EOF_5cd414f9fcb1__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_9e6afeddbe18__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_cedb43247cb0__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -17955,6 +19594,7 @@ p { margin: .4rem 0 .8rem; }
 .err { color: var(--bad); }
 .warn-text { color: var(--warn); }
 .good-text { color: var(--good); }
+.bad-text { color: var(--bad); }
 
 /* ---------------------------------------------------------------- shell */
 .shell { display: grid; grid-template-columns: 236px 1fr; grid-template-rows: 56px 1fr; min-height: 100vh; }
@@ -18247,6 +19887,8 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
 .takes { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1rem; margin-top: .6rem; }
 .take { border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; background: var(--surface); min-width: 0; }
 .take.chosen { border-color: var(--accent); }
+.compare { margin: .75rem 0; } .compare .lab-row { flex-wrap: wrap; align-items: end; gap: .5rem; }
+.compare table.cmp { width: 100%; } .compare table.cmp tr.chosen { background: rgba(53, 89, 214, .08); } .compare table.cmp audio { max-width: 12rem; }
 .take-head { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; } .take-head h4 { margin: 0; }
 /* ---------------------------------------------------------------- about */
 .ver-link { color: var(--muted); font-weight: 600; text-decoration: none; }
@@ -18331,8 +19973,8 @@ pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--su
 .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
 .nav-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); margin-left: .25rem; vertical-align: middle; }
 .nav-dot[hidden] { display: none; }
-__STUDIO_EOF_9e6afeddbe18__
-cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_9582783ee2ef__'
+__STUDIO_EOF_cedb43247cb0__
+cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 <!doctype html>
 <html lang="en">
 <head>
@@ -18365,8 +20007,10 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_9582783ee2ef__'
         <li><a href="#/library" data-nav="library"><span aria-hidden="true">▤</span> Library &amp; Import</a></li>
         <li><a href="#/queue" data-nav="queue"><span aria-hidden="true">≡</span> Queue</a></li>
         <li><a href="#/voices" data-nav="voices"><span aria-hidden="true">♪</span> Narrator Studio</a></li>
+        <li><a href="#/pronunciation" data-nav="pronunciation"><span aria-hidden="true">Aa</span> Pronunciation</a></li>
         <li><a href="#/review" data-nav="review"><span aria-hidden="true">✓</span> Review &amp; QA</a></li>
         <li><a href="#/settings" data-nav="settings"><span aria-hidden="true">⚙</span> Settings &amp; Storage</a></li>
+        <li><a href="#/disk" data-nav="disk"><span aria-hidden="true">▣</span> Disk &amp; Backups</a></li>
         <li><a href="#/updates" data-nav="updates"><span aria-hidden="true">⭳</span> Updates <span class="nav-dot" id="update-dot" hidden aria-label="update available"></span></a></li>
         <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> About &amp; System</a></li>
       </ul>
@@ -18381,9 +20025,9 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_9582783ee2ef__'
   <noscript><p class="noscript">Audiobook Studio needs JavaScript enabled.</p></noscript>
 </body>
 </html>
-__STUDIO_EOF_9582783ee2ef__
+__STUDIO_EOF_31fd707206f2__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_6fb6d71471ae__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_4c8b5e806943__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
@@ -18397,8 +20041,10 @@ import * as about from "./views/about.js";
 import * as narrative from "./views/narrative.js";
 import * as inspector from "./views/inspector.js";
 import * as updates from "./views/updates.js";
+import * as disk from "./views/disk.js";
+import * as pronunciation from "./views/pronunciation.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
 let cleanup = null;
 let currentKey = "";
 
@@ -18610,7 +20256,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_6fb6d71471ae__
+__STUDIO_EOF_4c8b5e806943__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -19023,7 +20669,7 @@ export async function render(view) {
   return () => view.removeEventListener("click", onClick);
 }
 __STUDIO_EOF_dcc55ea8f77a__
-cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_3798855b0bab__'
+cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_77ea30dd3759__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
 
@@ -19075,7 +20721,9 @@ export async function render(view, parts) {
         <tbody>${b.chapters.map((c) => {
           const sc = c.status_counts, mp3 = c.renders.mp3, wav = c.renders.wav;
           return html`<tr><td>${c.index}</td>
-            <td><strong>${c.title}</strong><div class="small muted">${c.words.toLocaleString()} words · est. ${fmtDuration(c.est_duration_s)}</div></td>
+            <td><strong>${c.title}</strong>${c.title_overridden ? html` <span class="small muted">(renamed; original: ${c.original_title})</span>` : ""}
+              <div class="small"><button class="linklike" data-act="chapter-title" data-ch="${c.id}">Edit title</button> · <button class="linklike" data-act="chapter-regen" data-ch="${c.id}" ${busyJob ? html`disabled` : ""}>Regenerate chapter</button></div>
+              <div class="small muted">${c.words.toLocaleString()} words · est. ${fmtDuration(c.est_duration_s)}</div></td>
             <td class="small">${(sc.passed || 0) + (sc.approved || 0) + (sc.flagged || 0)}/${c.segments} rendered${sc.flagged ? html` · <a href="#/review/${id}?chapter=${c.id}&filter=flagged" class="warn-text">${sc.flagged} flagged</a>` : ""}
               ${c.missing_audio ? html`<div class="err">${c.missing_audio} missing – assembly blocked</div>` : ""}</td>
             <td>${mp3 ? html`${player(`/media/chapter/${c.id}.mp3`, `Chapter ${c.index} master`, "mini")}<div class="small muted">${fmtDuration(mp3.duration_s)} · ${mp3.draft ? "DRAFT" : "final"}${c.render_current ? "" : html` · <span class="warn-text">outdated</span>`}</div>` : html`<span class="small muted">not assembled</span>`}</td>
@@ -19225,6 +20873,21 @@ export async function render(view, parts) {
       else if (a === "export-m4b") await busy(t, () => post(`/api/books/${id}/export`, { kind: "m4b" }), "M4B export queued");
       else if (a === "export-zip") await busy(t, () => post(`/api/books/${id}/export`, { kind: "mp3_zip" }), "MP3 ZIP export queued");
       else if (a === "chapter-m4b") await busy(t, () => post(`/api/books/${id}/export`, { kind: "chapter_m4b", chapter_id: Number(t.dataset.ch) }), "Chapter M4B export queued");
+      else if (a === "chapter-title") {
+        const c = b.chapters.find((x) => x.id === Number(t.dataset.ch));
+        const res = await dialog({ title: `Chapter ${c.index} title`, form: true, buttons: [{ label: "Save", value: "ok", kind: "primary" }],
+          body: html`<label>Title (empty restores the original) <input name="title" maxlength="300" value="${c.title}"></label><p class="small muted">Original: ${c.original_title}. Renaming never regenerates audio; re-assemble to update the chapter master tags.</p>` });
+        if (!res) return;
+        await busy(t, () => patch(`/api/books/${id}/chapters/${c.id}`, { title: res.data.title || "" }), "Chapter title saved");
+      } else if (a === "chapter-regen") {
+        const cid = Number(t.dataset.ch);
+        try { await busy(t, () => post(`/api/books/${id}/chapters/${cid}/regenerate`, { confirm_invalidate: false }), "Chapter queued for regeneration"); }
+        catch (err) {
+          if (err.status === 409 && (await confirmDialog("Regenerate this chapter?", err.message, "Regenerate chapter", true))) {
+            await busy(t, () => post(`/api/books/${id}/chapters/${cid}/regenerate`, { confirm_invalidate: true }), "Chapter queued for regeneration");
+          }
+        }
+      }
       else if (a === "report") { const r = await busy(t, () => post(`/api/books/${id}/report`)); toast(`QA report written (${r.findings} findings)`, "success"); }
       else if (a === "revoke") {
         const res = await dialog({ title: "Revoke release approval", form: true, buttons: [{ label: "Revoke", value: "ok", kind: "danger" }], body: html`<label>Reason <input name="reason" maxlength="500"></label>` });
@@ -19251,7 +20914,147 @@ export async function render(view, parts) {
   }, 3000);
   return () => { off(); view.removeEventListener("click", onClick); };
 }
-__STUDIO_EOF_3798855b0bab__
+__STUDIO_EOF_77ea30dd3759__
+cat > "$DEST/studio/web/static/js/views/disk.js" <<'__STUDIO_EOF_fbef95b0745c__'
+// Disk & Backups (administrators): usage per book and category, free space, purge/delete with typed confirmation, backup and restore.
+// Every destructive call is first sent WITHOUT confirm (the server answers 409 with a preview), then repeated with confirm:true after the user agrees.
+import { get, post, html, setHTML, dialog, confirmDialog, toast, toastError, fmtBytes, fmtDate } from "../ui.js";
+
+const CATS = ["manuscripts", "segments", "alternates", "reports", "masters", "exports"];
+const OTHER = { voices: "Voices", recordings: "Recordings", previews: "Previews", imports: "Import copies", database: "Database", backups: "Backups", logs: "Logs", model_cache: "Model cache" };
+
+async function run(btn, fn, okMsg) {
+  btn.disabled = true;
+  try { const r = await fn(); if (okMsg) toast(okMsg, "success"); return r; } finally { btn.disabled = false; }
+}
+
+function freeLine(label, f) {
+  if (!f) return html`<div><dt>${label}</dt><dd class="muted">unknown</dd></div>`;
+  const low = f.free_bytes < 5 * 1024 ** 3;
+  return html`<div><dt>${label}</dt><dd><span class="${low ? "err" : ""}">${fmtBytes(f.free_bytes)} free</span> of ${fmtBytes(f.total_bytes)}<br><span class="small muted"><code>${f.path}</code></span></dd></div>`;
+}
+
+async function guarded(path, body, previewText, okLabel) {
+  // 1st call without confirm: the server refuses with 409 + preview (or a 409 "busy" message that we just show)
+  try {
+    return await post(path, { ...body, confirm: true, ...(await ask(path, body, previewText, okLabel)) });
+  } catch (e) {
+    if (e && e.cancelled) return null;
+    throw e;
+  }
+}
+
+async function ask(path, body, previewText, okLabel) {
+  try {
+    await post(path, { ...body, confirm: false });
+  } catch (e) {
+    if (e.status === 409 && e.details && typeof e.details === "object") {
+      const ok = await confirmDialog("Please confirm", `${e.message} ${previewText ? previewText(e.details) : ""}`, okLabel, true);
+      if (!ok) { const c = new Error("cancelled"); c.cancelled = true; throw c; }
+      return {};
+    }
+    throw e;
+  }
+  return {};
+}
+
+function draw(view, u) {
+  const labels = u.category_labels || {};
+  setHTML(view, html`
+  <div class="page-head"><h1>Disk &amp; Backups</h1><div class="head-actions">
+    <button class="btn" data-act="refresh">Refresh</button>
+    <button class="btn" data-act="dbbackup">Back up database</button></div></div>
+  <section class="card" aria-labelledby="free-h"><h2 id="free-h">Free space</h2>
+    <dl class="about-facts">${freeLine("Library volume", u.free.library)}${freeLine("Model cache", u.free.model_cache)}${freeLine("Backups folder", u.free.backups)}
+      <div><dt>Library total</dt><dd>${fmtBytes(u.library_bytes)}</dd></div></dl>
+  </section>
+  <section class="card" aria-labelledby="books-h"><h2 id="books-h">Books</h2>
+    ${u.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Book</th>
+      ${CATS.map((c) => html`<th scope="col" title="${labels[c] || c}">${labels[c] || c}</th>`)}<th scope="col">Total</th><th scope="col">Actions</th></tr></thead><tbody>
+      ${u.books.map((b) => html`<tr><td>${b.title}${b.archived ? html` <span class="badge tone-neutral">archived</span>` : ""}${b.busy ? html` <span class="badge tone-warn">in queue</span>` : ""}</td>
+        ${CATS.map((c) => html`<td>${fmtBytes(b.categories[c] || 0)}</td>`)}<td><strong>${fmtBytes(b.total_bytes)}</strong></td>
+        <td class="actions">
+          <button class="btn small" data-act="backup" data-id="${b.id}">Back up</button>
+          <button class="btn small" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
+          <button class="btn small" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
+          <button class="btn small" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
+          <button class="btn small danger" data-act="delete" data-id="${b.id}" data-title="${b.title}" ${b.busy ? "disabled" : ""}>Delete book</button></td></tr>`)}
+      <tr><th scope="row">All books</th>${CATS.map((c) => html`<td>${fmtBytes(u.category_totals[c] || 0)}</td>`)}<td><strong>${fmtBytes(u.library_bytes)}</strong></td><td></td></tr>
+      </tbody></table></div>
+      <p class="small muted">Books that are queued, rendering or paused cannot be purged or deleted; cancel their job first. Purging takes keeps every selected (and therefore every approved) take.</p>`
+      : html`<p class="muted">No books yet.</p>`}
+  </section>
+  <section class="card" aria-labelledby="other-h"><h2 id="other-h">Everything else</h2>
+    <dl class="about-facts">${Object.entries(OTHER).map(([k, l]) => html`<div><dt>${l}</dt><dd>${fmtBytes(u.other[k] || 0)}</dd></div>`)}</dl>
+    <p class="small muted">Model cache <code>${u.paths.model_cache}</code> · Library <code>${u.paths.library}</code></p>
+  </section>
+  <section class="card" aria-labelledby="bk-h"><h2 id="bk-h">Backups</h2>
+    <p class="small muted">Book backups are single zip files (database rows plus all audio and documents) in <code>${u.paths.backups}/books</code>. Restoring always creates a NEW book; the original is never touched.</p>
+    ${u.backups.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">File</th><th scope="col">Book</th><th scope="col">Size</th><th scope="col">Made</th><th scope="col">Actions</th></tr></thead><tbody>
+      ${u.backups.books.map((x) => html`<tr><td><code>${x.name}</code></td><td>${x.title || "(unreadable)"}</td><td>${fmtBytes(x.size_bytes)}</td><td>${fmtDate(x.modified)}</td>
+        <td class="actions"><button class="btn small" data-act="restore" data-name="${x.name}" ${x.invalid ? "disabled" : ""}>Restore as new book</button>
+        <button class="btn small danger" data-act="delbackup" data-name="${x.name}">Delete</button></td></tr>`)}</tbody></table></div>`
+      : html`<p class="muted">No book backups yet.</p>`}
+    <h3>Database backups</h3>
+    ${u.backups.databases.length ? html`<ul class="small">${u.backups.databases.map((x) => html`<li><code>${x.name}</code> · ${fmtBytes(x.size_bytes)} · ${fmtDate(x.modified)}</li>`)}</ul>`
+      : html`<p class="muted">None yet.</p>`}
+  </section>`);
+}
+
+export async function render(view) {
+  let u;
+  try { u = await get("/api/disk/usage"); }
+  catch (e) {
+    setHTML(view, html`<div class="page-head"><h1>Disk &amp; Backups</h1></div><div class="callout info" role="status">${e.status === 403 ? "Disk management is available to administrators only." : e.message}</div>`);
+    return;
+  }
+  draw(view, u);
+  const reload = async () => { draw(view, await get("/api/disk/usage")); };
+  const onClick = async (ev) => {
+    const btn = ev.target.closest("button[data-act]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    try {
+      switch (btn.dataset.act) {
+        case "refresh": await run(btn, reload); break;
+        case "dbbackup": { const r = await run(btn, () => post("/api/disk/db-backup"), "Database backed up"); await reload(); break; }
+        case "backup": { await run(btn, () => post(`/api/disk/books/${id}/backup`), "Backup written to the backups folder"); await reload(); break; }
+        case "purge-takes": case "purge-exports": case "purge-masters": {
+          const scope = btn.dataset.act.slice(6);
+          const r = await guarded(`/api/disk/books/${id}/purge`, { scope }, (d) => `${d.items} item(s), ${fmtBytes(d.bytes)}.`, "Purge");
+          if (r) { toast(`Freed ${fmtBytes(r.freed_bytes)}`, "success"); await reload(); }
+          break;
+        }
+        case "delete": {
+          const title = btn.dataset.title;
+          const res = await dialog({ title: "Delete book permanently", form: true, buttons: [{ label: "Delete forever", value: "ok", kind: "danger" }],
+            body: html`<p>This permanently deletes <strong>${title}</strong> with all its audio, exports and history. Back it up first if you may want it again.</p>
+              <label>Type the book title to confirm <input name="typed" autocomplete="off" required></label>` });
+          if (!res) break;
+          if (res.data.typed.trim() !== title.trim()) { toast("The title did not match. Nothing was deleted.", "error", 8000); break; }
+          const r = await post(`/api/disk/books/${id}/delete`, { confirm: true });
+          toast(`Deleted. Freed ${fmtBytes(r.freed_bytes)}`, "success");
+          await reload();
+          break;
+        }
+        case "restore": {
+          const r = await run(btn, () => post("/api/disk/restore", { name: btn.dataset.name }));
+          toast(`Restored as "${r.title}"${r.warnings.length ? ". " + r.warnings.join(" ") : ""}`, r.warnings.length ? "info" : "success", 9000);
+          await reload();
+          break;
+        }
+        case "delbackup": {
+          const r = await guarded("/api/disk/backups/delete", { name: btn.dataset.name }, (d) => `${fmtBytes(d.bytes)}.`, "Delete backup");
+          if (r) { toast("Backup deleted", "success"); await reload(); }
+          break;
+        }
+      }
+    } catch (e) { toastError(e); }
+  };
+  view.addEventListener("click", onClick);
+  return () => view.removeEventListener("click", onClick);
+}
+__STUDIO_EOF_fbef95b0745c__
 cat > "$DEST/studio/web/static/js/views/inspector.js" <<'__STUDIO_EOF_6ed178130836__'
 // Segment Inspector: text, context windows, speakers, direction, delivery sent to the engine, boundaries, takes.
 import { get, post, patch, html, setHTML, badge, fmtDate, fmtDuration, toast, busy, confirmDialog, onState, player, qs, navigate } from "../ui.js";
@@ -20163,6 +21966,140 @@ export async function render(view) {
   }, 2000);
 }
 __STUDIO_EOF_9144bdd31410__
+cat > "$DEST/studio/web/static/js/views/pronunciation.js" <<'__STUDIO_EOF_1117069bc8e7__'
+// Pronunciation: a global and per-book dictionary of respellings, plus per-voice pace.
+// Entries only change the text sent to the voice; the manuscript itself is never edited.
+import { get, post, patch, put, del, html, setHTML, busy, dialog, confirmDialog, toast, toastError, qs } from "../ui.js";
+
+// Run a change; if it would re-render finished segments the server answers 409 with a count, so ask first.
+async function withConfirm(btn, fn, okMsg) {
+  try {
+    return await busy(btn, () => fn(false), okMsg);
+  } catch (e) {
+    if (e.status === 409 && e.details && e.details.stale_segments) {
+      const ok = await confirmDialog("Re-render affected passages?",
+        `${e.details.stale_segments} finished segment(s) would be spoken differently, so they are marked for regeneration. Earlier takes are kept as history. Continue?`, "Apply and regenerate");
+      if (!ok) return null;
+      return busy(btn, () => fn(true), okMsg);
+    }
+    return null;
+  }
+}
+
+function entryForm(e = {}) {
+  const sel = (v, a) => (v === a ? html`selected` : "");
+  return html`<label>Written as <input name="written" required maxlength="80" value="${e.written || ""}"></label>
+    <label>Spoken as <input name="spoken" required maxlength="200" value="${e.spoken || ""}"></label>
+    <p class="small muted">Spell it the way it should sound, for example Hermione becomes "Her-my-oh-nee". Use the Try box afterwards.</p>
+    <label>Match <select name="whole_word"><option value="1" ${sel(e.whole_word !== false, true)}>Whole words only</option><option value="0" ${sel(e.whole_word === false, true)}>Anywhere inside words</option></select></label>
+    <label>Capitals <select name="case_sensitive"><option value="0" ${sel(!e.case_sensitive, true)}>Ignore capitals</option><option value="1" ${sel(!!e.case_sensitive, true)}>Match capitals exactly</option></select></label>`;
+}
+const fromForm = (d) => ({ written: d.written, spoken: d.spoken, whole_word: d.whole_word === "1", case_sensitive: d.case_sensitive === "1" });
+
+export async function render(view, _parts, query) {
+  let scope = query.get("book") || "global";
+  const [books, voiceData] = await Promise.all([get("/api/books").then((r) => r.books), get("/api/voices")]);
+  let data = null;
+
+  async function load() {
+    data = await get("/api/pronunciations" + qs({ book_id: scope === "global" ? "" : scope }));
+    paint();
+  }
+
+  function rows(list, label) {
+    if (!list.length) return html`<p class="muted">No ${label} entries yet.</p>`;
+    return html`<div class="table-wrap"><table class="table"><caption class="sr-only">${label} pronunciations</caption>
+      <thead><tr><th>Written</th><th>Spoken</th><th>Match</th><th></th></tr></thead><tbody>
+      ${list.map((e) => html`<tr>
+        <td>${e.written}</td><td>${e.spoken}</td>
+        <td class="small muted">${e.whole_word ? "whole word" : "inside words"}${e.case_sensitive ? ", exact capitals" : ""}${e.enabled ? "" : ", OFF"}</td>
+        <td><button class="btn ghost small" type="button" data-act="edit" data-id="${e.id}">Edit…</button>
+          <button class="btn ghost small" type="button" data-act="toggle" data-id="${e.id}">${e.enabled ? "Turn off" : "Turn on"}</button>
+          <button class="btn ghost small danger" type="button" data-act="delete" data-id="${e.id}">Delete</button></td></tr>`)}
+      </tbody></table></div>`;
+  }
+
+  function paint() {
+    const isBook = scope !== "global";
+    setHTML(view, html`<div class="page-head"><h1>Pronunciation</h1></div>
+      <section class="card" aria-labelledby="pr-h"><h2 id="pr-h">Dictionary</h2>
+        <p class="muted">Tell the narrator how to say names and unusual words. The book text is never changed, only what the voice is given.
+          A book's own entries win over the global ones. Changing an entry re-renders only the passages that contain it.</p>
+        <label>Dictionary for
+          <select id="pr-scope"><option value="global" ${isBook ? "" : html`selected`}>All books (global)</option>
+            ${books.map((b) => html`<option value="${b.id}" ${String(b.id) === scope ? html`selected` : ""}>${b.title}</option>`)}</select></label>
+        <h3>${isBook ? "This book" : "Global"}</h3>
+        ${rows(isBook ? data.book : data.global, isBook ? "book" : "global")}
+        <p><button class="btn primary" type="button" data-act="add">Add entry…</button></p>
+        ${isBook ? html`<h3>Global entries that also apply</h3>${rows(data.global, "global")}` : ""}
+      </section>
+      <section class="card" aria-labelledby="try-h"><h2 id="try-h">Try it</h2>
+        <form id="try-form" class="form"><label>Sample text <textarea name="text" rows="2" maxlength="2000" required></textarea></label>
+          <button class="btn" type="submit">Show what the voice will be given</button></form>
+        <p id="try-out" class="small" aria-live="polite"></p>
+        <p class="small muted">Real speech is only produced on the Mac; the respelling is a hint to the model, so listen to a preview after adding an entry.</p>
+      </section>
+      <section class="card" aria-labelledby="pace-h"><h2 id="pace-h">Voice pace</h2>
+        <p class="muted">Speed each voice up or down between ${data.pace_range[0]} and ${data.pace_range[1]} (1.0 is natural). The speech model has no pace control,
+          so the studio stretches finished audio without changing pitch; keep it modest because extreme values can sound slightly processed.</p>
+        <div class="table-wrap"><table class="table"><caption class="sr-only">Pace per voice</caption><thead><tr><th>Voice</th><th>Pace</th><th></th></tr></thead><tbody>
+          ${voiceData.voices.map((v) => html`<tr><td>${v.name}</td>
+            <td><input type="number" aria-label="Pace for ${v.name}" data-pace="${v.id}" min="${data.pace_range[0]}" max="${data.pace_range[1]}" step="0.05" value="${v.pace}"></td>
+            <td><button class="btn small" type="button" data-act="pace" data-id="${v.id}">Save</button></td></tr>`)}
+        </tbody></table></div></section>`);
+  }
+
+  async function onChange(e) {
+    if (e.target.id === "pr-scope") { scope = e.target.value; await load(); }
+  }
+
+  async function onSubmit(e) {
+    if (e.target.id !== "try-form") return;
+    e.preventDefault();
+    const text = new FormData(e.target).get("text");
+    try {
+      const r = await post("/api/pronunciations/try", { text, book_id: scope === "global" ? null : Number(scope) });
+      const out = view.querySelector("#try-out");
+      out.textContent = r.changed ? `Spoken as: ${r.output}` : "No entry matches this text.";
+    } catch (err) { toastError(err); }
+  }
+
+  async function onClick(e) {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    const act = b.dataset.act;
+    const all = [...data.global, ...(data.book || [])];
+    const entry = all.find((x) => x.id === Number(b.dataset.id));
+    try {
+      if (act === "add") {
+        const res = await dialog({ title: scope === "global" ? "Add global entry" : "Add entry for this book", form: true, body: entryForm(), buttons: [{ label: "Add", value: "ok", kind: "primary" }] });
+        if (!res) return;
+        const body = { ...fromForm(res.data), book_id: scope === "global" ? null : Number(scope) };
+        if (await withConfirm(b, (c) => post("/api/pronunciations", { ...body, confirm_invalidate: c }), "Entry added")) await load();
+      } else if (act === "edit") {
+        const res = await dialog({ title: "Edit entry", form: true, body: entryForm(entry), buttons: [{ label: "Save", value: "ok", kind: "primary" }] });
+        if (!res) return;
+        if (await withConfirm(b, (c) => patch(`/api/pronunciations/${entry.id}`, { ...fromForm(res.data), confirm_invalidate: c }), "Entry saved")) await load();
+      } else if (act === "toggle") {
+        if (await withConfirm(b, (c) => patch(`/api/pronunciations/${entry.id}`, { enabled: !entry.enabled, confirm_invalidate: c }), "Entry updated")) await load();
+      } else if (act === "delete") {
+        if (!(await confirmDialog("Delete entry?", `"${entry.written}" will be read normally again.`, "Delete", true))) return;
+        if (await withConfirm(b, (c) => del(`/api/pronunciations/${entry.id}${c ? "?confirm_invalidate=true" : ""}`), "Entry deleted")) await load();
+      } else if (act === "pace") {
+        const input = view.querySelector(`[data-pace="${b.dataset.id}"]`);
+        const pace = Number(input.value);
+        if (await withConfirm(b, (c) => put(`/api/voices/${b.dataset.id}/pace`, { pace, confirm_invalidate: c }), "Pace saved")) toast("Preview the voice to hear the new pace.", "info");
+      }
+    } catch (err) { toastError(err); }
+  }
+
+  await load();
+  view.addEventListener("click", onClick);
+  view.addEventListener("change", onChange);
+  view.addEventListener("submit", onSubmit);
+  return () => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
+}
+__STUDIO_EOF_1117069bc8e7__
 cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_0cc4435bf1c8__'
 // Durable FIFO queue: reorder (drag or keyboard buttons), pause/resume/retry/cancel, logs, estimates.
 import { get, post, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, toast, busy, onState, confirmDialog } from "../ui.js";
@@ -20529,7 +22466,7 @@ export async function render(view, parts, query) {
 }
 export { navigate };
 __STUDIO_EOF_2486e47e24ea__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_84d2f0487611__'
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_2445084f030f__'
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
 import { get, post, put, del, html, setHTML, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
 import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
@@ -20697,7 +22634,10 @@ function narrativeCard(n, secrets) {
         The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
         Key changes take effect immediately and do not need <em>Save settings</em>.</p>` : ""}
       <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>
-      ${title.startsWith("Local LLM") ? keyField("llm", secrets && secrets.llm) : ""}`)}
+      ${title.startsWith("Local LLM") ? html`${keyField("llm", secrets && secrets.llm)}
+        <div class="btn-group"><button type="button" class="btn small" data-act="llm-test">Test connection</button></div>
+        <div id="llm-test-result" class="small" role="status" aria-live="polite"></div>
+        <p class="small muted">Tests the address and model typed above (even before saving), using the saved key. It sends one tiny question and touches no book.</p>` : ""}`)}
   </section>`;
 }
 
@@ -20820,6 +22760,18 @@ export async function render(view) {
       f.replaceWith(tmp.firstElementChild);
       return;
     }
+    if (b.dataset.act === "llm-test") {
+      const out = view.querySelector("#llm-test-result");
+      setHTML(out, html`Testing...`);
+      try {
+        const r = await busy(b, () => post("/api/narrative/llm/test", {
+          base_url: view.querySelector('[name="narrative.llm.base_url"]').value.trim(),
+          model: view.querySelector('[name="narrative.llm.model"]').value.trim() }));
+        setHTML(out, html`<ul class="plain">${r.checks.map((c) => html`<li class="${c.ok ? "good-text" : "bad-text"}">${c.ok ? "✓" : "✗"} <strong>${c.name}:</strong> ${c.detail}</li>`)}</ul>
+          <p><strong>${r.ok ? "The endpoint and model work." : "The test failed."}</strong> (${r.seconds} s)</p>`);
+      } catch { setHTML(out, html``); } // the server's message is already shown
+      return;
+    }
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
     if (b.dataset.act === "browse") {
       const picked = await browseFolder(input.value.trim() || input.placeholder || "");
@@ -20840,8 +22792,8 @@ export async function render(view) {
   paint();
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_84d2f0487611__
-cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_ecb83b1aa9b6__'
+__STUDIO_EOF_2445084f030f__
+cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_bbe31ec54fc1__'
 // Update Center: check / download / verify / stage / install (after the current job or at the next segment boundary) / restart, with history.
 // Everything the user sees is plain text (auto-escaped); release notes are never interpreted as HTML.
 import { get, post, put, html, setHTML, busy, confirmDialog, toast, toastError, fmtAgo, fmtDate, fmtBytes } from "../ui.js";
@@ -20937,6 +22889,8 @@ function draw(view, s, hist, isAdmin) {
   <section class="card" aria-labelledby="svc-h"><h2 id="svc-h">Service</h2>
     <p class="small">The studio runs as a background service managed by macOS (launchd) and starts when you log in.</p>
     <button class="btn" data-act="restart" ${isAdmin && s.managed && !busyNow ? "" : "disabled"}>Restart service</button>
+    <button class="btn" data-act="rollback" ${isAdmin && s.managed && !busyNow && s.can_rollback ? "" : "disabled"}>Roll back to previous version${s.can_rollback ? ` (${s.can_rollback})` : ""}</button>
+    ${s.can_rollback ? "" : html`<p class="small muted">No previous version is kept on this Mac, so there is nothing to roll back to.</p>`}
     <p class="small muted">Platform ${s.platform}. Installed releases kept for rollback: ${(s.installed_releases || []).join(", ") || "–"}.</p>
   </section>
   <section class="card" aria-labelledby="hist-h"><h2 id="hist-h">History</h2>
@@ -20978,7 +22932,12 @@ export async function render(view) {
       else if (act === "restart") {
         if (!(await confirmDialog("Restart the service?", "The studio restarts in a few seconds. The segment being narrated finishes or is retried; queued work resumes automatically.", "Restart"))) return;
         await busy(b, () => post("/api/update/restart"), "Restarting…");
-      } else if (act === "install-now" || act === "install-later") {
+      } else if (act === "rollback") {
+        const v = status.can_rollback;
+        if (!v) return;
+        if (!(await confirmDialog(`Roll back to version ${v}?`, `The studio goes back from ${status.installed_version} to ${v} at the next safe segment boundary and restarts. A backup of your database is taken first. If the older version cannot open your data, nothing is changed. Books, voices and settings are kept.`, "Roll back"))) return;
+        await busy(b, () => post("/api/update/rollback", { version: v, mode: "now", confirm: true }), "Rollback scheduled");
+      } else if (act === "install-now" ||act === "install-later") {
         const now = act === "install-now", v = status.staged_version;
         const msg = now ? `Version ${v} installs at the next safe segment boundary and the studio restarts. A backup of your database is taken first, and the previous version is kept for automatic rollback.`
           : `The book being narrated finishes first, then version ${v} installs and the studio restarts. No other book starts in the meantime.`;
@@ -21006,8 +22965,8 @@ export async function render(view) {
   timer = setInterval(() => refresh(false), 1500);
   return () => { clearInterval(timer); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); view.removeEventListener("focusin", onFocus); };
 }
-__STUDIO_EOF_ecb83b1aa9b6__
-cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_513afb06ec00__'
+__STUDIO_EOF_bbe31ec54fc1__
+cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_8d720d0b065e__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
 import { Mic, micSupport, listMics, encodeWav, roomMetrics, envelope, dbfs, BLUETOOTH_RE } from "../recorder.js";
@@ -21034,7 +22993,7 @@ export function createLab({ onVoiceCreated }) {
   el.setAttribute("aria-labelledby", "lab-h");
   const mic = new Mic();
   const L = { step: "setup", scripts: [], auditionText: "", takes: [], devices: [], deviceId: "", status: {}, room: null, scriptId: "core-harbour", cur: null, recState: "idle",
-    countdown: 0, count: true, selected: null, jobs: {}, support: micSupport(), openErr: "", saved: null, saveErr: null, roomRun: null, ready: false };
+    countdown: 0, count: true, selected: null, jobs: {}, support: micSupport(), openErr: "", saved: null, saveErr: null, roomRun: null, ready: false, cmp: new Set(), compare: null, cmpErr: "" };
   let raf = 0, timers = new Set(), destroyed = false;
 
   const script = () => L.scripts.find((s) => s.id === L.scriptId);
@@ -21180,7 +23139,66 @@ export function createLab({ onVoiceCreated }) {
       <div>Whisper agreement with the text: ${(100 - r.wer * 100).toFixed(0)}% · ${r.duration_s}s · ${r.engine}${r.rtf ? ` · RTF ${r.rtf.toFixed(2)}` : ""}</div>
       ${r.note ? html`<div class="warn-text">${r.note}</div>` : ""}<div>Does it sound like <em>you</em>, at the pace and warmth you want for the whole book? If not, try another take.</div></div>`;
   }
-  function paintJob(rid, mode) { const n = el.querySelector(`[data-job="${rid}:${mode}"]`); if (n) setHTML(n, jobHtml(rid, mode)); }
+  function paintJob(rid, mode) {
+    const n = el.querySelector(`[data-job="${rid}:${mode}"]`); if (n) setHTML(n, jobHtml(rid, mode));
+    const c = el.querySelector("#cmp-table"); if (c && L.compare) setHTML(c, compareTable());
+  }
+
+  // ------------------------------------------------------------------ multi-take comparison
+  async function runCompare() {
+    const ids = L.takes.map((t) => t.id).filter((id) => L.cmp.has(id));
+    if (ids.length < 2) { L.compare = null; L.cmpErr = "Tick at least two takes to compare."; paint(); return; }
+    L.cmpErr = "";
+    L.compare = await get(`/api/recordings/compare?ids=${ids.join(",")}`);
+    paint();
+  }
+  async function checkAll(btn) {
+    for (const r of (L.compare ? L.compare.rows : [])) await runJob(r.id, "check", btn);
+  }
+  async function uploadTake(form, btn) {
+    const fd = new FormData(form);
+    const file = fd.get("file");
+    if (!file || !file.size) { toast("Choose an audio file first.", "error"); return; }
+    try {
+      const meta = await busy(btn, () => api("POST", "/api/recordings", fd));
+      L.takes.unshift(meta); L.cmp.add(meta.id); L.compare = null;
+      toast(`Take added (${meta.quality.verdict}). Tick takes and press Compare.`, "success");
+    } catch (e) { toastError(e); }
+    paint();
+  }
+  function matchCell(id) {
+    const j = L.jobs[`${id}:check`];
+    if (!j) return html`<span class="muted">not checked</span>`;
+    if (j.status === "failed") return html`<span class="err">failed</span>`;
+    if (j.status !== "completed") return html`<span class="muted">checking…</span>`;
+    const r = j.result || {};
+    return html`<span class="badge tone-${r.matches ? "good" : "warn"}">${r.matches ? "matches" : "differs"}</span> <span class="small muted">WER ${((r.wer || 0) * 100).toFixed(0)}%</span>`;
+  }
+  function compareTable() {
+    const rows = [...L.compare.rows].sort((a, b) => a.rank - b.rank);
+    return html`<table class="table cmp"><caption class="sr-only">Takes ranked by advisory quality score</caption>
+      <thead><tr><th scope="col">Take</th><th scope="col">Verdict</th><th scope="col">Length</th><th scope="col">Peak</th><th scope="col">Clipping</th>
+        <th scope="col">Noise floor</th><th scope="col">Voice-to-noise</th><th scope="col">Transcript</th><th scope="col">Listen</th><th scope="col">Choose</th></tr></thead>
+      <tbody>${rows.map((r) => html`<tr class="${r.recommended ? "chosen" : ""}"><th scope="row">#${r.rank} ${r.label || r.script_title}${r.recommended ? html` <span class="badge tone-good">suggested</span>` : ""}</th>
+        <td><span class="badge tone-${r.verdict === "poor" ? "bad" : r.verdict === "usable" ? "warn" : "good"}">${r.verdict}</span></td>
+        <td>${Number(r.duration_s).toFixed(1)} s</td><td>${Number(r.peak_dbfs).toFixed(0)} dBFS</td><td>${r.clip_ratio > 0.0005 ? html`<span class="err">clipped</span>` : "none"}</td>
+        <td>${Number(r.noise_floor_dbfs).toFixed(0)} dBFS</td><td>${r.snr_db} dB</td><td>${matchCell(r.id)}</td>
+        <td>${player(`/media/recording/${r.id}`, `Take #${r.rank}`)}</td>
+        <td><button class="btn small primary" data-act="use-take" data-id="${r.id}" ${r.verdict === "poor" ? html`disabled title="Rated poor quality"` : ""}>Use for narrator →</button></td></tr>`)}</tbody></table>`;
+  }
+  function comparePanel() {
+    return html`<section class="compare" aria-labelledby="cmp-h"><h4 id="cmp-h">Compare takes side by side</h4>
+      <p class="small muted">Tick two or more takes below (or add one from a file), then press Compare. The suggestion is advisory: it ranks by quality verdict, warnings and voice-to-noise,
+        so always listen. Run the Whisper check on all to see which transcripts match what was actually said.</p>
+      <form id="upload-form" class="form lab-row"><label>Audio file <input type="file" name="file" accept="audio/*,.wav,.mp3,.m4a,.flac"></label>
+        <label>Exact words <input name="ref_text" required minlength="5" maxlength="1000" placeholder="What is said in the file"></label>
+        <label>Label <input name="label" maxlength="80" placeholder="optional"></label>
+        <button class="btn small" type="submit">Add take from file</button></form>
+      <div class="form-actions"><button class="btn primary" data-act="cmp-run" ${L.cmp.size >= 2 ? "" : html`disabled`}>Compare ${L.cmp.size} take${L.cmp.size === 1 ? "" : "s"}</button>
+        ${L.compare ? html`<button class="btn" data-act="cmp-check">Whisper-check all</button>` : ""}</div>
+      ${L.cmpErr ? html`<div class="callout warn small" role="alert">${L.cmpErr}</div>` : ""}
+      ${L.compare ? html`<div id="cmp-table" aria-live="polite">${compareTable()}</div>` : ""}</section>`;
+  }
 
   async function createNarrator(form, btn) {
     const fd = new FormData(form);
@@ -21341,7 +23359,7 @@ export function createLab({ onVoiceCreated }) {
   function takeCard(t) {
     const sel = L.selected === t.id;
     return html`<article class="take ${sel ? "chosen" : ""}" aria-labelledby="t-${t.id}">
-      <header class="take-head"><h4 id="t-${t.id}">${t.script_title}</h4><span class="badge tone-${t.quality.verdict === "poor" ? "bad" : t.quality.verdict === "usable" ? "warn" : "good"}">${t.quality.verdict}</span>
+      <header class="take-head"><label class="check"><input type="checkbox" data-cmp="${t.id}" ${L.cmp.has(t.id) ? html`checked` : ""} aria-label="Compare this take"> compare</label><h4 id="t-${t.id}">${t.script_title}</h4><span class="badge tone-${t.quality.verdict === "poor" ? "bad" : t.quality.verdict === "usable" ? "warn" : "good"}">${t.quality.verdict}</span>
         <span class="small muted">${t.duration_s}s · ${fmtDate(t.created_at)}</span></header>
       ${player(`/media/recording/${t.id}`, `Take: ${t.script_title}`)}
       <details><summary>Quality report</summary>${qualityBlock(t.quality)}</details>
@@ -21360,7 +23378,7 @@ export function createLab({ onVoiceCreated }) {
       ${L.takes.length ? html`
         <label>Audition passage (the same text is synthesized from each take so you can compare fairly)
           <textarea id="audition-text" rows="3" maxlength="600">${L.auditionText}</textarea></label>
-        <div class="takes">${L.takes.map(takeCard)}</div>`
+        ${comparePanel()}<div class="takes">${L.takes.map(takeCard)}</div>`
         : html`<p class="muted">No takes yet. <button class="linklike" data-step="record">Record your first take</button>.</p>`}
       <details class="guide"><summary>Should I record several takes? Should they differ in emotion?</summary>
         <ul>
@@ -21422,11 +23440,13 @@ export function createLab({ onVoiceCreated }) {
       else if (act === "rec-save") await saveTake(b);
       else if (act === "job-check") await runJob(id, "check", b);
       else if (act === "job-audition") await runJob(id, "audition", b);
+      else if (act === "cmp-run") await busy(b, runCompare);
+      else if (act === "cmp-check") await checkAll(b);
       else if (act === "use-take") { L.selected = id; L.step = "create"; paint(); }
       else if (act === "del-take") {
         if (!(await confirmDialog("Delete this take?", "The recording is removed from this Mac. Narrators already created from it are not affected.", "Delete", true))) return;
         await api("DELETE", `/api/recordings/${id}`);
-        L.takes = L.takes.filter((t) => t.id !== id); if (L.selected === id) L.selected = null; paint();
+        L.takes = L.takes.filter((t) => t.id !== id); L.cmp.delete(id); L.compare = null; if (L.selected === id) L.selected = null; paint();
       } else if (act === "edit-text") {
         const t = L.takes.find((x) => x.id === id);
         const v = window.prompt("Exactly what is said in this recording:", t.ref_text);
@@ -21435,11 +23455,15 @@ export function createLab({ onVoiceCreated }) {
     } catch (err) { toastError(err); }
   });
   el.addEventListener("change", (e) => {
+    if (e.target.dataset && e.target.dataset.cmp) {
+      if (e.target.checked) L.cmp.add(e.target.dataset.cmp); else L.cmp.delete(e.target.dataset.cmp);
+      L.compare = null; paint(); return;
+    }
     if (e.target.id === "lab-script") { L.scriptId = e.target.value; L.saved = null; paint(); }
     else if (e.target.id === "lab-count") L.count = e.target.checked;
     else if (e.target.id === "lab-device" && micOn()) { L.deviceId = e.target.value; openMic(); }
   });
-  el.addEventListener("submit", (e) => { if (e.target.id === "create-form") { e.preventDefault(); createNarrator(e.target, e.submitter); } });
+  el.addEventListener("submit", (e) => { if (e.target.id === "upload-form") { e.preventDefault(); uploadTake(e.target, e.submitter); return; } if (e.target.id === "create-form") { e.preventDefault(); createNarrator(e.target, e.submitter); } });
 
   return {
     el, init,
@@ -21451,7 +23475,7 @@ export function createLab({ onVoiceCreated }) {
     destroy() { destroyed = true; timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); if (raf) cancelAnimationFrame(raf); mic.close(); if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url); },
   };
 }
-__STUDIO_EOF_513afb06ec00__
+__STUDIO_EOF_8d720d0b065e__
 cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_e2b77877580d__'
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player } from "../ui.js";
@@ -21654,7 +23678,7 @@ export async function render(view) {
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
 __STUDIO_EOF_e2b77877580d__
-cat > "$DEST/studio/web/update_api.py" <<'__STUDIO_EOF_5b103fd18964__'
+cat > "$DEST/studio/web/update_api.py" <<'__STUDIO_EOF_ddf237e18d69__'
 """HTTP API for the Update Center. State-changing routes are administrator-only (auth.ADMIN_RULES) and pass the same-origin /
 CSRF checks as every other mutating route. No endpoint accepts a URL or a command: the repository comes from validated
 settings and artifact URLs come from the signature-verified index."""
@@ -21678,6 +23702,12 @@ class _Req(BaseModel):
 class InstallReq(_Req):
     version: str = Field(min_length=5, max_length=40)
     mode: Literal["now", "after_job"] = "after_job"
+    confirm: bool = False
+
+
+class RollbackReq(_Req):
+    version: str = Field(min_length=5, max_length=40)
+    mode: Literal["now", "after_job"] = "now"
     confirm: bool = False
 
 
@@ -21741,6 +23771,12 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
             raise S.ServiceError("Installing an update needs explicit confirmation.", 422)
         return _wrap(manager.request_install, req.mode, req.version)
 
+    @app.post("/api/update/rollback")
+    def api_update_rollback(req: RollbackReq):
+        if not req.confirm:
+            raise S.ServiceError("Rolling back needs explicit confirmation.", 422)
+        return _wrap(manager.request_rollback, req.mode, req.version)
+
     @app.post("/api/update/cancel")
     def api_update_cancel():
         return _wrap(manager.cancel)
@@ -21762,7 +23798,7 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
             setattr(s.updates, k, v)
         ctx.save_settings(s)
         return manager.status()
-__STUDIO_EOF_5b103fd18964__
+__STUDIO_EOF_ddf237e18d69__
 cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_526e2d3e99b0__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
@@ -22572,6 +24608,70 @@ TXT = (
     + "\n"
 )
 __STUDIO_EOF_b44d6d669c8c__
+cat > "$DEST/tests/test_attribution.py" <<'__STUDIO_EOF_fbdadcf974b8__'
+"""Audit and review records are attributed to the signed-in user (C1)."""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from conftest import make_text
+from studio import services as S
+from studio.db import rows
+from studio.web.app import create_app
+from studio.web.auth import AuthStore
+
+PW = "correct-horse-battery"
+
+
+@pytest.fixture
+def secured(ctx):
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", PW, "admin")
+    store.set_user("clerk", PW + "2", "operator")
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        yield c
+
+
+def _book(c):
+    v = next(v for v in c.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    p = c.post("/api/imports", files={"file": ("b.txt", make_text(1).encode(), "text/plain")}).json()
+    return c.post(f"/api/imports/{p['token']}/confirm", json={"title": p["title"], "voice_id": v["id"], "queue": False}).json()
+
+
+def _actors(ctx, table, action):
+    with ctx.db.session() as conn:
+        return {r["actor"] for r in rows(conn, f"SELECT actor FROM {table} WHERE action=?", (action,))}
+
+
+def test_actions_attributed_to_signed_in_user(secured, ctx):
+    secured.post("/api/auth/login", json={"username": "clerk", "password": PW + "2"})
+    b = _book(secured)
+    seg = secured.get(f"/api/books/{b['id']}/segments").json()["items"][0]
+    assert secured.post(f"/api/segments/{seg['id']}/note", json={"note": "check pronunciation"}).status_code == 200
+    assert secured.patch(f"/api/books/{b['id']}", json={"author": "Someone"}).status_code == 200
+    assert secured.post(f"/api/books/{b['id']}/notes", json={"text": "Eleanor is the keeper"}).status_code == 200
+    assert _actors(ctx, "review_actions", "note") == {"clerk"}
+    assert _actors(ctx, "audit_log", "note") == {"clerk"}
+    assert _actors(ctx, "audit_log", "metadata") == {"clerk"}
+    assert _actors(ctx, "audit_log", "create") == {"clerk"}
+    # a different user afterwards is recorded as that user
+    secured.cookies.clear()
+    secured.post("/api/auth/login", json={"username": "boss", "password": PW})
+    secured.post(f"/api/segments/{seg['id']}/note", json={"note": "second look"})
+    assert _actors(ctx, "review_actions", "note") == {"clerk", "boss"}
+    d = secured.get(f"/api/segments/{seg['id']}").json()
+    assert {r["actor"] for r in d["reviews"]} == {"clerk", "boss"}
+
+
+def test_without_a_signed_in_user_the_actor_stays_operator(ctx, client):
+    b = _book(client)
+    seg = client.get(f"/api/books/{b['id']}/segments").json()["items"][0]
+    client.post(f"/api/segments/{seg['id']}/note", json={"note": "local"})
+    S.set_note(ctx, seg["id"], "direct service call")
+    assert _actors(ctx, "review_actions", "note") == {"operator"}
+__STUDIO_EOF_fbdadcf974b8__
 cat > "$DEST/tests/test_audio.py" <<'__STUDIO_EOF_78e55b160cf0__'
 """Unit tests: acoustic QA, WAV I/O, Range parsing, path validation, settings."""
 from __future__ import annotations
@@ -22881,7 +24981,468 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_a06f481d9cb5__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_1f0ad57955a1__'
+cat > "$DEST/tests/test_chapter_tools.py" <<'__STUDIO_EOF_8ff8a34089b1__'
+"""Per-chapter tools (C4): regenerate chapter, title override, chapter export, cover. MOCK engine only."""
+from __future__ import annotations
+
+from conftest import CHAPTERS, make_epub, needs_ffmpeg
+from studio.db import row, rows
+from test_integration import confirm, ryan, upload
+
+
+def _book(client, make_worker):
+    v = ryan(client)
+    b = confirm(client, upload(client, "book.epub", make_epub(CHAPTERS)), v["id"], queue=True)
+    w = make_worker()
+    w.run_until_idle()
+    return b, w
+
+
+def test_schema_has_original_title(ctx):
+    from studio.db import LATEST_VERSION
+    assert LATEST_VERSION >= 3
+    with ctx.db.session() as conn:
+        assert "original_title" in [r["name"] for r in rows(conn, "PRAGMA table_info(chapters)")]
+
+
+def test_regenerate_chapter_needs_confirmation_and_only_touches_that_chapter(client, ctx, make_worker):
+    b, w = _book(client, make_worker)
+    book = client.get(f"/api/books/{b['id']}").json()
+    c1, c2 = book["chapters"][0], book["chapters"][1]
+    url = f"/api/books/{b['id']}/chapters/{c1['id']}/regenerate"
+    r = client.post(url, json={})
+    assert r.status_code == 409 and r.json()["details"]["rendered_segments"] >= 1
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT COUNT(*) n FROM segments WHERE chapter_id=? AND status='pending'", (c1["id"],))["n"] == 0
+    assert client.post(url, json={"confirm_invalidate": True}).status_code == 200
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT COUNT(*) n FROM segments WHERE chapter_id=? AND status<>'pending'", (c1["id"],))["n"] == 0
+        assert row(conn, "SELECT COUNT(*) n FROM segments WHERE chapter_id=? AND status='pending'", (c2["id"],))["n"] == 0
+        assert row(conn, "SELECT COUNT(*) n FROM chapter_renders WHERE chapter_id=?", (c1["id"],))["n"] == 0
+        assert row(conn, "SELECT COUNT(*) n FROM jobs WHERE book_id=? AND kind='book' AND status='queued'", (b["id"],))["n"] == 1
+    # nothing rendered any more: second call is a no-op, unknown chapter is a 404
+    assert client.post(url, json={}).json()["already_pending"] is True
+    assert client.post(f"/api/books/{b['id']}/chapters/999999/regenerate", json={}).status_code == 404
+    w.run_until_idle()
+    assert all(c["segments"] and not c["missing_audio"] for c in client.get(f"/api/books/{b['id']}").json()["chapters"])
+
+
+def test_regenerate_chapter_revokes_release(client, ctx, make_worker):
+    b, w = _book(client, make_worker)
+    r = client.post(f"/api/books/{b['id']}/release", json={"approved_by": "QA Lead", "listen_scope": "full", "attest": True})
+    if r.status_code != 200:  # release may need assembled masters / unflagged segments
+        return
+    cid = client.get(f"/api/books/{b['id']}").json()["chapters"][0]["id"]
+    client.post(f"/api/books/{b['id']}/chapters/{cid}/regenerate", json={"confirm_invalidate": True})
+    assert client.get(f"/api/books/{b['id']}").json()["release"] is None
+
+
+def test_chapter_title_override_preserves_original_and_audio(client, ctx, make_worker):
+    b, w = _book(client, make_worker)
+    ch = client.get(f"/api/books/{b['id']}").json()["chapters"][0]
+    with ctx.db.session() as conn:
+        before = rows(conn, "SELECT id, status, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (ch["id"],))
+    r = client.patch(f"/api/books/{b['id']}/chapters/{ch['id']}", json={"title": "  A   New Name "})
+    assert r.status_code == 200
+    c = r.json()["chapters"][0]
+    assert c["title"] == "A New Name" and c["title_overridden"] and c["original_title"] == ch["title"]
+    with ctx.db.session() as conn:
+        assert rows(conn, "SELECT id, status, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (ch["id"],)) == before
+        assert row(conn, "SELECT original_title FROM chapters WHERE id=?", (ch["id"],))["original_title"] == ch["title"]
+    # second edit keeps the first original; reverting restores it
+    c = client.patch(f"/api/books/{b['id']}/chapters/{ch['id']}", json={"title": "Another"}).json()["chapters"][0]
+    assert c["original_title"] == ch["title"]
+    c = client.patch(f"/api/books/{b['id']}/chapters/{ch['id']}", json={"title": ""}).json()["chapters"][0]
+    assert c["title"] == ch["title"] and not c["title_overridden"]
+    assert client.patch(f"/api/books/{b['id']}/chapters/999999", json={"title": "x"}).status_code == 404
+
+
+@needs_ffmpeg
+def test_title_flows_into_chapter_export_and_only_marks_master_outdated(client, ctx, make_worker):
+    from studio.audio import probe_summary
+    b, w = _book(client, make_worker)
+    ch = client.get(f"/api/books/{b['id']}").json()["chapters"][0]
+    assert ch["render_current"]
+    client.patch(f"/api/books/{b['id']}/chapters/{ch['id']}", json={"title": "Renamed Chapter"})
+    c = client.get(f"/api/books/{b['id']}").json()["chapters"][0]
+    assert c["missing_audio"] == 0 and not c["render_current"]  # re-assemble only, no re-synthesis
+    j = client.post(f"/api/books/{b['id']}/export", json={"kind": "chapter_m4b", "chapter_id": ch["id"]}).json()
+    w.run_until_idle()
+    assert client.get(f"/api/jobs/{j['id']}").json()["status"] == "completed"
+    exp = client.get(f"/api/books/{b['id']}").json()["exports"][0]
+    assert exp["kind"] == "chapter_m4b" and "DRAFT" in exp["label"]
+    with ctx.db.session() as conn:
+        path = row(conn, "SELECT path FROM exports WHERE id=?", (exp["id"],))["path"]
+    info = probe_summary(path)
+    assert [x["title"] for x in info["chapters"]] == ["Renamed Chapter"]
+
+
+def test_chapter_export_is_blocked_when_a_segment_has_no_audio(client, ctx):
+    v = ryan(client)
+    b = confirm(client, upload(client, "book.epub", make_epub(CHAPTERS)), v["id"])
+    ch = client.get(f"/api/books/{b['id']}").json()["chapters"][0]
+    assert ch["missing_audio"] > 0  # nothing rendered yet: the export job would be blocked, never silently shortened
+
+
+def test_cover_upload_validates_content(client, ctx):
+    v = ryan(client)
+    b = confirm(client, upload(client, "book.epub", make_epub(CHAPTERS)), v["id"])
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    bad = client.post(f"/api/books/{b['id']}/cover", files={"file": ("c.png", b"not an image", "image/png")})
+    assert bad.status_code == 422
+    assert client.post(f"/api/books/{b['id']}/cover", files={"file": ("c.gif", png, "image/gif")}).status_code == 422
+    ok = client.post(f"/api/books/{b['id']}/cover", files={"file": ("c.png", png, "image/png")})
+    assert ok.status_code == 200 and ok.json()["has_cover"]
+
+
+def test_placeholder_cover_is_skipped_without_pillow():
+    from studio import chapters
+    try:
+        import PIL  # noqa: F401
+        expected = True
+    except ImportError:
+        expected = False
+    assert chapters.placeholder_cover_available() is expected
+__STUDIO_EOF_8ff8a34089b1__
+cat > "$DEST/tests/test_disk_management.py" <<'__STUDIO_EOF_f0e734ac28d0__'
+"""Disk management (C3): usage, purge/delete rules, backup and restore. MOCK engine only (synthetic tones)."""
+from __future__ import annotations
+
+import json
+import os
+import zipfile
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from conftest import make_text
+from studio import diskmgmt as D
+from studio.db import row, rows
+from studio.web.app import create_app
+from studio.web.auth import AuthStore, is_admin_only
+
+
+def _import(client, title, queue=False, marker=None):
+    v = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    r = client.post("/api/imports", files={"file": (f"{title}.txt", make_text(2, marker=marker, title=title).encode(), "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    prev = r.json()
+    r = client.post(f"/api/imports/{prev['token']}/confirm", json={"title": title, "voice_id": v["id"], "queue": queue})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _generated(client, make_worker, title="Alpha", faults=None):
+    b = _import(client, title, queue=True, marker="Zanzibar")
+    make_worker(faults or {"text:Zanzibar": ["drop", "repeat", "drop"]}).run_until_idle()
+    return b
+
+
+def _tree(path: Path) -> dict[str, int]:
+    return {p.relative_to(path).as_posix(): p.stat().st_size for p in path.rglob("*") if p.is_file()} if path.exists() else {}
+
+
+def _ctx_book(ctx, book_id):
+    with ctx.db.session() as conn:
+        return row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+
+
+# ---------------------------------------------------------------- usage
+
+
+def test_usage_sizes_match_disk_and_report_free_space(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    u = client.get("/api/disk/usage").json()
+    mine = next(x for x in u["books"] if x["id"] == b["id"])
+    dirs = D.book_dirs(_ctx_book(ctx, b["id"]))
+    for cat in ("manuscripts", "segments", "alternates", "reports", "masters", "exports"):
+        assert mine["categories"][cat] == sum(_tree(dirs[cat]).values()), cat
+    assert mine["categories"]["segments"] > 0 and mine["categories"]["alternates"] > 0
+    assert mine["total_bytes"] == sum(mine["categories"].values())
+    assert u["library_bytes"] == mine["total_bytes"]
+    assert u["free"]["library"]["free_bytes"] > 0 and u["free"]["model_cache"] is not None
+    assert mine["purgeable"]["takes"] > 0 and mine["purgeable"]["takes_bytes"] > 0
+    assert "database" in u["other"] and "recordings" in u["other"]
+
+
+# ---------------------------------------------------------------- purge
+
+
+def test_purge_takes_keeps_selected_and_approved(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    with ctx.db.session() as conn:
+        flagged = row(conn, "SELECT * FROM segments WHERE book_id=? AND status='flagged'", (b["id"],))
+    assert flagged
+    assert client.post(f"/api/segments/{flagged['id']}/approve", json={"note": "ok"}).status_code == 200
+    with ctx.db.session() as conn:
+        segs = rows(conn, "SELECT id, selected_attempt_id, status FROM segments WHERE book_id=?", (b["id"],))
+        before = rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=?", (b["id"],))
+    selected = {s["selected_attempt_id"] for s in segs if s["selected_attempt_id"]}
+    assert any(s["status"] == "approved" for s in segs) and len(before) > len(selected)
+    # no confirm: refused with a preview, nothing changes
+    r = client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "takes"})
+    assert r.status_code == 409 and r.json()["details"]["items"] == len(before) - len(selected)
+    with ctx.db.session() as conn:
+        assert len(rows(conn, "SELECT id FROM attempts")) == len(before)
+    r = client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "takes", "confirm": True})
+    assert r.status_code == 200 and r.json()["items"] == len(before) - len(selected) and r.json()["freed_bytes"] > 0
+    with ctx.db.session() as conn:
+        left = rows(conn, "SELECT id, wav_path FROM attempts")
+        audit = row(conn, "SELECT * FROM audit_log WHERE action='purge_takes'")
+    assert {a["id"] for a in left} == selected and audit
+    for a in left:
+        assert Path(a["wav_path"]).exists()
+    assert not _tree(D.book_dirs(_ctx_book(ctx, b["id"]))["alternates"])
+    for s in segs:
+        assert s["selected_attempt_id"] is None or any(a["id"] == s["selected_attempt_id"] for a in left)
+
+
+def test_purge_ignores_database_paths_outside_the_book(client, ctx, make_worker, tmp_path):
+    b = _generated(client, make_worker)
+    victim = tmp_path / "precious.wav"
+    victim.write_bytes(b"do not delete")
+    with ctx.db.tx() as conn:
+        a = row(conn, "SELECT a.id FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.id NOT IN (SELECT selected_attempt_id FROM segments WHERE selected_attempt_id IS NOT NULL) LIMIT 1", (b["id"],))
+        conn.execute("UPDATE attempts SET wav_path=? WHERE id=?", (str(victim), a["id"]))
+        conn.execute("INSERT INTO exports(book_id, kind, label, path, created_at) VALUES (?, 'x', 'x', ?, 0)", (b["id"], str(victim)))
+    assert client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "takes", "confirm": True}).status_code == 200
+    assert client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "exports", "confirm": True}).status_code == 200
+    assert victim.read_bytes() == b"do not delete"
+
+
+def test_purge_exports_removes_files_and_rows(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    dirs = D.book_dirs(_ctx_book(ctx, b["id"]))
+    f = dirs["exports"] / "book.m4b"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x" * 1000)
+    with ctx.db.tx() as conn:
+        conn.execute("INSERT INTO exports(book_id, kind, label, path, size_bytes, created_at) VALUES (?, 'm4b', 'L', ?, 1000, 0)", (b["id"], str(f)))
+    assert client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "exports"}).status_code == 409
+    assert f.exists()
+    r = client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "exports", "confirm": True})
+    assert r.status_code == 200 and r.json()["freed_bytes"] == 1000 and not f.exists()
+    with ctx.db.session() as conn:
+        assert not rows(conn, "SELECT id FROM exports")
+    assert client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "bogus", "confirm": True}).status_code == 422
+
+
+# ---------------------------------------------------------------- refusal while queued/rendering
+
+
+def test_refused_while_queued_or_running(client, ctx):
+    b = _import(client, "Busy", queue=True)
+    for path, body in ((f"/api/disk/books/{b['id']}/delete", {"confirm": True}), (f"/api/disk/books/{b['id']}/purge", {"scope": "takes", "confirm": True})):
+        r = client.post(path, json=body)
+        assert r.status_code == 409 and "queued" in r.json()["error"]
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE jobs SET status='running' WHERE book_id=?", (b["id"],))
+    assert client.post(f"/api/disk/books/{b['id']}/delete", json={"confirm": True}).status_code == 409
+    assert client.post(f"/api/disk/books/{b['id']}/backup").status_code == 409  # a running render is not backed up
+    assert _ctx_book(ctx, b["id"]) is not None
+    assert any(_tree(d) for d in D.book_dirs(_ctx_book(ctx, b["id"])).values())
+
+
+# ---------------------------------------------------------------- delete
+
+
+def test_delete_requires_confirm_and_leaves_other_books_alone(client, ctx, make_worker):
+    a = _generated(client, make_worker, "Alpha")
+    other = _import(client, "Bravo")
+    dirs_a = D.book_dirs(_ctx_book(ctx, a["id"]))
+    dirs_o = D.book_dirs(_ctx_book(ctx, other["id"]))
+    other_before = {k: _tree(v) for k, v in dirs_o.items()}
+    r = client.post(f"/api/disk/books/{a['id']}/delete", json={})
+    assert r.status_code == 409 and r.json()["details"]["bytes"] > 0
+    assert client.post(f"/api/disk/books/{a['id']}/delete", json={"confirm": "yes"}).status_code == 422
+    assert _ctx_book(ctx, a["id"]) is not None and _tree(dirs_a["segments"])
+    r = client.post(f"/api/disk/books/{a['id']}/delete", json={"confirm": True})
+    assert r.status_code == 200 and r.json()["freed_bytes"] > 0 and not r.json()["errors"]
+    assert _ctx_book(ctx, a["id"]) is None
+    assert not any(d.exists() for d in dirs_a.values())
+    with ctx.db.session() as conn:
+        for t in ("segments", "chapters", "manuscripts", "nar_spans", "jobs", "chapter_text"):
+            assert not rows(conn, f"SELECT 1 FROM {t} WHERE book_id=?", (a["id"],)), t
+        assert not rows(conn, "SELECT 1 FROM attempts WHERE segment_id NOT IN (SELECT id FROM segments)")
+        assert row(conn, "SELECT 1 FROM audit_log WHERE action='deleted' AND entity='book'")
+    assert {k: _tree(v) for k, v in dirs_o.items()} == other_before and _ctx_book(ctx, other["id"])
+    assert client.post(f"/api/disk/books/{a['id']}/delete", json={"confirm": True}).status_code == 404
+
+
+def test_delete_refuses_tampered_storage_paths(client, ctx, tmp_path):
+    b = _import(client, "Tamper")
+    outside = tmp_path / "important"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE books SET storage_json=? WHERE id=?", (json.dumps({"segments": str(outside)}), b["id"]))
+    r = client.post(f"/api/disk/books/{b['id']}/delete", json={"confirm": True})
+    assert r.status_code == 422 and (outside / "keep.txt").exists()
+
+
+# ---------------------------------------------------------------- backup / restore
+
+
+def test_backup_restore_round_trip(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    orig = _ctx_book(ctx, b["id"])
+    orig_dirs = D.book_dirs(orig)
+    orig_files = {k: _tree(v) for k, v in orig_dirs.items()}
+    with ctx.db.session() as conn:
+        n_seg = len(rows(conn, "SELECT id FROM segments WHERE book_id=?", (b["id"],)))
+        n_att = len(rows(conn, "SELECT a.id FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=?", (b["id"],)))
+        n_span = len(rows(conn, "SELECT id FROM nar_spans WHERE book_id=?", (b["id"],)))
+        n_sel = len(rows(conn, "SELECT id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (b["id"],)))
+    r = client.post(f"/api/disk/books/{b['id']}/backup")
+    assert r.status_code == 200, r.text
+    bk = r.json()
+    zpath = Path(bk["path"])
+    assert zpath.parent == ctx.backups_dir / "books" and zpath.exists()
+    with zipfile.ZipFile(zpath) as zf:
+        m = json.loads(zf.read("manifest.json"))
+    assert m["format"] == D.BACKUP_FORMAT and m["book_uid"] == orig["uid"] and len(m["files"]) == sum(len(v) for v in orig_files.values())
+    assert any(x["name"] == bk["name"] for x in client.get("/api/disk/backups").json()["books"])
+
+    rr = client.post("/api/disk/restore", json={"name": bk["name"]})
+    assert rr.status_code == 200, rr.text
+    new = rr.json()
+    assert new["book_id"] != b["id"] and new["uid"] != orig["uid"] and new["title"].endswith("(restored)")
+    nb = _ctx_book(ctx, new["book_id"])
+    ndirs = D.book_dirs(nb)
+    for k, files in orig_files.items():
+        assert _tree(ndirs[k]) == files, k
+    with ctx.db.session() as conn:
+        segs = rows(conn, "SELECT * FROM segments WHERE book_id=?", (new["book_id"],))
+        atts = rows(conn, "SELECT a.* FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=?", (new["book_id"],))
+        assert len(segs) == n_seg and len(atts) == n_att
+        assert len(rows(conn, "SELECT id FROM nar_spans WHERE book_id=?", (new["book_id"],))) == n_span
+        assert sum(1 for s in segs if s["selected_attempt_id"]) == n_sel
+        assert all(s["sid"].startswith(nb["uid"]) for s in segs)
+        attempt_ids = {a["id"] for a in atts}
+        assert all(s["selected_attempt_id"] in attempt_ids for s in segs if s["selected_attempt_id"])
+        for a in atts:
+            if a["wav_path"]:
+                assert Path(a["wav_path"]).exists() and nb["uid"] in a["wav_path"]
+        man = row(conn, "SELECT * FROM manuscripts WHERE book_id=?", (new["book_id"],))
+        assert Path(man["stored_path"]).exists() and nb["uid"] in man["stored_path"]
+        assert row(conn, "SELECT 1 FROM audit_log WHERE action='restored'")
+    assert nb["voice_id"] == orig["voice_id"]
+    # the original is untouched, and the restored copy works after the original is deleted
+    assert {k: _tree(v) for k, v in orig_dirs.items()} == orig_files
+    assert client.post(f"/api/disk/books/{b['id']}/delete", json={"confirm": True}).status_code == 200
+    assert client.get(f"/api/books/{new['book_id']}").status_code == 200
+    assert client.get(f"/api/books/{new['book_id']}/segments").status_code == 200
+    # restoring twice yields two independent books
+    again = client.post("/api/disk/restore", json={"name": bk["name"]}).json()
+    assert again["uid"] not in (new["uid"], orig["uid"])
+
+
+def test_database_backup_is_a_valid_sqlite_copy(client, ctx):
+    import sqlite3
+
+    _import(client, "DbBook")
+    r = client.post("/api/disk/db-backup")
+    assert r.status_code == 200 and r.json()["integrity"] == "ok"
+    p = ctx.backups_dir / "db" / r.json()["name"]
+    con = sqlite3.connect(str(p))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM books").fetchone()[0] == 1
+    finally:
+        con.close()
+    assert any(x["name"] == r.json()["name"] for x in client.get("/api/disk/backups").json()["databases"])
+
+
+def test_delete_backup_needs_confirm(client, ctx):
+    b = _import(client, "Tiny")
+    bk = client.post(f"/api/disk/books/{b['id']}/backup").json()
+    assert client.post("/api/disk/backups/delete", json={"name": bk["name"]}).status_code == 409
+    assert Path(bk["path"]).exists()
+    assert client.post("/api/disk/backups/delete", json={"name": bk["name"], "confirm": True}).status_code == 200
+    assert not Path(bk["path"]).exists()
+
+
+# ---------------------------------------------------------------- path traversal
+
+
+@pytest.mark.parametrize("name", ["../evil.zip", "..\\evil.zip", "/etc/passwd.zip", "sub/dir.zip", "C:\\x.zip", "no-extension", "a..b/../c.zip", ".hidden.zip"])
+def test_restore_rejects_bad_names(client, name):
+    r = client.post("/api/disk/restore", json={"name": name})
+    assert r.status_code in (404, 422), (name, r.status_code)
+    r = client.post("/api/disk/backups/delete", json={"name": name, "confirm": True})
+    assert r.status_code in (404, 422)
+
+
+def test_restore_rejects_malicious_and_damaged_archives(client, ctx, tmp_path):
+    b = _import(client, "Victim")
+    good = Path(client.post(f"/api/disk/books/{b['id']}/backup").json()["path"])
+    root = ctx.backups_dir / "books"
+    lib_before = sorted(p.name for p in ctx.category_dir("segments").iterdir())
+
+    def forged(name, mutate):
+        out = root / name
+        with zipfile.ZipFile(good) as zin, zipfile.ZipFile(out, "w") as zout:
+            items = {i.filename: zin.read(i.filename) for i in zin.infolist()}
+            items = mutate(items)
+            for k, v in items.items():
+                zout.writestr(k, v)
+        return out
+
+    evil = {"traverse.zip": lambda it: {**it, "media/segments/../../../escape.txt": b"x"},
+            "abs.zip": lambda it: {**it, "/abs/escape.txt": b"x"},
+            "cat.zip": lambda it: {**it, "media/bogus/x.wav": b"x"},
+            "nomanifest.zip": lambda it: {k: v for k, v in it.items() if k != "manifest.json"}}
+    for name, fn in evil.items():
+        forged(name, fn)
+        r = client.post("/api/disk/restore", json={"name": name})
+        assert r.status_code == 422, (name, r.text)
+    from studio.services import ServiceError
+
+    for bad in ("media" + chr(92) + "segments" + chr(92) + "x.wav", "C:/x.wav", "media/segments/./x.wav", "media//x.wav"):
+        with pytest.raises(ServiceError):
+            D._clean_member(bad)
+    # damaged media: declared checksum no longer matches
+    def corrupt(it):
+        m = json.loads(it["manifest.json"])
+        if m["files"]:
+            m["files"][0]["sha256"] = "0" * 64
+        else:
+            it["media/manuscripts/extra.txt"] = b"hello"
+            m["files"].append({"path": "media/manuscripts/extra.txt", "size": 5, "sha256": "0" * 64})
+        it["manifest.json"] = json.dumps(m).encode()
+        return it
+    forged("bad-sha.zip", corrupt)
+    r = client.post("/api/disk/restore", json={"name": "bad-sha.zip"})
+    assert r.status_code == 422 and "Checksum" in r.json()["error"]
+    # nothing leaked: no new book, no leftover folders, nothing written outside the library
+    with ctx.db.session() as conn:
+        assert len(rows(conn, "SELECT id FROM books")) == 1
+    assert sorted(p.name for p in ctx.category_dir("segments").iterdir()) == lib_before
+    assert not (ctx.home / "escape.txt").exists() and not (ctx.library_root() / "escape.txt").exists()
+
+
+# ---------------------------------------------------------------- admin only
+
+
+def test_disk_routes_are_admin_only(ctx):
+    for m, p in (("GET", "/api/disk/usage"), ("GET", "/api/disk/backups"), ("POST", "/api/disk/books/1/delete"), ("POST", "/api/disk/books/1/purge"),
+                 ("POST", "/api/disk/books/1/backup"), ("POST", "/api/disk/restore"), ("POST", "/api/disk/backups/delete"), ("POST", "/api/disk/db-backup")):
+        assert is_admin_only(m, p), (m, p)
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"}).status_code == 200
+        assert c.get("/api/disk/usage").status_code == 403
+        assert c.post("/api/disk/books/1/delete", json={"confirm": True}).status_code == 403
+        assert c.post("/api/disk/books/1/purge", json={"scope": "takes", "confirm": True}).status_code == 403
+        assert c.post("/api/disk/restore", json={"name": "x.zip"}).status_code == 403
+        c.cookies.clear()
+        assert c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"}).status_code == 200
+        assert c.get("/api/disk/usage").status_code == 200
+__STUDIO_EOF_f0e734ac28d0__
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_8971b49e6163__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23266,13 +25827,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.9" and st["version_label"] == "v0.5.9"
+    assert st["version"] == "0.6.0" and st["version_label"] == "v0.6.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.9" and "stage" not in a
+    assert a["version_label"] == "v0.6.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_1f0ad57955a1__
+__STUDIO_EOF_8971b49e6163__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -23452,6 +26013,112 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
 __STUDIO_EOF_1c0cca55ee5a__
+cat > "$DEST/tests/test_lab_compare.py" <<'__STUDIO_EOF_00a2eb991424__'
+"""Multi-take comparison in the reference lab. Mock engine (not real speech)."""
+from __future__ import annotations
+
+from conftest import make_speechlike_wav, needs_ffmpeg
+from studio import reference as R
+
+TEXT = "The morning fog lay thick over the harbour, and the fishing boats rocked quietly at their moorings."
+
+
+def _take(i, verdict, floor=-62.0, clip=0.0, warns=0):
+    checks = [{"name": f"w{n}", "status": "warn", "detail": "", "tip": ""} for n in range(warns)]
+    return {"id": i, "quality": {"verdict": verdict, "checks": checks}, "duration_s": 10.0,
+            "metrics": {"peak_dbfs": -8.0, "clip_ratio": clip, "rms_dbfs": -22.0, "noise_floor_dbfs": floor}}
+
+
+def test_compare_ranks_by_verdict_then_warnings_then_snr_and_skips_poor():
+    r = R.compare_takes([_take("a", "usable", warns=2), _take("b", "excellent", floor=-55.0), _take("c", "excellent", floor=-65.0), _take("d", "poor")])
+    ranks = {x["id"]: x["rank"] for x in r["rows"]}
+    assert ranks == {"c": 1, "b": 2, "a": 3, "d": 4} and r["recommended_id"] == "c"
+    assert [x["id"] for x in r["rows"] if x["recommended"]] == ["c"]
+    assert R.compare_takes([_take("x", "poor"), _take("y", "poor")])["recommended_id"] is None
+
+
+@needs_ffmpeg
+def test_compare_endpoint(client):
+    ids = []
+    for _ in range(2):
+        r = client.post("/api/recordings", data={"script_id": "core-harbour", "ref_text": TEXT}, files={"file": ("t.wav", make_speechlike_wav(10.0), "audio/wav")})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    c = client.get("/api/recordings/compare", params={"ids": ",".join(ids)})
+    assert c.status_code == 200, c.text
+    body = c.json()
+    assert {x["id"] for x in body["rows"]} == set(ids) and body["recommended_id"] in ids
+    assert all({"verdict", "duration_s", "peak_dbfs", "noise_floor_dbfs", "snr_db", "clip_ratio", "rank"} <= set(x) for x in body["rows"])
+    assert client.get("/api/recordings/compare", params={"ids": ids[0]}).status_code == 422
+    assert client.get("/api/recordings/compare", params={"ids": f"{ids[0]},rec_deadbeef"}).status_code == 404
+    assert client.get("/api/recordings/compare", params={"ids": f"{ids[0]},../x"}).status_code == 404
+__STUDIO_EOF_00a2eb991424__
+cat > "$DEST/tests/test_llm_test_connection.py" <<'__STUDIO_EOF_811fdb836aac__'
+"""Settings > Narrative > Local LLM: the Test connection button (endpoint and model name check, no book touched)."""
+from __future__ import annotations
+
+import httpx
+
+from studio import services as S
+from studio.config import LLMSettings
+from studio.narrative.llm import LLMClient
+
+
+def _client(handler, model="good-model"):
+    cfg = LLMSettings(provider="openai_compatible", base_url="http://127.0.0.1:1234/v1", model=model)
+    return LLMClient(cfg, transport=httpx.MockTransport(handler))
+
+
+def _ok(request):
+    if request.url.path.endswith("/models"):
+        return httpx.Response(200, json={"data": [{"id": "good-model"}, {"id": "other"}]})
+    return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+
+def test_connection_ok():
+    r = _client(_ok).test_connection()
+    assert r["ok"] and [c["name"] for c in r["checks"]] == ["Reach the endpoint", "Model is listed", "Ask the model"]
+
+
+def test_wrong_model_is_named_with_alternatives():
+    r = _client(_ok, model="typo").test_connection()
+    listed = next(c for c in r["checks"] if c["name"] == "Model is listed")
+    assert not r["ok"] and not listed["ok"] and "good-model" in listed["detail"]
+
+
+def test_unreachable_and_bad_key_and_no_models_endpoint():
+    def down(request):
+        raise httpx.ConnectError("refused")
+
+    r = _client(down).test_connection()
+    assert not r["ok"] and "Could not connect" in r["checks"][0]["detail"]
+    r = _client(lambda req: httpx.Response(401, json={})).test_connection()
+    assert not r["ok"] and "key" in r["checks"][0]["detail"]
+
+    def no_list(request):   # some servers have no /models
+        return httpx.Response(404) if request.url.path.endswith("/models") else _ok(request)
+
+    assert _client(no_list).test_connection()["ok"]
+    assert not _client(_ok, model="").test_connection()["ok"]
+
+
+def test_chat_failure_reported():
+    def bad_chat(request):
+        return _ok(request) if request.url.path.endswith("/models") else httpx.Response(500, text="boom")
+
+    r = _client(bad_chat).test_connection()
+    assert not r["ok"] and "HTTP 500" in r["checks"][-1]["detail"]
+
+
+def test_service_validates_url_and_endpoint_is_admin_only(ctx):
+    import pytest
+
+    with pytest.raises(S.ServiceError):
+        S.test_llm(ctx, "ftp://nope", "m")
+    from studio.web.auth import is_admin_only
+
+    assert is_admin_only("POST", "/api/narrative/llm/test")
+__STUDIO_EOF_811fdb836aac__
 cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_61f149065244__'
 """Semantic segmentation, speaker attribution, Narrative Director, continuity and their integration
 with the queue. Pure-logic tests run on the fixture manuscripts in ``narrative_fixtures``; integration
@@ -24610,6 +27277,219 @@ def test_redirect_reruns_the_director_for_that_segment_through_the_cache(client,
         assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) > hits0
         assert len(rows(conn, "SELECT id FROM direction_log WHERE segment_id=?", (seg["id"],))) >= 2
 __STUDIO_EOF_61f149065244__
+cat > "$DEST/tests/test_pronunciation.py" <<'__STUDIO_EOF_abcfa3cf215e__'
+"""Pronunciation dictionary and per-voice pace (C2). MOCK engine only: synthetic tones, not speech, so
+audible quality of respellings and of the time stretch is NOT tested here."""
+from __future__ import annotations
+
+import numpy as np
+
+from conftest import make_text
+from studio import audio as A
+from studio import pronunciation as PR
+from studio.db import row, rows
+from test_integration import confirm, ryan, upload
+
+
+def E(written, spoken, cs=False, ww=True):
+    return {"written": written, "spoken": spoken, "case_sensitive": cs, "whole_word": ww}
+
+
+# ------------------------------------------------------------------ pure logic
+
+
+def test_apply_whole_word_case_and_phrases():
+    ents = [E("Hermione", "Her-my-oh-nee"), E("St. Louis", "Saint Louis"), E("Nice", "Neece", cs=True), E("cat", "kat", ww=False)]
+    assert PR.apply(ents, "hermione and HERMIONE") == "Her-my-oh-nee and Her-my-oh-nee"
+    assert PR.apply(ents, "from St.  Louis today") == "from Saint Louis today"           # whitespace-tolerant phrase
+    assert PR.apply(ents, "Nice nice") == "Neece nice"                                    # case-sensitive entry
+    assert PR.apply(ents, "concatenate") == "conkatenate"                                 # not whole word
+    assert PR.apply([E("cat", "kat")], "concatenate cat") == "concatenate kat"            # whole word default
+    assert PR.apply([E("a", "b"), E("b", "c")], "a b") == "b c"                           # no chained rewrites
+    assert PR.apply([E("Ann", "Anne"), E("Ann Lee", "An Lee")], "Ann Lee met Ann") == "An Lee met Anne"  # longest wins
+    assert PR.apply([], "x") == "x"
+
+
+def test_time_stretch_length_and_pitch():
+    sr = 24000
+    t = np.arange(sr * 3) / sr
+    a = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    for rate in (0.8, 1.25):
+        b = A.time_stretch(a, sr, rate)
+        assert abs(len(b) / (len(a) / rate) - 1) < 0.01
+        mid = b[sr: 2 * sr]
+        f = np.argmax(np.abs(np.fft.rfft(mid))) * sr / len(mid)
+        assert abs(f - 220) < 5                      # pitch preserved
+    assert A.time_stretch(a, sr, 1.0) is not None and len(A.time_stretch(a, sr, 1.0)) == len(a)
+
+
+# ------------------------------------------------------------------ API and regeneration
+
+
+def book_with_audio(client, make_worker):
+    b = confirm(client, upload(client, "a.txt", make_text(1).encode()), ryan(client)["id"], queue=True)
+    make_worker(take_over=True).run_until_idle()
+    return b
+
+
+def regenerate(client, make_worker, book_id):
+    assert client.post("/api/queue", json={"book_id": book_id}).status_code == 200
+    make_worker(take_over=True).run_until_idle()
+
+
+def seg_rows(ctx, book_id):
+    with ctx.db.session() as conn:
+        return rows(conn, "SELECT id, sid, status, original_text, override_text, narration_text, round FROM segments WHERE book_id=? ORDER BY id", (book_id,))
+
+
+def test_crud_validation_and_try(client, ctx):
+    r = client.post("/api/pronunciations", json={"written": "Eleanor", "spoken": "El-uh-nor"})
+    assert r.status_code == 200, r.text
+    eid = r.json()["entry"]["id"]
+    assert client.post("/api/pronunciations", json={"written": "eleanor", "spoken": "x"}).status_code == 409   # duplicate
+    assert client.post("/api/pronunciations", json={"written": "", "spoken": "x"}).status_code == 422
+    assert client.post("/api/pronunciations", json={"written": "a", "spoken": "b", "book_id": 999}).status_code == 404
+    lst = client.get("/api/pronunciations").json()
+    assert [e["written"] for e in lst["global"]] == ["Eleanor"] and lst["pace_range"] == [0.8, 1.25]
+    assert client.post("/api/pronunciations/try", json={"text": "Eleanor sat."}).json()["output"] == "El-uh-nor sat."
+    r = client.patch(f"/api/pronunciations/{eid}", json={"enabled": False})
+    assert r.status_code == 200 and r.json()["entry"]["enabled"] is False
+    assert client.post("/api/pronunciations/try", json={"text": "Eleanor sat."}).json()["changed"] is False
+    assert client.delete(f"/api/pronunciations/{eid}").status_code == 200
+    assert client.delete(f"/api/pronunciations/{eid}").status_code == 404
+
+
+def test_book_entry_overrides_global_and_scopes(client, ctx):
+    b = confirm(client, upload(client, "a.txt", make_text(1).encode()), ryan(client)["id"])
+    other = confirm(client, upload(client, "b.txt", make_text(1, title="Other Book").encode()), ryan(client)["id"], title="Other")
+    client.post("/api/pronunciations", json={"written": "Hale", "spoken": "Hayle"})
+    client.post("/api/pronunciations", json={"written": "Hale", "spoken": "Hal", "book_id": b["id"]})
+    t = {"text": "Mr. Hale left.", "book_id": b["id"]}
+    assert client.post("/api/pronunciations/try", json=t).json()["output"] == "Mr. Hal left."
+    assert client.post("/api/pronunciations/try", json={**t, "book_id": other["id"]}).json()["output"] == "Mr. Hayle left."
+    book_list = client.get(f"/api/pronunciations?book_id={b['id']}").json()
+    assert len(book_list["book"]) == 1 and len(book_list["global"]) == 1
+
+
+def test_dictionary_change_marks_only_affected_segments_stale(client, ctx, make_worker):
+    b = book_with_audio(client, make_worker)
+    before = seg_rows(ctx, b["id"])
+    assert before and all(s["status"] == "passed" for s in before)
+    affected = [s for s in before if "herons" in (s["narration_text"] or "")]
+    assert affected and len(affected) < len(before)
+
+    r = client.post("/api/pronunciations", json={"written": "herons", "spoken": "hair-uns", "book_id": b["id"]})
+    assert r.status_code == 409 and r.json()["details"]["stale_segments"] == len(affected)
+    with ctx.db.session() as conn:                                            # rolled back: nothing changed
+        assert row(conn, "SELECT COUNT(*) AS n FROM pronunciations")["n"] == 0
+    assert all(s["status"] == "passed" for s in seg_rows(ctx, b["id"]))
+
+    r = client.post("/api/pronunciations", json={"written": "herons", "spoken": "hair-uns", "book_id": b["id"], "confirm_invalidate": True})
+    assert r.status_code == 200 and r.json()["stale_segments"] == len(affected)
+    after = {s["id"]: s for s in seg_rows(ctx, b["id"])}
+    for s in before:
+        a = after[s["id"]]
+        if s in affected:
+            assert a["status"] == "pending" and a["round"] == s["round"] + 1
+        else:
+            assert a["status"] == "passed" and a["round"] == s["round"]
+        # the manuscript text and any override are immutable
+        assert a["original_text"] == s["original_text"] and a["narration_text"] == s["narration_text"] and a["override_text"] == s["override_text"]
+
+    regenerate(client, make_worker, b["id"])  # the engine receives the respelling
+    with ctx.db.session() as conn:
+        for s in affected:
+            att = row(conn, "SELECT text_spoken FROM attempts WHERE segment_id=? ORDER BY id DESC LIMIT 1", (s["id"],))
+            assert "hair-uns" in att["text_spoken"] and "herons" not in att["text_spoken"].lower()
+    assert all(s["status"] == "passed" for s in seg_rows(ctx, b["id"]))
+
+    # Removing the entry sends the same segments back again; the earlier take (same key) is reused, not re-rendered.
+    eid = client.get(f"/api/pronunciations?book_id={b['id']}").json()["book"][0]["id"]
+    assert client.delete(f"/api/pronunciations/{eid}").status_code == 409
+    assert client.delete(f"/api/pronunciations/{eid}?confirm_invalidate=true").json()["stale_segments"] == len(affected)
+    regenerate(client, make_worker, b["id"])
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT COUNT(*) AS n FROM review_actions WHERE action='cache_reuse'")["n"] >= len(affected)
+
+
+def test_entry_that_matches_nothing_invalidates_nothing(client, ctx, make_worker):
+    b = book_with_audio(client, make_worker)
+    r = client.post("/api/pronunciations", json={"written": "Zanzibarian", "spoken": "zan-zi-bar-ee-an"})   # no confirmation needed
+    assert r.status_code == 200 and r.json()["stale_segments"] == 0
+    assert all(s["status"] == "passed" for s in seg_rows(ctx, b["id"]))
+
+
+def test_voice_pace_validation_and_staleness(client, ctx, make_worker):
+    v = ryan(client)
+    assert v["pace"] == 1.0
+    assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 2.0}).status_code == 422
+    assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 0.5}).status_code == 422
+    b = book_with_audio(client, make_worker)
+    n = len(seg_rows(ctx, b["id"]))
+    r = client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1})
+    assert r.status_code == 409 and r.json()["details"]["stale_segments"] == n
+    r = client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1, "confirm_invalidate": True})
+    assert r.status_code == 200 and r.json()["stale_segments"] == n
+    assert next(x for x in client.get("/api/voices").json()["voices"] if x["id"] == v["id"])["pace"] == 1.1
+    regenerate(client, make_worker, b["id"])
+    with ctx.db.session() as conn:
+        done = rows(conn, "SELECT a.duration_s, a.text_spoken FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.round>0", (b["id"],))
+    assert done and all(d["duration_s"] for d in done)
+    assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1}).json()["stale_segments"] == 0   # unchanged: no-op
+__STUDIO_EOF_abcfa3cf215e__
+cat > "$DEST/tests/test_scrub_check.py" <<'__STUDIO_EOF_27eceefd664d__'
+"""tools/scrub_check.py detects private network details, personal paths and private keys."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location("scrub_check", Path(__file__).resolve().parents[3] / "tools" / "scrub_check.py")
+sc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(sc)
+
+
+# Built from pieces so the repo-wide key-material test does not trip over this file.
+DASHES = "-" * 5
+
+
+def kinds(text):
+    return [k for _n, _l, k, _t in sc.scan_text(text)]
+
+
+def test_detects_private_ips():
+    for ip in ("192.168.7.42", "10.4.5.6", "172.16.0.9", "172.31.255.1"):
+        assert kinds(f"ssh admin@{ip}") == ["private IPv4"], ip
+
+
+def test_ignores_public_loopback_and_placeholders():
+    for t in ("127.0.0.1:7861", "0.0.0.0", "172.32.0.1", "172.15.0.1", "8.8.8.8", "192.168.1.1", "version 110.1.2.3.4"):
+        assert kinds(t) == [], t
+
+
+def test_detects_real_hostnames_but_not_examples():
+    assert kinds("open http://scotts-macbook.local:8443") == ["private hostname"]
+    assert kinds("nas.home.lan") == ["private hostname"]
+    assert kinds("http://example.lan and your-mac.local") == []
+
+
+def test_detects_home_paths_but_not_placeholders():
+    assert kinds(r"C:\Users\jsmith\Documents") == ["home path"]
+    assert kinds("C:/Users/jsmith/x") == ["home path"]
+    assert kinds("cd /Users/jsmith/audiobook") == ["home path"]
+    assert kinds("/home/bob/.ssh") == ["home path"]
+    assert kinds(r"C:\Users\<user>\x /Users/<user>/y ~/Users") == []
+
+
+def test_detects_private_key_blocks():
+    assert kinds(DASHES + "BEGIN " + "PRIVATE KEY" + DASHES) == ["private key block"]
+    assert kinds(DASHES + "BEGIN OPENSSH " + "PRIVATE KEY" + DASHES) == ["private key block"]
+    assert kinds(DASHES + "BEGIN PUBLIC KEY" + DASHES) == []
+
+
+def test_reports_line_numbers():
+    assert sc.scan_text("ok\nok\nhost 10.1.1.1", "f.txt") == [("f.txt", 3, "private IPv4", "10.1.1.1")]
+__STUDIO_EOF_27eceefd664d__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -26525,7 +29405,161 @@ def test_provider_boundaries_do_not_import_each_other_directly():
         if "web" in p.parts:
             assert "github.com" not in t.replace("github.com/salbretsen", ""), p
 __STUDIO_EOF_e0a39c35e7b1__
-cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_f5ccd3b476bf__'
+cat > "$DEST/tests/test_update_rollback.py" <<'__STUDIO_EOF_0e0a530fac23__'
+"""Manual rollback (A4) and post-install housekeeping (A6). Mock platform only; nothing here ran on a Mac."""
+from __future__ import annotations
+
+import json
+import os
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from studio.update import housekeeping
+from studio.update.store import ReleaseStore
+from studio.update.manager import UpdateError
+from test_update_flow import CUR, applier, env, stage  # noqa: F401  (env is a fixture)
+from update_fixtures import write_tree
+
+
+def _install_new(env):
+    stage(env)
+    (env.layout.update_dir / "request.json").write_text(json.dumps({"version": "0.5.1", "mode": "now"}))
+    assert applier(env).run("0.5.1", "now")
+
+
+def test_no_rollback_without_previous(env):
+    assert env.mgr.can_rollback() is None
+    assert env.mgr.status()["can_rollback"] is None
+    with pytest.raises(UpdateError):
+        env.mgr.request_rollback("now", CUR)
+
+
+def test_manual_rollback_switches_back_and_keeps_data(env, ctx):
+    _install_new(env)
+    mgr = env.mgr
+    assert mgr.can_rollback() == CUR
+    with pytest.raises(UpdateError) as e:
+        mgr.request_rollback("now", "9.9.9")                      # wrong confirmation
+    assert e.value.status == 422
+    mgr.request_rollback("now", CUR)
+    req = json.loads((env.layout.update_dir / "request.json").read_text())
+    assert req["rollback"] is True and req["version"] == CUR
+    with pytest.raises(UpdateError):
+        mgr.request_rollback("now", CUR)                          # already pending
+    env.platform.log.clear()
+    assert applier(env).run(CUR, "now", rollback=True)
+    store = ReleaseStore(env.layout)
+    assert store.current() == CUR and store.previous() == "0.5.1"
+    assert env.platform.log == ["stop", f"start:{CUR}"]
+    st = mgr.status()
+    assert st["state"] == "succeeded" and "Rolled back to" in st["message"]
+    assert mgr.status_file.read_history()[0]["event"] == "rollback"
+    assert not (env.layout.update_dir / "request.json").exists()
+
+
+def test_rollback_refused_when_previous_cannot_open_the_database(env, ctx):
+    _install_new(env)
+    rel = env.layout.release_dir(CUR) / "release.json"
+    rel.write_text(json.dumps({"version": CUR, "schema_version": 1, "runtime_id": ""}))
+    assert ctx.db.schema_version() > 1
+    ok = applier(env).run(CUR, "now", rollback=True)
+    assert not ok
+    st = env.mgr.status()
+    assert st["state"] == "failed" and "older database layout" in st["error"]
+    assert ReleaseStore(env.layout).current() == "0.5.1"            # nothing changed
+
+
+def test_failed_rollback_reverts_to_the_newer_release(env):
+    _install_new(env)
+    env.platform.broken.add(CUR)                                     # the old version will not start
+    ok = applier(env).run(CUR, "now", rollback=True)
+    assert not ok
+    assert ReleaseStore(env.layout).current() == "0.5.1"
+    st = env.mgr.status()
+    assert st["state"] == "rolled_back" and "Rollback to" in st["message"]
+
+
+def test_rollback_api_is_admin_only_and_needs_confirm(env, ctx):
+    from studio.web.app import create_app
+    from studio.web.auth import AuthStore
+
+    _install_new(env)
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    app = create_app(ctx, start_worker=False, update_manager=env.mgr)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"})
+        assert c.post("/api/update/rollback", json={"version": CUR, "confirm": True}).status_code == 403
+        c.post("/api/auth/logout")
+        c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"})
+        assert c.get("/api/update/status").json()["can_rollback"] == CUR
+        assert c.post("/api/update/rollback", json={"version": CUR}).status_code == 422
+        assert c.post("/api/update/rollback", json={"version": "0.0.1", "confirm": True}).status_code == 422
+        r = c.post("/api/update/rollback", json={"version": CUR, "confirm": True})
+        assert r.status_code == 200 and r.json()["state"] == "waiting"
+
+
+# --------------------------------------------------------------------------- housekeeping
+
+
+def _rt(layout, rid, age=7200):
+    d = layout.runtimes / rid
+    (d / "venv").mkdir(parents=True)
+    (d / ".complete").write_text("ok")
+    t = time.time() - age
+    os.utime(d, (t, t))
+    return d
+
+
+def test_housekeeping_prunes_only_unreferenced_old_runtimes(env):
+    lay = env.layout
+    keep_id, old_id, fresh_id = "a" * 16, "b" * 16, "c" * 16
+    top = write_tree(env.tmp / "rt", "0.5.0", runtime_id=keep_id)
+    (lay.release_dir(CUR) / "release.json").write_text((top / "release.json").read_text())
+    keep, old, fresh = _rt(lay, keep_id), _rt(lay, old_id), _rt(lay, fresh_id, age=10)
+    (lay.runtimes / "notes.txt").write_text("not a runtime")
+    gone = housekeeping.prune_runtimes(lay)
+    assert gone == [old_id]
+    assert keep.exists() and fresh.exists() and not old.exists() and (lay.runtimes / "notes.txt").exists()
+
+
+def test_housekeeping_keeps_previous_releases_runtime(env):
+    _install_new(env)
+    lay = env.layout
+    rid = "d" * 16
+    (lay.release_dir(CUR) / "release.json").write_text(json.dumps({"version": CUR, "schema_version": 2, "runtime_id": rid}))
+    d = _rt(lay, rid)
+    housekeeping.run(lay)
+    assert d.exists()                                                # the previous release still needs it
+
+
+def test_install_cleans_downloads_but_never_user_data(env, ctx):
+    lay = env.layout
+    dl = lay.app / "downloads"
+    dl.mkdir()
+    (dl / "uv-0.1.tar.gz").write_bytes(b"x")
+    (dl / "ffmpeg-1.zip").write_bytes(b"x")
+    (dl / "ffmpeg-2.zip.part").write_bytes(b"x")
+    (dl / "README.keep").write_text("someone put this here")
+    (lay.tools_bin / "uv").write_text("tool")
+    canary = ctx.library_root() / "books" / "keep.wav"
+    canary.parent.mkdir(parents=True, exist_ok=True)
+    canary.write_bytes(b"audio")
+    _install_new(env)
+    assert [p.name for p in dl.iterdir()] == ["README.keep"]
+    assert (lay.tools_bin / "uv").exists() and canary.read_bytes() == b"audio"
+    assert ReleaseStore(env.layout).installed() == [CUR, "0.5.1"]
+
+
+def test_housekeeping_does_nothing_without_an_active_release(env):
+    env.layout.pointer_file.unlink()
+    d = _rt(env.layout, "e" * 16)
+    assert housekeeping.prune_runtimes(env.layout) == [] and d.exists()
+__STUDIO_EOF_0e0a530fac23__
+cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_51e40cd42181__'
 """Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
 (Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
 from __future__ import annotations
@@ -26544,6 +29578,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from studio.db import LATEST_VERSION as LATEST_SCHEMA
 from studio.update.trust import TrustStore, sign_payload
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -26561,7 +29596,7 @@ def trust_for(pub: str) -> TrustStore:
     return TrustStore.from_public_b64(pub)
 
 
-def write_tree(root: Path, version: str, full: bool = False, break_serve: bool = False, schema: int = 2, runtime_id: str = "",
+def write_tree(root: Path, version: str, full: bool = False, break_serve: bool = False, schema: int = LATEST_SCHEMA, runtime_id: str = "",
                extra_files: dict[str, bytes] | None = None) -> Path:
     """Create ``root/audiobook-studio-<version>/`` with a MANIFEST.sha256 covering every file."""
     top = root / f"audiobook-studio-{version}"
@@ -26604,7 +29639,7 @@ def entry(version: str, archive: Path, sha: str, size: int, **over) -> dict:
     d = {"version": version, "channel": "stable", "platform": "macos", "arch": "arm64",
          "url": f"{BASE}/v{version}/{archive.name}", "size": size, "sha256": sha, "published": "2026-10-01T00:00:00Z",
          "notes_url": f"https://github.com/salbretsen/Narration-pipeline/releases/tag/v{version}", "notes": f"Notes for {version}\n- fixed things",
-         "min_compatible_version": "0.0.0", "min_os": "14.0", "schema_version": 2, "runtime_id": ""}
+         "min_compatible_version": "0.0.0", "min_os": "14.0", "schema_version": LATEST_SCHEMA, "runtime_id": ""}
     d.update(over)
     return d
 
@@ -26675,21 +29710,21 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.size = len(data)
     ti.mode = 0o644
     return ti, data
-__STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_0012e0a1fb08__'
-20261029134344-ffeba3b1
-__STUDIO_EOF_0012e0a1fb08__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_c58bb1020c79__'
+__STUDIO_EOF_51e40cd42181__
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_73ba75d5f779__'
+20261029140304-348e7bba
+__STUDIO_EOF_73ba75d5f779__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_405ca341d9d6__'
 {
-  "version": "0.5.9",
-  "schema_version": 2,
+  "version": "0.6.0",
+  "schema_version": 3,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029134344-ffeba3b1",
+  "build": "20261029140304-348e7bba",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_c58bb1020c79__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_2cb077ce6e4b__'
+__STUDIO_EOF_405ca341d9d6__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_6a64b4dabc47__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -26698,59 +29733,63 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-d077c533c49d54f4ebbc4d74f10cfc9f9196d6cee6b5f6bc961196a73719e366  CHANGELOG.md
+006062d9286854dd9b2d49267bffeab1372488a0aaccc706c11055b9060dfa55  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-8e870dd41b8f99ab6fcdcce4ff9c55af72ac383d9ee98fec609f4f3ea926fc94  README.md
+d632224bbc149a082185cf2ef632dd7b8814ae9ccd832e81584d5d1f22ce4634  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-ee5a6bb93068b9a3c098093c4fbd44f90758566cecd06ec10e2d07d8a2d835c8  studio/__init__.py
+02cdff442882f20948c83af1a71c98c94abd05fd68d6880445486b4b6cd3d3c1  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
-6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
-3d4d07dc9ae9e2d43e8778615d1a9f7c76f42009e6951ef8b53da05cb4571467  studio/audio.py
+75ffff87704b7b647ada359296a79f9a88dcb02f42710d98099c58b38fdeec4a  studio/assembly.py
+837ab7a7fa9751230d2e1734f41663fdc3fc429b4918428a17b54364304d200d  studio/audio.py
+2a0318ca98f9cabde638206f6927cd63a8887a4dfd7a3ffb1f02673f5cadc014  studio/chapters.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 ec66838fd57f07591bd7202ff68bb8e78197335150a357e5ae0d829b2d112d06  studio/cli.py
 3c1ee291a3134db98a59eb5ae232eaffdd9b7722995e6b3cdbdc4fed22edf1c5  studio/config.py
-b388aeab35b65f3947e58c9e74267af3518b971195a487185a01cd21cebf95dc  studio/context.py
-be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
+2e4a2a1622bec236742d8176c974eee9c7a28e73af3b9258a307e9a37eea0fb3  studio/context.py
+0220cc10f9e4d9dfb87a356cf763f3c551603b425e6326c16e69a0b1c6ad7280  studio/db.py
+21edb86c1d00d082f5ae40bf7bc0696690f8b5422713e976a730f1fcf7bfab42  studio/diskmgmt.py
 5385954828543ca6765fd4a0dd1ae525d4c9aea182833fa6324e5153462b4ccf  studio/doctor.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
 b799e30827000692564e06be6b625527b617e24f96fa01579dafc9d547a259ad  studio/legacy.py
-17909c976256c3a83612e05a41bff0187431fe869faa190a8855d93d73617eee  studio/lifecycle_cli.py
+4215ca34ace545959aedcd951e7a1e2bad4359dc16893f8d6666fd0ca44bf374  studio/lifecycle_cli.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
 91b51363ce097d3d38f1702bb996dbccd6947fc62038d0a698f040416f2338f7  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
 29cef5adfd5e89d915811a0b9bbaca954bfb230daeeccd8ff47d83344defb31a  studio/narrative/continuity.py
 708bc7550271f7cbc056d84fdaae78f958fb27036da77c42a34509e93281890c  studio/narrative/delivery.py
 4f4935b0c20f0400f0348476f8f9a5ebefc56cf4ca22272f31c97d9c8d27af14  studio/narrative/director.py
-1fbb590e5503fe9f437c58a126e7633b269e381c54f23830a13e75bc039f7e77  studio/narrative/llm.py
+c4b523e5033735c5c316dcb681982e34bbb559b23624fe4d862529643dde6f67  studio/narrative/llm.py
 42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
-0f322d908c4496a58aeef60d1440b8ee2c7bf7180fe0f32ce66b878c317b9b8f  studio/narrative/store.py
+56869a1a14400ed8d1c68bc11eb7324fcdd989cdc74e4669f5330b40861c8492  studio/narrative/store.py
 e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
 7443afaba3bf1e77c6b6cb5af09210f66a24fd4df2c92efeb92da31f3b12e138  studio/narrative/vocab.py
 fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrative/voicecheck.py
 35783594c7c72f8bffe54f9273f776fc90a838d32b8fff6cf3544d6484574fc8  studio/narrative/windows.py
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
-5a45663174aeac322ec15751f3c980782338f8b8d455e7b1e913ce410e1108dc  studio/pipeline.py
+83bb30268f7a21b6b00072e13578619c8d9e4125dc7ef5ac7a61cf52bc7e08a9  studio/pipeline.py
 6d7f7e457f3bf31ce81d47c85a78dfb3d4d1fbdb056bb7da323ffaec25985ce8  studio/platform_services.py
+8b16a5d5b9c0e5e3f126b3f00886e484fabbc9adf032616e54aa7809fe37a91a  studio/pronunciation.py
 c422f9cf89b9df531cc97fb99a83afcc0870f36a3815fdd9542c055f2c6a1293  studio/providers.py
-0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
-5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
+b80b30d1c5e825456acd899ebf71ef17084a11128417d6f76f7edc7223a06015  studio/reference.py
+4a097193cb728ac11f4778ab27b459f59084384ca57a6a0d0f8a8bf4fe1c00fa  studio/reports.py
 0827980c61c8e0042744e7e80b349249e729b05eb6a2c12d97b75d7836bf75e7  studio/scheduler.py
 ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets_store.py
-25a38aa77f47289f5ae3e0a18bdb8bfd6da749d7a7dd99f527072d240ab1a23d  studio/services.py
+f82c05c99e891d3b7c3a974d1f7710a64d45a5f0ba762bb8f0e1364110304b5e  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 7f184566b98f1c5680a9787c1971442f2db3aa5f6d7ad4b8c8d545d80a72594d  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
 dcfb737a627a1aa43c08139b151af4e00e522fb52985a99b700ccb06f0d5fe71  studio/update/__init__.py
 492b24e47d39eb7075711d6456e98bd9691b6d2dd3dad060159d8b26149ad7de  studio/update/archive.py
-7127a109413a314332c11500aa1cd667306b1c47ab44f29aefe7494048f41fc2  studio/update/helper.py
+7bca892de0a3a8afc83fb38d3c0fe673d0504fd95db339619ee884ac83830488  studio/update/helper.py
+8b9d8389d83698045c25dd0d595ccda0fb62d9bd85272a4133fc0ecdbf42313e  studio/update/housekeeping.py
 59a27258dea965288af548a2882a96cd8c2dcbc9caff0bb186eced316265dd75  studio/update/launch.py
 f8cdc1305a61326cb3b7680912fb1dc1a6d1a06d337fcf6be319728a71713690  studio/update/layout.py
-7bc7a50ec889e523ec2f9e198aa4398d06b056d4d727536bbc1c63f84df1aee7  studio/update/manager.py
+ac7714bff567c7f901c3223c86467f72ad191ba0f0e297b1dce5d280cd068e7e  studio/update/manager.py
 493d0f087608ebc59c2264634d116fd83bfe4ce20c80c0c7e8705ffb6e07de0f  studio/update/manifest.py
 b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/net.py
 2b281c91ae2318c517adecc77e15a2984e452a4b614672460f79d6afed0bbccb  studio/update/pinned_keys.json
@@ -26761,47 +29800,59 @@ b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/
 812c188aa1067635eb61988c51320a107c49e9cd428a697d1cc872e4745468a0  studio/update/trust.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-05f09b46abf6cf5d3185c4b7dd67215237ca8ca3e6c31daca6ff98797503f9ec  studio/web/app.py
-f82331510b34d281a8b1612364a5cb74b2fb21e16e44be37332f83f5a4db2bb8  studio/web/auth.py
+ea1f003be68c10fb7563535d4d5d8f1f32ffbb372a6c1d432326a9f717d438d7  studio/web/app.py
+b4d5862fc86482d4c6e7a604416f476533e808ec16686ae1a72dc7617605333e  studio/web/auth.py
+5925211de4ae36e6e75e41213f65b6459baed631304d2c642e1bd7f0857639b0  studio/web/disk_api.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
-a4cffc340b43b73ac6bb98d9becff9360a645d74d6ca508e36bc06f397a7e6a4  studio/web/security.py
-9e6afeddbe18a11db688047eb8515e2b47ae30f77d65c4c4c901e5c801fa43c2  studio/web/static/app.css
-9582783ee2ef3f53353d9be4fb9e7a2662e006e24d7869b843b4b7ca3cae97c0  studio/web/static/index.html
-6fb6d71471aeeed576063d0e11039a9674d78c277058ba60d51fe95a485ce031  studio/web/static/js/app.js
+ecfd1a5469712d833cc0a847438aab7dced29c7548a1b164d68f9c3eee127fc7  studio/web/pronunciation_api.py
+5cd414f9fcb139e0fb321d20da123d12a21413a2ea97ac516355282309b3af53  studio/web/security.py
+cedb43247cb0f147cc18e11302ba757355f87030cd5e827975314bc1885f5df5  studio/web/static/app.css
+31fd707206f2d4d289afc1f44ee88b1e0a67c5d23ff8fe767e71f6eb7d3f59c2  studio/web/static/index.html
+4c8b5e806943abc1f5744a21ead4b9cc665aef2a6c5a9741f1c785d1e8764819  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 697f9b779dc46503d36f2d8354e2094f4861c4a45e12c6ee64e0c9fbc7218884  studio/web/static/js/ui.js
 dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/static/js/views/about.js
-3798855b0baba8f36eff23c45c79ccd0b0dadf854addfd4f7b53de16ce802448  studio/web/static/js/views/book.js
+77ea30dd3759b64746b273948a96678fdab7b0b30ece21872adc766edb5e9e04  studio/web/static/js/views/book.js
+fbef95b0745c2d6e634dffcf5f2360e983b33bd4b7bec07067991199679756c0  studio/web/static/js/views/disk.js
 6ed178130836c60b2744ff4b67f2f4ef3743f9eb69f1a16de83a204b0f1787e8  studio/web/static/js/views/inspector.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
 02934b9a5b32a7d3cfe41dbc1047b642706cd3defd2d25fce4af7fc1c864824f  studio/web/static/js/views/narrative-fields.js
 c628a052087f18c4d8b751e949839fb1bc41290f4a83f38f58bd9ca4e8be75ed  studio/web/static/js/views/narrative.js
 9144bdd31410f283d24ec3e5631451161e561c297a2cc02226e43975b12e37df  studio/web/static/js/views/overview.js
+1117069bc8e7985f64aa55a362faeb39d20d03cd6a2288320946736b707f76be  studio/web/static/js/views/pronunciation.js
 0cc4435bf1c8401ce77d2609457f53e7e12728c50a2242511bd03a4bf24e5517  studio/web/static/js/views/queue.js
 2486e47e24ea6d18fa31d41b4cdab37cbff072f4a9dfe8a0127576b0d1c20721  studio/web/static/js/views/review.js
-84d2f048761138d5af5f0c7b96fad166d0fcc06c4703ff37f8302d3a3590f791  studio/web/static/js/views/settings.js
-ecb83b1aa9b645bf02514ea4589597f384c2d64e550bca1cda8814b93b76a195  studio/web/static/js/views/updates.js
-513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
+2445084f030fe29f92d3e1bfe3ae83a6cd637aba0daf3a9cec35feba84b2f0bd  studio/web/static/js/views/settings.js
+bbe31ec54fc18e2ad5f36ae38b887a0c1f0c4267e363e0ea60bc6de3cb6b21e5  studio/web/static/js/views/updates.js
+8d720d0b065e549aa5a20b6a15e15b88b8f3480e52789788dd9771a14c3f5703  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
-5b103fd18964b237befbb368c8e9ca9ed100209b962dda1d3d06eeaacbeb85f6  studio/web/update_api.py
+ddf237e18d6974e7d46409fa759f8b74184a0831782c5b96fe62a84c6649909a  studio/web/update_api.py
 526e2d3e99b0d3af5529a536e2048c2e6a26dd06e3e0afecb01fe3933ee091c5  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
+fbdadcf974b84711c6f3d786c73426bbdd9531acd6f58ee7f5cc5220756ddbef  tests/test_attribution.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 a06f481d9cb56f104f988cb4cc454ec7ff4146efd14cfd59cb24f2bae56a51d2  tests/test_auth.py
-1f0ad57955a1936b8a30edbd1c3924f475b343221193d05edb410ddd6a0e15d2  tests/test_integration.py
+8ff8a34089b11e9a539c3c1c6099b7e75d8463a8f06472ef6d6326c97ab4cdef  tests/test_chapter_tools.py
+f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
+8971b49e616313e6c0d3e9edcf1cfe527eb98fdb9f194a8e807d88262ab2de88  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
+00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
+811fdb836aac5fe1933f5bc19a12a1806b9fea7924647169b9437fb112a2ec36  tests/test_llm_test_connection.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
+abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pronunciation.py
+27eceefd664d0a111abd03d3de7c88d560efc9342696fc614943aefb76db8675  tests/test_scrub_check.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
 4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
-f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-0012e0a1fb08ffb4e455eb2ad3fc1d727b328d6634d05260fbd4b37be8e3b8d6  BUILD
-c58bb1020c795dd575c50f319451567c0ff8b3cab1c7f4d73853311eb4349122  release.json
-__STUDIO_EOF_2cb077ce6e4b__
+0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
+51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
+73ba75d5f77995725aebfa6dd986da8dc1e9f30af42c8cdd21712abd8ab8daeb  BUILD
+405ca341d9d66f6f41e8345f433d96102371357946436bf8fe3a20a440340d69  release.json
+__STUDIO_EOF_6a64b4dabc47__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.

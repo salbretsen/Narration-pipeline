@@ -22,7 +22,7 @@ and run the baseline *before* changing anything.
 ## Quick commands (from `src/app`, Windows dev)
 
 ```text
-pytest -q -p no:cacheprovider tests              # expect 244 passed (about 2 min)
+pytest -q -p no:cacheprovider tests              # expect 304 passed (about 2 min)
 node --input-type=module --check < path/to.js     # JS syntax
 python ../../tools/build_installer.py             # regenerate the installer, then bash -n and shellcheck -S style
 ```

@@ -3,6 +3,29 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.6.0
+First feature release after v0.5 (built by six parallel work streams; mock engine only, nothing in this release has been run on the Mac).
+- Settings > Narrative > Local LLM: **Test connection** button. Checks the address and model name typed in the form (saved or not): reachable, key accepted,
+  model listed, one tiny question answered. Touches no book.
+- Pronunciation dictionary, global and per book: respellings change only the text sent to the voice, never the manuscript. A Pronunciation page adds entries
+  and has a Try box. Changing an entry re-renders only the passages that contain it, after you confirm. Per-voice pace (0.8-1.25) applied as a pitch-preserving
+  time stretch, because the speech model has no pace control.
+- Disk & Backups (admin): per-book and per-category usage with free space; purge superseded takes, exports or masters (selected and approved takes always kept) and
+  delete a book, with explicit confirmation, audited, refused while queued or rendering; single-zip book backup and restore-as-new-book; verified SQLite backup.
+- Per-chapter tools: regenerate a whole chapter (confirmation; revokes release approval) and edit chapter titles (parsed title preserved and restorable; the
+  chapter master is marked outdated until re-assembled). Single-chapter M4B export and cover upload are documented and covered by tests; generated placeholder
+  covers are not included (Pillow is not a dependency).
+- Reference lab: compare several takes side by side (verdict, length, peak/clipping, noise, voice-to-noise, Whisper match, audition) with an advisory suggestion;
+  pick the one to use. `GET /api/recordings/compare`.
+- Audit and review records carry the signed-in user's name instead of "operator" (work done by the background worker stays "system"); the QA report lists each
+  review action's actor.
+- Manual rollback: `audiobook-studio update --rollback` and a "Roll back to previous version" button in Updates (admin only, confirmation, refuses if the
+  previous release cannot open the current database schema). After each install or rollback the updater deletes tool archives in `app/downloads`, prunes unused
+  runtimes and empty staging folders.
+- `tools/scrub_check.py` (private IPs, `.lan`/`.local` hosts, home paths, PEM private keys) runs in CI.
+- Container image definition (`Dockerfile`, `docs/12-container.md`): mock/CPU only, tag-based upgrades; written, NOT built, NOT tested.
+- Database schema v3 (`pronunciations`, `voices.pace`, `chapters.original_title`); the migration is applied automatically and keeps all data.
+
 ## v0.5.9
 - The installer's final summary now lists every web address: HTTP and HTTPS on this Mac, and on the network by IP address and `.local` name, read from the saved settings.
 

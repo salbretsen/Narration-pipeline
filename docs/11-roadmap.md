@@ -43,9 +43,9 @@ Nothing else is required of the owner; pushing is done only when asked.
 | A1 | Real Safari check: Add to Dock, Updates page, microphone on 127.0.0.1 | S | P1 | needs a GUI session on the Mac; I supply the checklist |
 | A2 | Clean-Mac proof (no Command Line Tools, no git, no Homebrew) | M | P1 | second Mac, a fresh macOS user is not enough (CLT is system-wide), or a macOS VM |
 | A3 | Disk unplugged mid-job on the real Mac | S | P2 | verify pause with `storage:` and automatic resume; Updates stays usable |
-| A4 | Manual rollback: `audiobook-studio update --rollback` and a button in Updates | S | P1 | the previous release is already kept; today rollback is automatic only on a failed update |
+| A4 | ~~Manual rollback~~ done v0.6.0 (CLI + Updates button; untested on the Mac) | S | done | the previous release is already kept; today rollback is automatic only on a failed update |
 | A5 | Publish a beta channel end to end (`-beta.N` tag, Mac opts in) | S | P2 | proves section 1 |
-| A6 | Housekeeping: delete the downloaded tool archives after install, prune old runtimes with no release, tidy `app/downloads` | S | P2 | |
+| A6 | ~~Housekeeping~~ done v0.6.0 in the updater (installer-time cleanup of archives still open) | S | done | |
 | A7 | Retire the legacy install on the Mac: after a soak period remove `~/audiobook-studio-claude` and the pre-v0.5 backup | S | P3 | needs your go-ahead; about 4 GB plus models if you also move the model cache |
 | A8 | Regenerate documentation screenshots from a demo environment with placeholder names | S | P3 | removed in the scrub; `tools/e2e/shots.py` exists |
 
@@ -56,20 +56,20 @@ Nothing else is required of the owner; pushing is done only when asked.
 | B2 | Ask GitHub Support to purge the old unreachable commits (`98117b6`, `64c1b8d`) | S | P1 | only Support can; hashes are in the sweep notes |
 | B3 | ~~Branch and tag protection~~ dropped by the owner (too much setup for a simple tool). Optional later: pin Actions to commit SHAs | S | P3 | no owner work |
 | B4 | Key hygiene: offline backup of the signing key, rotation rehearsal (add a second key, sign with it, drop the first) | M | P2 | procedure is in doc 10; never rehearsed |
-| B5 | Public-repo scrub rule in CI: fail on private IPs, `.lan` hostnames, home paths and key blocks | S | P2 | turns today's manual sweep into a check |
+| B5 | ~~Public-repo scrub rule in CI~~ done v0.6.0 (`tools/scrub_check.py`) | S | done | turns today's manual sweep into a check |
 | B6 | Move the commit email to the GitHub no-reply address | S | P3 | optional; applies to future commits only |
 | B7 | SBOM and dependency-update routine (re-run `lock_requirements.py`, wheel check, smoke test on the Mac) | M | P3 | the lock is deliberately frozen at the verified versions |
 
 ### C. Product features (carried over from the earlier backlog)
 | # | Item | Size | Pri | Notes |
 |---|---|---|---|---|
-| C1 | Attribute every audit/review action to the signed-in user | S | P1 | accounts exist now; today actions are logged as "operator" |
-| C2 | Pronunciation dictionary (global and per book) plus per-voice pace | M | P1 | feeds `override_text`; the biggest quality lever left |
-| C3 | Disk management: delete/purge books and takes, backup and restore, disk-usage dashboard | L | P1 | matters more with external libraries |
-| C4 | Per-chapter regenerate/export, chapter-title editing, cover generation | M | P2 | |
+| C1 | ~~Attribute audit/review actions to the signed-in user~~ done v0.6.0 | S | done | accounts exist now; today actions are logged as "operator" |
+| C2 | ~~Pronunciation dictionary plus per-voice pace~~ done v0.6.0 (real speech unverified) | M | done | feeds `override_text`; the biggest quality lever left |
+| C3 | ~~Disk management~~ done v0.6.0 | L | done | matters more with external libraries |
+| C4 | ~~Per-chapter regenerate/export, title editing~~ done v0.6.0; generated cover not built (no Pillow) | M | done | |
 | C5 | 50k-word validation run: throughput, memory, false-positive statistics; tune QA thresholds | M | P2 | uses real hardware time |
 | C6 | Real local LLM through the Narrative Director (for example `mlx_lm.server`): measure attribution and direction quality, listening study | L | P2 | `tools/e2e/narrative_real.py` is ready |
-| C7 | Multi-take reference comparison in the lab | M | P3 | |
+| C7 | ~~Multi-take reference comparison~~ done v0.6.0 | M | done | |
 | C8 | Boot-time hosting (LaunchDaemon) and trusted HTTPS | M | P3 | needs an administrator password once; only if the Mac must serve after a reboot with nobody logged in |
 | C9 | Second deployment profile (M4 Max, 36 GB), `max_warm_models=1` | S | P3 | needs the hardware |
 
@@ -78,7 +78,7 @@ Nothing else is required of the owner; pushing is done only when asked.
 |---|---|---|---|
 | D1 | Linux service and installer (`ProcessPlatformService` is the seed; CUDA/CPU providers) | L | P3 |
 | D2 | Windows service and installer | L | P3 |
-| D3 | Container image with tag-based upgrades (no in-container self-update) | M | P3 |
+| D3 | ~~Container image definition~~ written v0.6.0, not built or tested | M | partly |
 | D4 | Remote HTTP TTS/ASR providers and a provider/model selector in the UI (shown only when a second usable provider exists) | L | P3 |
 | D5 | First-party HTTPS release host (`HttpsRepository` already implements the contract) | M | P3 |
 
