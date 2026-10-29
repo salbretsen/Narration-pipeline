@@ -105,7 +105,7 @@ class ReleaseUpdateManager(UpdateManager):
             "installed_version": self.installed, "build": self._build(), "channel": s.channel, "managed": managed,
             "repository": s.repository, "signing_configured": self.trust.configured or self.trust.allow_unsigned,
             "auto_check": s.auto_check, "check_interval_hours": s.check_interval_hours,
-            "previous_version": pointer.get("previous"), "installed_releases": self.store.installed(),
+            "previous_version": pointer.get("previous"), "can_rollback": self.can_rollback(), "installed_releases": self.store.installed(),
             "state": d.get("state", "idle"), "message": d.get("message", ""), "error": d.get("error"), "error_kind": d.get("error_kind"),
             "latest": d.get("latest"), "selection": d.get("selection"), "staged_version": d.get("staged_version"),
             "target_version": d.get("target_version"), "mode": d.get("mode"), "phases": d.get("phases") or {},
@@ -323,6 +323,43 @@ class ReleaseUpdateManager(UpdateManager):
             FileQueueScheduler(self.ctx.run_dir).release()
             self._set(state="staged" if self.status_file.read().get("staged_version") else "available", message="Installation cancelled.", mode=None)
             self.status_file.add_history("cancel", None, True, "Pending installation cancelled")
+        return self.status()
+
+    # ----------------------------------------------------------------- rollback
+    def can_rollback(self) -> str | None:
+        """Return the kept previous version, or None when there is nothing to go back to."""
+        prev = self.store.previous()
+        if prev and prev != self.store.current() and self.store.has(prev):
+            return prev
+        return None
+
+    def request_rollback(self, mode: str = "now", confirm_version: str = "") -> dict:
+        """Switch back to the kept previous release through the same updater process (drain, backup, switch, health check, automatic
+        revert on failure). The user's explicit confirmation names the version they are going back to."""
+        if mode not in ("now", "after_job"):
+            raise UpdateError("mode must be 'now' or 'after_job'", 422)
+        if not self.layout.managed:
+            raise UpdateError(self.status()["not_managed_reason"])
+        if self._busy or (self.layout.update_dir / "request.json").exists():
+            raise UpdateError("An update operation is already in progress.")
+        prev = self.can_rollback()
+        if not prev:
+            raise UpdateError("There is no previous version kept on this Mac to roll back to.")
+        if confirm_version != prev:
+            raise UpdateError(f"Confirmation does not match the previous version ({prev}).", 422)
+        req = {"version": prev, "mode": mode, "requested_at": now(), "from_version": self.installed, "rollback": True}
+        atomic_write_text(self.layout.update_dir / "request.json", json.dumps(req))
+        self._set(state="waiting", mode=mode, target_version=prev, error=None, error_kind=None,
+                  message=f"Rolling back to {prev} after the current job finishes." if mode == "after_job"
+                  else f"Rolling back to {prev} at the next safe segment boundary.")
+        self.status_file.add_history("rollback_requested", prev, True, f"mode={mode}")
+        if self.launch_helper:
+            try:
+                self.launch_helper(prev, mode)
+            except Exception as exc:
+                (self.layout.update_dir / "request.json").unlink(missing_ok=True)
+                self._set(state="failed", message=f"Could not start the updater: {exc}", error=str(exc), error_kind="failed")
+                raise UpdateError(f"Could not start the updater process: {exc}") from exc
         return self.status()
 
     # ------------------------------------------------------------------ install

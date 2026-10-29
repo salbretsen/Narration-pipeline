@@ -160,6 +160,25 @@ def cmd_update(a):
     if a.status:
         show(mgr.status())
         return
+    if a.rollback:
+        prev = mgr.can_rollback()
+        if not layout.managed:
+            sys.exit(mgr.status()["not_managed_reason"])
+        if not prev:
+            sys.exit("There is no previous version kept on this Mac to roll back to.")
+        if not a.yes:
+            if not sys.stdin.isatty():
+                sys.exit("Refusing to roll back without --yes when not run interactively.")
+            if input(f"Roll back from {mgr.installed} to {prev}? [y/N] ").strip().lower() not in ("y", "yes"):
+                sys.exit("Cancelled.")
+        layout.update_dir.mkdir(parents=True, exist_ok=True)
+        (layout.update_dir / "request.json").write_text(json.dumps({"version": prev, "mode": a.when, "requested_at": time.time(), "rollback": True}))
+        try:
+            ok = Applier(layout, ctx, ps).run(prev, a.when, rollback=True)
+        except ApplyError as exc:
+            sys.exit(str(exc))
+        show(mgr.status())
+        sys.exit(0 if ok else 1)
     st = mgr.check()
     show(st)
     if st["state"] in ("failed", "offline", "incompatible", "disabled"):
@@ -270,6 +289,7 @@ def register(sub) -> None:
     sp.add_argument("--check", action="store_true", help="check only (default)")
     sp.add_argument("--install", action="store_true", help="download, verify and install the update")
     sp.add_argument("--status", action="store_true", help="show the last known status without contacting the server")
+    sp.add_argument("--rollback", action="store_true", help="switch back to the previous version that is kept on this Mac")
     sp.add_argument("--when", choices=["now", "after_job"], default="after_job", help="install at the next segment boundary or after the current job")
     sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     sp.set_defaults(func=cmd_update)
