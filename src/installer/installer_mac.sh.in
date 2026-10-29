@@ -408,8 +408,7 @@ install_launcher() {
 print_urls() {
   local cfg="$ROOT/state/config/settings.json" vals http_port https_port remote https
   vals="$("$PY" -c 'import json,sys;s=json.load(open(sys.argv[1])).get("server",{});print(s.get("port",7861),s.get("https_port",8443),int(bool(s.get("allow_remote"))),int(bool(s.get("https_enabled"))))' "$cfg" 2>/dev/null)" || return 0
-  set -- $vals
-  http_port="$1"; https_port="$2"; remote="$3"; https="$4"
+  read -r http_port https_port remote https <<<"$vals"
   echo
   echo "    Web addresses"
   echo "      On this Mac:       http://127.0.0.1:$http_port"

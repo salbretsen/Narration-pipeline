@@ -3,6 +3,10 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.6.1
+- Fix: the installer's web-address summary (v0.5.9) failed the CI `shellcheck` step (SC2086), so the v0.5.9 and v0.6.0 releases were never built or published.
+  The summary now uses `read`. v0.6.1 is the first published build containing everything from v0.5.9 and v0.6.0.
+
 ## v0.6.0
 First feature release after v0.5 (built by six parallel work streams; mock engine only, nothing in this release has been run on the Mac).
 - Settings > Narrative > Local LLM: **Test connection** button. Checks the address and model name typed in the form (saved or not): reachable, key accepted,
