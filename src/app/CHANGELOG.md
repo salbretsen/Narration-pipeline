@@ -3,6 +3,15 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.4.0
+- **API keys can be entered in the web UI.** Settings > Narrative > Local LLM has an API key field with Save key / Remove key, so an
+  OpenAI-compatible endpoint no longer needs an environment variable on the Mac. The key is write-only: it is stored in
+  `config/secrets.json` (mode 0600), never in `settings.json`, the database, the audit or event logs, and no API response contains it;
+  the UI only shows whether a key is saved and when. Saving or removing a key is admin-only, takes effect immediately for the worker,
+  and is audited without the value. A saved key wins over the old `api_key_env` environment variable, which still works as a fallback.
+  Keys are kept in named slots (`studio/secrets_store.py`), so any further OpenAI-compatible endpoint adds a slot, not a new mechanism.
+  Endpoints: `PUT /api/secrets/{slot}` `{"value": ...}`, `DELETE /api/secrets/{slot}`; `GET /api/settings` reports `secrets` status.
+
 ## v0.3.0
 Context-aware multi-character narration. Everything below is opt-in (Settings > Narrative); with it off, books import and
 render exactly as in v0.2.2.

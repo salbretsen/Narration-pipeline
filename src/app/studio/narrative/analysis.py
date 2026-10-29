@@ -23,8 +23,8 @@ from . import windows as W
 from .llm import LLMClient, LLMError, extract_json
 
 
-def make_llm(ns: NarrativeSettings, transport=None) -> LLMClient:
-    return LLMClient(ns.llm, transport=transport)
+def make_llm(ns: NarrativeSettings, transport=None, secrets=None) -> LLMClient:
+    return LLMClient(ns.llm, transport=transport, secrets=secrets)
 
 
 # --------------------------------------------------------------------- attribution (LLM)
@@ -235,7 +235,7 @@ def director_batch(ctx, book_id: int, limit: int | None = None, client: LLMClien
         book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
         ns = ST.book_ns(ctx, book)
     limit = limit or ns.director_lookahead
-    client = client if client is not None else make_llm(ns)
+    client = client if client is not None else make_llm(ns, secrets=ctx.secrets)
     director = D.Director(client)
     done = 0
     with ctx.db.tx() as conn:
@@ -387,7 +387,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
     with ctx.db.session() as conn:
         book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
     ns = ST.book_ns(ctx, book)
-    client = make_llm(ns, llm_transport)
+    client = make_llm(ns, llm_transport, ctx.secrets)
     t0 = time.time()
 
     def save(msg: str | None = None):

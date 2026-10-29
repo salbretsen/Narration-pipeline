@@ -21,6 +21,7 @@ from .db import row, rows, scalar
 from .normalize import to_speech
 from .parsing import ManuscriptError, ParseResult, detect_format, parse_manuscript
 from .pipeline import book_dirs, resolve_take
+from .secrets_store import SecretError
 from .storage import validate_dir
 from .util import atomic_write_bytes, dumps, loads, new_uid, now, safe_filename, sha256_bytes, word_count
 from .worker import refresh_book_state
@@ -1302,7 +1303,23 @@ def get_settings(ctx) -> dict:
     s = ctx.settings()
     return {"settings": s.model_dump(mode="json"), "categories": {c: CATEGORY_LABELS[c] for c in STORAGE_CATEGORIES},
             "speakers": PRESET_SPEAKERS, "english_speakers": list(ENGLISH_SPEAKERS), "engine_mode": ctx.engine_mode,
-            "effective_paths": {c: str(ctx.category_dir(c, s)) for c in STORAGE_CATEGORIES}, "library_root": str(ctx.library_root(s))}
+            "effective_paths": {c: str(ctx.category_dir(c, s)) for c in STORAGE_CATEGORIES}, "library_root": str(ctx.library_root(s)),
+            "secrets": ctx.secrets.status()}
+
+
+def set_secret(ctx, slot: str, value: str | None, actor: str = "operator") -> dict:
+    """Save (or, with value=None, remove) the API key in a slot. The key itself is never audited or returned."""
+    try:
+        if value is None:
+            action = "clear" if ctx.secrets.delete(slot) else "clear_noop"
+        else:
+            ctx.secrets.set(slot, value)
+            action = "set"
+    except SecretError as exc:
+        raise ServiceError(str(exc), 422)
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "secret", slot, action, {}, actor)
+    return {"secrets": ctx.secrets.status()}
 
 
 def update_settings(ctx, patch: dict) -> dict:

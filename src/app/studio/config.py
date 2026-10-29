@@ -227,8 +227,9 @@ class WorkerSettings(_M):
 
 class LLMSettings(_M):
     """Local LLM used for ambiguous attribution, summaries and the Narrative Director.
-    Only an OpenAI-compatible chat endpoint is supported. The API key is never stored: name
-    an environment variable instead."""
+    Only an OpenAI-compatible chat endpoint is supported. The API key is not part of these
+    settings: it is saved separately from Settings > Narrative (config/secrets.json, write-only),
+    or, as a fallback, read from the environment variable named by ``api_key_env``."""
 
     provider: Literal["none", "openai_compatible"] = "none"
     base_url: str = "http://127.0.0.1:1234/v1"

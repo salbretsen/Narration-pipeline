@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.3.0 (build 20261029001754-2ac2760d)
+#  Version v0.4.0 (build 20261029095903-6d2ef68a)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -20,8 +20,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.3.0"
-BUILD_ID="20261029001754-2ac2760d"
+STUDIO_VERSION="v0.4.0"
+BUILD_ID="20261029095903-6d2ef68a"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -377,11 +377,20 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_a92815240f70__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_2fdbc114f99c__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.4.0
+- **API keys can be entered in the web UI.** Settings > Narrative > Local LLM has an API key field with Save key / Remove key, so an
+  OpenAI-compatible endpoint no longer needs an environment variable on the Mac. The key is write-only: it is stored in
+  `config/secrets.json` (mode 0600), never in `settings.json`, the database, the audit or event logs, and no API response contains it;
+  the UI only shows whether a key is saved and when. Saving or removing a key is admin-only, takes effect immediately for the worker,
+  and is audited without the value. A saved key wins over the old `api_key_env` environment variable, which still works as a fallback.
+  Keys are kept in named slots (`studio/secrets_store.py`), so any further OpenAI-compatible endpoint adds a slot, not a new mechanism.
+  Endpoints: `PUT /api/secrets/{slot}` `{"value": ...}`, `DELETE /api/secrets/{slot}`; `GET /api/settings` reports `secrets` status.
 
 ## v0.3.0
 Context-aware multi-character narration. Everything below is opt-in (Settings > Narrative); with it off, books import and
@@ -434,7 +443,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_a92815240f70__
+__STUDIO_EOF_2fdbc114f99c__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -464,10 +473,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_3278ad4c85c5__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_8a91e8138373__'
 # Audiobook Studio
 
-**v0.3.0** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.4.0** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -769,7 +778,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_3278ad4c85c5__
+__STUDIO_EOF_8a91e8138373__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -786,7 +795,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_b430e4e22eca__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_bbeb9e98651b__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -795,13 +804,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_b430e4e22eca__
+__STUDIO_EOF_bbeb9e98651b__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -2197,7 +2206,7 @@ def main(argv=None):
 if __name__ == "__main__":
     main()
 __STUDIO_EOF_3e5409673965__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_2f3629afdbf9__'
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_42297bc14e42__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -2427,8 +2436,9 @@ class WorkerSettings(_M):
 
 class LLMSettings(_M):
     """Local LLM used for ambiguous attribution, summaries and the Narrative Director.
-    Only an OpenAI-compatible chat endpoint is supported. The API key is never stored: name
-    an environment variable instead."""
+    Only an OpenAI-compatible chat endpoint is supported. The API key is not part of these
+    settings: it is saved separately from Settings > Narrative (config/secrets.json, write-only),
+    or, as a fallback, read from the environment variable named by ``api_key_env``."""
 
     provider: Literal["none", "openai_compatible"] = "none"
     base_url: str = "http://127.0.0.1:1234/v1"
@@ -2577,8 +2587,8 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_2f3629afdbf9__
-cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_fb2d7cc67992__'
+__STUDIO_EOF_42297bc14e42__
+cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_0f0544a8c6e5__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
 
@@ -2590,6 +2600,7 @@ from pathlib import Path
 
 from .config import STORAGE_CATEGORIES, Settings, load_settings, save_settings
 from .db import Database
+from .secrets_store import SecretStore
 from .util import dumps, now
 
 DEFAULT_HOME = "~/audiobook-studio-claude"
@@ -2614,6 +2625,7 @@ class Context:
             d.mkdir(parents=True, exist_ok=True)
         self.settings_path = self.config_dir / "settings.json"
         self.db = Database(self.data_dir / "studio.db")
+        self.secrets = SecretStore(self.config_dir / "secrets.json")
         self._settings: Settings | None = None
         self._settings_mtime: float | None = None
         self._lock = threading.Lock()
@@ -2710,7 +2722,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     sh._studio = True  # type: ignore[attr-defined]
     root.addHandler(fh)
     root.addHandler(sh)
-__STUDIO_EOF_fb2d7cc67992__
+__STUDIO_EOF_0f0544a8c6e5__
 cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_be4c41185c85__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
@@ -3797,7 +3809,7 @@ Module map
   voicecheck   acoustic voice-consistency measurement across independently generated segments
 """
 __STUDIO_EOF_6fc98fbc881d__
-cat > "$DEST/studio/narrative/analysis.py" <<'__STUDIO_EOF_476c939e3196__'
+cat > "$DEST/studio/narrative/analysis.py" <<'__STUDIO_EOF_91b51363ce09__'
 """Analysis stages that run in the worker, ahead of synthesis.
 
 Stage order: structure -> attribution (LLM, only for flagged spans) -> characters -> summaries ->
@@ -3823,8 +3835,8 @@ from . import windows as W
 from .llm import LLMClient, LLMError, extract_json
 
 
-def make_llm(ns: NarrativeSettings, transport=None) -> LLMClient:
-    return LLMClient(ns.llm, transport=transport)
+def make_llm(ns: NarrativeSettings, transport=None, secrets=None) -> LLMClient:
+    return LLMClient(ns.llm, transport=transport, secrets=secrets)
 
 
 # --------------------------------------------------------------------- attribution (LLM)
@@ -4035,7 +4047,7 @@ def director_batch(ctx, book_id: int, limit: int | None = None, client: LLMClien
         book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
         ns = ST.book_ns(ctx, book)
     limit = limit or ns.director_lookahead
-    client = client if client is not None else make_llm(ns)
+    client = client if client is not None else make_llm(ns, secrets=ctx.secrets)
     director = D.Director(client)
     done = 0
     with ctx.db.tx() as conn:
@@ -4187,7 +4199,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
     with ctx.db.session() as conn:
         book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
     ns = ST.book_ns(ctx, book)
-    client = make_llm(ns, llm_transport)
+    client = make_llm(ns, llm_transport, ctx.secrets)
     t0 = time.time()
 
     def save(msg: str | None = None):
@@ -4256,7 +4268,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
         with ctx.db.tx() as conn:
             ST.set_stage(conn, bid, "director" if prog.get("resegment") else "structure", "error", None, f"{type(exc).__name__}: {exc}"[:400])
         raise
-__STUDIO_EOF_476c939e3196__
+__STUDIO_EOF_91b51363ce09__
 cat > "$DEST/studio/narrative/cast.py" <<'__STUDIO_EOF_cf297e52cdeb__'
 """Per-manuscript characters and story notes.
 
@@ -4946,7 +4958,7 @@ class Director:
         cache_put(key, d, "rules")
         return d, key
 __STUDIO_EOF_4f4935b0c20f__
-cat > "$DEST/studio/narrative/llm.py" <<'__STUDIO_EOF_524e9293fdba__'
+cat > "$DEST/studio/narrative/llm.py" <<'__STUDIO_EOF_1fbb590e5503__'
 """Minimal OpenAI-compatible chat client for a local LLM (LM Studio, Ollama's /v1, mlx_lm.server,
 llama.cpp server...). Uses httpx, which the application already depends on."""
 from __future__ import annotations
@@ -4959,6 +4971,7 @@ import time
 from typing import Callable, TypeVar
 
 from ..config import LLMSettings
+from ..secrets_store import LLM_SLOT
 
 log = logging.getLogger("studio.llm")
 T = TypeVar("T")
@@ -4969,10 +4982,12 @@ class LLMError(RuntimeError):
 
 
 class LLMClient:
-    def __init__(self, cfg: LLMSettings, transport=None, environ=None):
+    def __init__(self, cfg: LLMSettings, transport=None, environ=None, secrets=None, slot: str = LLM_SLOT):
         self.cfg = cfg
         self._transport = transport  # httpx transport, injected by tests
         self._env = environ if environ is not None else os.environ
+        self._secrets = secrets  # SecretStore holding the key entered in the web UI
+        self._slot = slot
         self.calls = 0
         self.seconds = 0.0
 
@@ -4986,10 +5001,13 @@ class LLMClient:
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
-        if self.cfg.api_key_env:
+        # The key saved in the web UI wins; a named environment variable is the fallback.
+        key = self._secrets.get(self._slot) if self._secrets is not None else ""
+        if not key and self.cfg.api_key_env:
             key = self._env.get(self.cfg.api_key_env, "")
             if not key:
-                raise LLMError(f"Environment variable {self.cfg.api_key_env} (the API key) is not set for the worker process")
+                raise LLMError(f"No API key: none is saved in Settings and environment variable {self.cfg.api_key_env} is not set for the worker process")
+        if key:
             h["Authorization"] = f"Bearer {key}"
         return h
 
@@ -5074,7 +5092,7 @@ def extract_json(text: str) -> dict:
                     raise ValueError("JSON reply is not an object")
                 return obj
     raise ValueError("unterminated JSON object")
-__STUDIO_EOF_524e9293fdba__
+__STUDIO_EOF_1fbb590e5503__
 cat > "$DEST/studio/narrative/segmenter.py" <<'__STUDIO_EOF_42741318923c__'
 """Pass 2 - narration segment construction from the Pass 1 structure.
 
@@ -8916,7 +8934,105 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_5c7f622586db__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_c09924757e32__'
+cat > "$DEST/studio/secrets_store.py" <<'__STUDIO_EOF_ae0d5bdc74d1__'
+"""API keys for outbound OpenAI-compatible endpoints, entered through the web UI.
+
+Keys live in ``<home>/config/secrets.json`` (mode 0600), never in ``settings.json`` (which the API
+returns), the database, the audit log or the event log. The API is write-only: it reports whether a
+key is set, never the key. Every key has a named *slot*; a feature that talks to an endpoint reads
+its own slot, so a new endpoint only needs an entry in ``SLOTS``.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+from pathlib import Path
+
+from .util import now
+
+# slot -> label shown in the UI
+SLOTS: dict[str, str] = {
+    "llm": "Narrative Director / LLM endpoint",
+}
+LLM_SLOT = "llm"
+
+_KEY_RE = re.compile(r"^[\x21-\x7e]{1,400}$")  # printable ASCII, no spaces/newlines: it becomes an HTTP header value
+
+
+class SecretError(ValueError):
+    pass
+
+
+class SecretStore:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text("utf-8") or "{}")
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2))
+        os.replace(tmp, self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _check_slot(slot: str) -> None:
+        if slot not in SLOTS:
+            raise SecretError(f"Unknown key slot '{slot}'.")
+
+    def get(self, slot: str) -> str:
+        """The key, or '' if none is stored. Server-side use only."""
+        entry = self._load().get(slot)
+        return str(entry.get("value", "")) if isinstance(entry, dict) else ""
+
+    def set(self, slot: str, value: str) -> None:
+        self._check_slot(slot)
+        value = (value or "").strip()
+        if not value:
+            raise SecretError("The API key is empty.")
+        if not _KEY_RE.match(value):
+            raise SecretError("An API key is 1-400 visible characters without spaces or line breaks.")
+        with self._lock:
+            data = self._load()
+            data[slot] = {"value": value, "updated_at": now()}
+            self._save(data)
+
+    def delete(self, slot: str) -> bool:
+        self._check_slot(slot)
+        with self._lock:
+            data = self._load()
+            existed = data.pop(slot, None) is not None
+            if existed:
+                self._save(data)
+            return existed
+
+    def status(self) -> dict:
+        """What the UI may know: which slots have a key and when it was saved."""
+        data = self._load()
+        out = {}
+        for slot, label in SLOTS.items():
+            entry = data.get(slot)
+            has = isinstance(entry, dict) and bool(entry.get("value"))
+            out[slot] = {"label": label, "configured": has, "updated_at": entry.get("updated_at") if has else None}
+        return out
+__STUDIO_EOF_ae0d5bdc74d1__
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_25a38aa77f47__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -8940,6 +9056,7 @@ from .db import row, rows, scalar
 from .normalize import to_speech
 from .parsing import ManuscriptError, ParseResult, detect_format, parse_manuscript
 from .pipeline import book_dirs, resolve_take
+from .secrets_store import SecretError
 from .storage import validate_dir
 from .util import atomic_write_bytes, dumps, loads, new_uid, now, safe_filename, sha256_bytes, word_count
 from .worker import refresh_book_state
@@ -10221,7 +10338,23 @@ def get_settings(ctx) -> dict:
     s = ctx.settings()
     return {"settings": s.model_dump(mode="json"), "categories": {c: CATEGORY_LABELS[c] for c in STORAGE_CATEGORIES},
             "speakers": PRESET_SPEAKERS, "english_speakers": list(ENGLISH_SPEAKERS), "engine_mode": ctx.engine_mode,
-            "effective_paths": {c: str(ctx.category_dir(c, s)) for c in STORAGE_CATEGORIES}, "library_root": str(ctx.library_root(s))}
+            "effective_paths": {c: str(ctx.category_dir(c, s)) for c in STORAGE_CATEGORIES}, "library_root": str(ctx.library_root(s)),
+            "secrets": ctx.secrets.status()}
+
+
+def set_secret(ctx, slot: str, value: str | None, actor: str = "operator") -> dict:
+    """Save (or, with value=None, remove) the API key in a slot. The key itself is never audited or returned."""
+    try:
+        if value is None:
+            action = "clear" if ctx.secrets.delete(slot) else "clear_noop"
+        else:
+            ctx.secrets.set(slot, value)
+            action = "set"
+    except SecretError as exc:
+        raise ServiceError(str(exc), 422)
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "secret", slot, action, {}, actor)
+    return {"secrets": ctx.secrets.status()}
 
 
 def update_settings(ctx, patch: dict) -> dict:
@@ -10259,7 +10392,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_c09924757e32__
+__STUDIO_EOF_25a38aa77f47__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -11125,7 +11258,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_0d5dd79d09fa__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_febc7384242e__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -11292,6 +11425,10 @@ class MkdirReq(_Req):
 
 class MoveBookReq(_Req):
     new_root: str = Field(max_length=4096)
+
+
+class SecretReq(_Req):
+    value: str  # length and characters are checked by the service so a rejected key is never echoed back
 
 
 class LoginReq(_Req):
@@ -11942,6 +12079,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_settings_put(patch: dict[str, Any]):
         return S.update_settings(ctx, patch)
 
+    @app.put("/api/secrets/{slot}")
+    def api_secret_put(slot: str, req: SecretReq, request: Request):
+        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name", "operator"))
+
+    @app.delete("/api/secrets/{slot}")
+    def api_secret_delete(slot: str, request: Request):
+        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name", "operator"))
+
     @app.get("/api/storage")
     def api_storage():
         return storage_overview(ctx)
@@ -11990,8 +12135,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_0d5dd79d09fa__
-cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_1b41532eb324__'
+__STUDIO_EOF_febc7384242e__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_bbbfc8812ddd__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
 from __future__ import annotations
@@ -12017,6 +12162,8 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
 ADMIN_RULES = [
     ("PUT", re.compile(r"^/api/settings$")),
     ("PUT", re.compile(r"^/api/books/\d+/narrative/settings$")),
+    ("PUT", re.compile(r"^/api/secrets/")),
+    ("DELETE", re.compile(r"^/api/secrets/")),
     ("GET", re.compile(r"^/api/storage$")),
     ("GET", re.compile(r"^/api/storage/browse$")),
     ("POST", re.compile(r"^/api/storage/")),
@@ -12172,7 +12319,7 @@ class LoginLimiter:
 def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-__STUDIO_EOF_1b41532eb324__
+__STUDIO_EOF_bbbfc8812ddd__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -12625,7 +12772,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_234b5211d211__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_7f1c06c278c8__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_9f3fbb8c4d17__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -12866,6 +13013,9 @@ ins.d-ins, .d-sub ins { background: var(--info-bg); color: var(--info); text-dec
 .path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .6rem; align-items: end; margin-bottom: .6rem; }
 .path-row label { margin-bottom: 0; }
 .path-row .path-status { grid-column: 1 / -1; }
+.key-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .6rem; align-items: end; margin-top: .8rem; }
+.key-field label { margin-bottom: 0; }
+.key-field > p { grid-column: 1 / -1; margin: 0; }
 .path-status { font-size: .82rem; padding: .4rem .6rem; border-radius: 6px; background: var(--surface-2); border-left: 3px solid var(--border); overflow-wrap: anywhere; }
 .path-status.ok { border-left-color: var(--good); }
 .path-status.bad { border-left-color: var(--bad); }
@@ -13031,7 +13181,7 @@ body.signed-out .shell { grid-template-columns: 1fr; }
 .btn.disabled { opacity: .5; pointer-events: none; }
 .preview-out { margin-top: .5rem; }
 @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } .ov-grid { grid-template-columns: 1fr; } }
-__STUDIO_EOF_7f1c06c278c8__
+__STUDIO_EOF_9f3fbb8c4d17__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 <!doctype html>
 <html lang="en">
@@ -13406,7 +13556,7 @@ export function envelope(samples, buckets = 400) {
   return out;
 }
 __STUDIO_EOF_7fa1aaef3b74__
-cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_49a8615fbfc8__'
+cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_697f9b779dc4__'
 // Shared UI helpers: auto-escaping templates, API client, formatting, toasts, dialogs.
 
 export class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
@@ -13469,6 +13619,7 @@ export const get = (p, o) => api("GET", p, undefined, o);
 export const post = (p, b = {}) => api("POST", p, b);
 export const put = (p, b) => api("PUT", p, b);
 export const patch = (p, b) => api("PATCH", p, b);
+export const del = (p) => api("DELETE", p);
 
 // ------------------------------------------------------------------ formatting
 export function fmtDuration(s) {
@@ -13618,7 +13769,7 @@ export function onState(fn, minInterval = 1500) {
 export function player(src, label, extraClass = "") {
   return html`<audio class="player ${extraClass}" controls preload="none" src="${src}" aria-label="${label}"></audio>`;
 }
-__STUDIO_EOF_49a8615fbfc8__
+__STUDIO_EOF_697f9b779dc4__
   mkdir -p "$DEST/studio/web/static/js/views"
 cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_dcc55ea8f77a__'
 // About page (version, credits, what this is), plus system health, worker control, QA limits and licences.
@@ -14379,7 +14530,7 @@ export async function render(view) {
   return () => { off(); view.removeEventListener("click", onClick); };
 }
 __STUDIO_EOF_1cc0e786616e__
-cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_607416cd4762__'
+cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_02934b9a5b32__'
 // Shared description of the narrative settings, used by the global Settings page and the per-book overrides editor.
 import { html } from "../ui.js";
 
@@ -14416,7 +14567,7 @@ export const NARRATIVE_FIELDS = [
     ["llm.provider", "Provider", "select", { options: [["none", "none (rules engine only)"], ["openai_compatible", "OpenAI-compatible server"]] }],
     ["llm.base_url", "Base URL (e.g. http://127.0.0.1:1234/v1)", "text"],
     ["llm.model", "Model name", "text"],
-    ["llm.api_key_env", "Environment variable that holds the API key (leave blank if none)", "text"],
+    ["llm.api_key_env", "Fallback: environment variable (STUDIO_LLM_…) holding the API key, used only when no key is saved below", "text"],
     ["llm.timeout_s", "Request timeout (s)", "number", { min: 5, max: 1800 }],
     ["llm.temperature", "Temperature", "number", { min: 0, max: 1.5, step: 0.05 }],
     ["llm.max_tokens", "Maximum reply tokens", "number", { min: 100, max: 8000 }]]],
@@ -14451,7 +14602,7 @@ export function readInput(form, prefix, [path, , type]) {
 }
 
 export const allFields = () => NARRATIVE_FIELDS.flatMap(([, fields]) => fields);
-__STUDIO_EOF_607416cd4762__
+__STUDIO_EOF_02934b9a5b32__
 cat > "$DEST/studio/web/static/js/views/narrative.js" <<'__STUDIO_EOF_c628a052087f__'
 // Narrative page for one book: analysis stages, project-level overrides, character directory, story notes.
 import { get, post, put, patch, api, html, setHTML, badge, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, ApiError } from "../ui.js";
@@ -15173,9 +15324,9 @@ export async function render(view, parts, query) {
 }
 export { navigate };
 __STUDIO_EOF_2486e47e24ea__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_7c09d161bd59__'
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_02e88658bf6e__'
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
-import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+import { get, post, put, del, html, setHTML, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
 import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
 
 /** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
@@ -15315,7 +15466,19 @@ function field(section, [key, label, type, opt = {}], val) {
   return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
 }
 
-function narrativeCard(n) {
+/** Write-only API key control: shows whether a key is saved, never the key. Buttons are handled in onClick. */
+function keyField(slot, info) {
+  const on = info && info.configured;
+  return html`<div class="key-field" data-slot="${slot}">
+    <label>API key (${info ? info.label : slot})
+      <input type="password" name="secret.${slot}" autocomplete="new-password" spellcheck="false" maxlength="400"
+        placeholder="${on ? "A key is saved. Type a new one to replace it." : "Paste the API key (leave empty if the endpoint needs none)"}"></label>
+    <div class="btn-group"><button type="button" class="btn small" data-act="key-save" data-slot="${slot}">Save key</button>
+      <button type="button" class="btn small ghost" data-act="key-clear" data-slot="${slot}" ${on ? "" : html`disabled`}>Remove key</button></div>
+    <p class="small ${on ? "good-text" : "muted"}" role="status">${on ? html`✓ A key is saved (${fmtDate(info.updated_at)}). It is sent as a Bearer token to the URL above and cannot be displayed again.` : "No key saved."}</p></div>`;
+}
+
+function narrativeCard(n, secrets) {
   return html`<section class="card" aria-labelledby="sec-narrative"><h2 id="sec-narrative">Narrative processing (semantic segmentation &amp; Narrative Director)</h2>
     <p class="small muted">These are the global defaults for books imported from now on. A book can override them on its own
       <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
@@ -15324,9 +15487,11 @@ function narrativeCard(n) {
       ${title.startsWith("Context") ? html`<p class="small muted">Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.</p>` : ""}
       ${title.startsWith("Delivery") ? html`<p class="small muted">Base (voice cloning): <strong>no instruction input — not configurable.</strong> The Base model is conditioned only by the
         reference clip, so emotion direction is recorded but not applied. The 0.6B CustomVoice model ignores instructions as well.</p>` : ""}
-      ${title.startsWith("Local LLM") ? html`<p class="small muted">The API key itself is never stored: enter the <em>name</em> of an environment variable the worker process can read.
-        Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.</p>` : ""}
-      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>`)}
+      ${title.startsWith("Local LLM") ? html`<p class="small muted">Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.
+        The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
+        Key changes take effect immediately and do not need <em>Save settings</em>.</p>` : ""}
+      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>
+      ${title.startsWith("Local LLM") ? keyField("llm", secrets && secrets.llm) : ""}`)}
   </section>`;
 }
 
@@ -15387,7 +15552,7 @@ export async function render(view) {
       ${sec === "models" ? html`<p class="small muted">Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.</p>` : ""}
       ${sec === "server" ? html`<p class="small muted">The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.</p>` : ""}
       <div class="form-grid">${fields.map((f) => field(sec, f, s.settings[sec][f[0]]))}</div></section>`)}
-    ${narrativeCard(s.settings.narrative)}
+    ${narrativeCard(s.settings.narrative, s.secrets)}
     <div class="sticky-actions"><button class="btn primary" type="submit">Save settings</button>
       <span class="small muted">Saved settings apply to new imports; each existing book keeps its own snapshot.</span></div>
     </form>`);
@@ -15431,6 +15596,24 @@ export async function render(view) {
 
   async function onClick(e) {
     const b = e.target.closest("button[data-act]"); if (!b) return;
+    if (b.dataset.act === "key-save" || b.dataset.act === "key-clear") {
+      const slot = b.dataset.slot, el = view.querySelector(`[name="secret.${slot}"]`);
+      try {
+        if (b.dataset.act === "key-save") {
+          if (!el.value.trim()) { toast("Paste the API key first.", "error"); return; }
+          const r = await busy(b, () => put(`/api/secrets/${slot}`, { value: el.value }), "API key saved");
+          s.secrets = r.secrets;
+        } else {
+          const r = await busy(b, () => del(`/api/secrets/${slot}`), "API key removed");
+          s.secrets = r.secrets;
+        }
+      } catch { return; } // the server's message is already shown
+      el.value = "";
+      const f = el.closest(".key-field"), tmp = document.createElement("div");
+      setHTML(tmp, keyField(slot, s.secrets[slot]));
+      f.replaceWith(tmp.firstElementChild);
+      return;
+    }
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
     if (b.dataset.act === "browse") {
       const picked = await browseFolder(input.value.trim() || input.placeholder || "");
@@ -15451,7 +15634,7 @@ export async function render(view) {
   paint();
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_7c09d161bd59__
+__STUDIO_EOF_02e88658bf6e__
 cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_513afb06ec00__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
@@ -16099,7 +16282,7 @@ export async function render(view) {
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
 __STUDIO_EOF_e2b77877580d__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_4bc2e4b7c08d__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_a777a78e0f8e__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -16549,7 +16732,7 @@ class Worker:
 
                 self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['title']}: directing the next {ns.director_lookahead} segments")
                 try:
-                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None)))
+                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None), self.ctx.secrets))
                 except Exception as exc:  # a Director failure must never stop narration; the plan then has no delivery guidance
                     log.exception("director batch failed")
                     with self.ctx.db.tx() as conn:
@@ -16633,7 +16816,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_4bc2e4b7c08d__
+__STUDIO_EOF_a777a78e0f8e__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
@@ -17181,7 +17364,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_309007d956a5__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_192d3c311581__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -17566,13 +17749,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.3.0" and st["version_label"] == "v0.3.0"
+    assert st["version"] == "0.4.0" and st["version_label"] == "v0.4.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.3.0" and "stage" not in a
+    assert a["version_label"] == "v0.4.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_309007d956a5__
+__STUDIO_EOF_192d3c311581__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -17752,7 +17935,7 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
 __STUDIO_EOF_1c0cca55ee5a__
-cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_41e0f321c7ec__'
+cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_61f149065244__'
 """Semantic segmentation, speaker attribution, Narrative Director, continuity and their integration
 with the queue. Pure-logic tests run on the fixture manuscripts in ``narrative_fixtures``; integration
 tests use the real worker/scheduler/SQLite with the MOCK engine (synthetic tones, not speech).
@@ -17761,6 +17944,7 @@ both are TEST DOUBLES for an LLM - no language model runs in this file."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -18749,6 +18933,92 @@ def test_api_key_env_is_restricted_to_studio_variables():
         c._headers()
 
 
+KEY = "sk-test-0123456789abcdef"
+
+
+def test_secret_store_validates_and_keeps_the_key_private(tmp_path):
+    from studio.secrets_store import SecretError, SecretStore
+
+    st = SecretStore(tmp_path / "config" / "secrets.json")
+    assert st.get("llm") == "" and st.status()["llm"]["configured"] is False
+    for bad in ("", "   ", "has space", "line\nbreak", "tab\tkey", "x" * 401, "naïve-key"):
+        with pytest.raises(SecretError):
+            st.set("llm", bad)
+    with pytest.raises(SecretError):
+        st.set("not-a-slot", KEY)
+    st.set("llm", f"  {KEY}  ")
+    assert st.get("llm") == KEY
+    s = st.status()["llm"]
+    assert s["configured"] is True and s["updated_at"] and KEY not in json.dumps(st.status())
+    if os.name == "posix":
+        assert (st.path.stat().st_mode & 0o777) == 0o600
+    assert st.delete("llm") is True and st.delete("llm") is False and st.get("llm") == ""
+
+
+def test_llm_client_prefers_the_saved_key_over_the_environment(tmp_path):
+    from studio.secrets_store import SecretStore
+
+    st = SecretStore(tmp_path / "secrets.json")
+    cfg = LLMSettings(provider="openai_compatible", model="m", api_key_env="STUDIO_LLM_KEY")
+    env = {"STUDIO_LLM_KEY": "env-key"}
+    assert LLMClient(cfg, environ=env, secrets=st)._headers()["Authorization"] == "Bearer env-key"
+    st.set("llm", KEY)
+    assert LLMClient(cfg, environ=env, secrets=st)._headers()["Authorization"] == f"Bearer {KEY}"
+    # a saved key needs no environment variable at all, and no key means no header (local servers)
+    assert LLMClient(LLMSettings(provider="openai_compatible", model="m"), environ={}, secrets=st)._headers()["Authorization"] == f"Bearer {KEY}"
+    st.delete("llm")
+    assert "Authorization" not in LLMClient(LLMSettings(provider="openai_compatible", model="m"), environ={}, secrets=st)._headers()
+
+
+def test_saved_key_is_write_only_audited_without_the_value_and_sent_to_the_endpoint(client, ctx):
+    assert client.get("/api/settings").json()["secrets"]["llm"]["configured"] is False
+    assert client.put("/api/secrets/llm", json={"value": "bad key"}).status_code == 422
+    assert client.put("/api/secrets/nope", json={"value": KEY}).status_code == 422
+    r = client.put("/api/secrets/llm", json={"value": KEY})
+    assert r.status_code == 200 and r.json()["secrets"]["llm"]["configured"] is True
+    for body in (r.text, client.get("/api/settings").text, json.dumps(ctx.settings().model_dump(mode="json"))):
+        assert KEY not in body
+    assert KEY not in (ctx.config_dir / "settings.json").read_text("utf-8")
+    assert KEY in (ctx.config_dir / "secrets.json").read_text("utf-8")
+    with ctx.db.session() as conn:
+        audit = " ".join(f"{a['entity']} {a['action']} {a['detail_json']}" for a in rows(conn, "SELECT * FROM audit_log"))
+        events = " ".join(e["message"] for e in rows(conn, "SELECT message FROM events"))
+    assert "secret" in audit and KEY not in audit and KEY not in events
+    # the worker side builds its client from the same store and sends the key as a Bearer token
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    c = LLMClient(LLMSettings(provider="openai_compatible", model="m"), transport=httpx.MockTransport(handler), secrets=ctx.secrets)
+    c.chat("s", "u")
+    assert seen == [f"Bearer {KEY}"]
+    assert client.delete("/api/secrets/llm").json()["secrets"]["llm"]["configured"] is False
+    assert ctx.secrets.get("llm") == ""
+
+
+def test_only_admins_can_change_saved_keys(ctx):
+    from fastapi.testclient import TestClient
+
+    from studio.web.app import create_app
+    from studio.web.auth import AuthStore
+
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    with TestClient(create_app(ctx, start_worker=False), base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 401
+        c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"})
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 403
+        assert c.delete("/api/secrets/llm").status_code == 403
+        assert ctx.secrets.get("llm") == ""
+        c.cookies.clear()
+        c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"})
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 200
+        assert c.delete("/api/secrets/llm").status_code == 200
+
+
 def test_analysis_survives_pause_and_a_worker_restart(client, ctx):
     bid = import_semantic(client, director_enabled=True, director_lookahead=4)["id"]
     job = client.post(f"/api/books/{bid}/analyze", json={}).json()
@@ -18822,7 +19092,7 @@ def test_redirect_reruns_the_director_for_that_segment_through_the_cache(client,
         assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 0
         assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) > hits0
         assert len(rows(conn, "SELECT id FROM direction_log WHERE segment_id=?", (seg["id"],))) >= 2
-__STUDIO_EOF_41e0f321c7ec__
+__STUDIO_EOF_61f149065244__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -19060,10 +19330,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_e175d1667114__'
-20261029001754-2ac2760d
-__STUDIO_EOF_e175d1667114__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e255908b68f0__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_7c99018e5697__'
+20261029095903-6d2ef68a
+__STUDIO_EOF_7c99018e5697__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_415da608b5bd__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -19071,30 +19341,30 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-a92815240f706a833c8352b8860d74df246954259c6d4c19e2359e924f8c7d72  CHANGELOG.md
+2fdbc114f99c2b49a60de8d5cf437bf32b43e70b6162cfa80228cfb2f226f3f9  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-3278ad4c85c5c51123720d8726a9d47547a98b47c22bb4632d4966e7da0318f4  README.md
+8a91e8138373d0e2a0c8d1c77f2138fd8fe34188d4bfaa04bc61c9455acf34e8  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-b430e4e22eca466a70192b2d4435c0c011f41163b3717b7aa7ef41da83efdd1e  studio/__init__.py
+bbeb9e98651bb35d4e3fa109fd45506f55966cbb5e34dca4701724188fb7d9f5  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
 49663622a31635794c792cc0422cff68c8e8f8b66345b40797decad3601fff37  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 3e54096739657fd7db84e193f413006b85c140a06bd698730672c5e1b491878c  studio/cli.py
-2f3629afdbf99c09ab39ae50f8a1da0b08d1858c574c22eb2c7a3a220e7d6085  studio/config.py
-fb2d7cc679920f354415e6c7f1dd0b9bfc844fe9a8960acae3c9453876319528  studio/context.py
+42297bc14e42c993c2a8786610410d9e4c9ff62e7cf33d1818b2273cab6d6d5b  studio/config.py
+0f0544a8c6e57d15d0271b9cb2a05344c8e2cb42288430e1c45a2e54b2d3d27d  studio/context.py
 be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
 df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
-476c939e31963c205032594ed6df68700c005023d8971db5467c7209870848ae  studio/narrative/analysis.py
+91b51363ce097d3d38f1702bb996dbccd6947fc62038d0a698f040416f2338f7  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
 29cef5adfd5e89d915811a0b9bbaca954bfb230daeeccd8ff47d83344defb31a  studio/narrative/continuity.py
 708bc7550271f7cbc056d84fdaae78f958fb27036da77c42a34509e93281890c  studio/narrative/delivery.py
 4f4935b0c20f0400f0348476f8f9a5ebefc56cf4ca22272f31c97d9c8d27af14  studio/narrative/director.py
-524e9293fdbad5ba9940ae6d4b3f97165de5c04b851ce798a473b44d1d725b51  studio/narrative/llm.py
+1fbb590e5503fe9f437c58a126e7633b269e381c54f23830a13e75bc039f7e77  studio/narrative/llm.py
 42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
 0f322d908c4496a58aeef60d1440b8ee2c7bf7180fe0f32ce66b878c317b9b8f  studio/narrative/store.py
 e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
@@ -19106,46 +19376,47 @@ fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrati
 5a45663174aeac322ec15751f3c980782338f8b8d455e7b1e913ce410e1108dc  studio/pipeline.py
 0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
-c09924757e3271f006f7a90837971cbacfe6f43ab77a4e4bcb98784d925cc0d3  studio/services.py
+ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets_store.py
+25a38aa77f47289f5ae3e0a18bdb8bfd6da749d7a7dd99f527072d240ab1a23d  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-0d5dd79d09fae87429453826134ac63c7bb01fa384597612b2d128235868f700  studio/web/app.py
-1b41532eb32426767a0c7defa61494295eacfcca035e3cec64383338dfd81b9c  studio/web/auth.py
+febc7384242e6d32a0c4643005ef57e0772df716ef95f7d79845e46ce2177c08  studio/web/app.py
+bbbfc8812dddbf74f8767e2b4dbdc474b223c3a18db639147583b5f0f776206b  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
 234b5211d21110d73f20c2d8f93561b9a76b81ac049e1bafc7fc4a90da3c717c  studio/web/security.py
-7f1c06c278c85b0a4b410905c56cb84669260725bbac4903f0bd68f83ec8616d  studio/web/static/app.css
+9f3fbb8c4d170a1f4c38ee8aab081e839838262b91bc93f791ba9963119c0ff2  studio/web/static/app.css
 393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
 d500a2f4e47549c34fda445f8d410c5c28aaf10ab28283d96831e37c68fbbaa9  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
-49a8615fbfc8e557a49958ad32ed704d6cf5fac0c8e1005e475c9e9e2b6c545f  studio/web/static/js/ui.js
+697f9b779dc46503d36f2d8354e2094f4861c4a45e12c6ee64e0c9fbc7218884  studio/web/static/js/ui.js
 dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/static/js/views/about.js
 3798855b0baba8f36eff23c45c79ccd0b0dadf854addfd4f7b53de16ce802448  studio/web/static/js/views/book.js
 6ed178130836c60b2744ff4b67f2f4ef3743f9eb69f1a16de83a204b0f1787e8  studio/web/static/js/views/inspector.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
-607416cd476219867168f0a9db26052c46b70c0e611a4c245cb2efc75377f69c  studio/web/static/js/views/narrative-fields.js
+02934b9a5b32a7d3cfe41dbc1047b642706cd3defd2d25fce4af7fc1c864824f  studio/web/static/js/views/narrative-fields.js
 c628a052087f18c4d8b751e949839fb1bc41290f4a83f38f58bd9ca4e8be75ed  studio/web/static/js/views/narrative.js
 9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
 0cc4435bf1c8401ce77d2609457f53e7e12728c50a2242511bd03a4bf24e5517  studio/web/static/js/views/queue.js
 2486e47e24ea6d18fa31d41b4cdab37cbff072f4a9dfe8a0127576b0d1c20721  studio/web/static/js/views/review.js
-7c09d161bd59894e92a5e675b4fb4e7bbf5e533a552173a7e1e98e4491c04725  studio/web/static/js/views/settings.js
+02e88658bf6e189c77a136d352fa3b9a88a5b9de3244d63fde61d87d26436a19  studio/web/static/js/views/settings.js
 513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
-4bc2e4b7c08dc3ea68f8fc9363a5c9d1f1b7695ca6a73f87d7f515854fa77f42  studio/worker.py
+a777a78e0f8e75985e540641a4951be9ce44cfc9188667b730d8103b3cc620dd  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-309007d956a5082862268889b0860c6346ac9c435c11b80128f4bfc1bed3ccfe  tests/test_integration.py
+192d3c311581ab5de353509951c4e72cdffcf2f4dd457e149511c817a21818c7  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
-41e0f321c7eca31ca3bd24c9187d1d1c001792b688c1c53fdd3f9885b2cc77da  tests/test_narrative.py
+61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-e175d1667114602eb96a62aff6c86b8b5f07a26163a8fe234f2ffb08bab2c0c7  BUILD
-__STUDIO_EOF_e255908b68f0__
+7c99018e5697ef503eeec0a1b3b484c6700d6e25023c819031410d627347dea6  BUILD
+__STUDIO_EOF_415da608b5bd__
 }
 
 verify_manifest() {

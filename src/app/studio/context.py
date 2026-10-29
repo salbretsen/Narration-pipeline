@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import STORAGE_CATEGORIES, Settings, load_settings, save_settings
 from .db import Database
+from .secrets_store import SecretStore
 from .util import dumps, now
 
 DEFAULT_HOME = "~/audiobook-studio-claude"
@@ -33,6 +34,7 @@ class Context:
             d.mkdir(parents=True, exist_ok=True)
         self.settings_path = self.config_dir / "settings.json"
         self.db = Database(self.data_dir / "studio.db")
+        self.secrets = SecretStore(self.config_dir / "secrets.json")
         self._settings: Settings | None = None
         self._settings_mtime: float | None = None
         self._lock = threading.Lock()

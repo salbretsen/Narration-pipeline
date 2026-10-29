@@ -24,6 +24,7 @@
 | Narrative layer is opt-in and offset based (v0.3) | Existing books and tests stay compatible; stable ids, exact slices and reconciliation keep edits local |
 | `jobs` rebuilt for `analyze`; migrations run with foreign keys off | SQLite cannot widen a CHECK; deferred foreign keys do not survive dropping the parent (tried and failed), so `foreign_key_check` runs before commit |
 | Unknown speaker = flagged and voiced by the narrator | A confident wrong voice is worse than a visible flag |
+| API keys saved from the web UI go to `config/secrets.json` (0600), write-only, in named slots (`secrets_store.py`) | Keeping them out of `settings.json` (returned by the API, copied around), the database and the audit log; one mechanism for every future OpenAI-compatible endpoint. Plaintext at rest, protected by file mode only, the same trust level as `auth.json` and the TLS key; a saved key is sent to whatever `llm.base_url` is effective, which only admins can change |
 | `api_key_env` limited to `STUDIO_LLM_*` | Otherwise a settings admin could send any environment secret to the configured URL |
 | Segments are synthesised model-first, assembled by index | Avoids a 30 s model reload per voice switch with three model families and two warm slots |
 

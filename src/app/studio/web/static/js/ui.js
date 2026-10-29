@@ -60,6 +60,7 @@ export const get = (p, o) => api("GET", p, undefined, o);
 export const post = (p, b = {}) => api("POST", p, b);
 export const put = (p, b) => api("PUT", p, b);
 export const patch = (p, b) => api("PATCH", p, b);
+export const del = (p) => api("DELETE", p);
 
 // ------------------------------------------------------------------ formatting
 export function fmtDuration(s) {

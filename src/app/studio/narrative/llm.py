@@ -10,6 +10,7 @@ import time
 from typing import Callable, TypeVar
 
 from ..config import LLMSettings
+from ..secrets_store import LLM_SLOT
 
 log = logging.getLogger("studio.llm")
 T = TypeVar("T")
@@ -20,10 +21,12 @@ class LLMError(RuntimeError):
 
 
 class LLMClient:
-    def __init__(self, cfg: LLMSettings, transport=None, environ=None):
+    def __init__(self, cfg: LLMSettings, transport=None, environ=None, secrets=None, slot: str = LLM_SLOT):
         self.cfg = cfg
         self._transport = transport  # httpx transport, injected by tests
         self._env = environ if environ is not None else os.environ
+        self._secrets = secrets  # SecretStore holding the key entered in the web UI
+        self._slot = slot
         self.calls = 0
         self.seconds = 0.0
 
@@ -37,10 +40,13 @@ class LLMClient:
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
-        if self.cfg.api_key_env:
+        # The key saved in the web UI wins; a named environment variable is the fallback.
+        key = self._secrets.get(self._slot) if self._secrets is not None else ""
+        if not key and self.cfg.api_key_env:
             key = self._env.get(self.cfg.api_key_env, "")
             if not key:
-                raise LLMError(f"Environment variable {self.cfg.api_key_env} (the API key) is not set for the worker process")
+                raise LLMError(f"No API key: none is saved in Settings and environment variable {self.cfg.api_key_env} is not set for the worker process")
+        if key:
             h["Authorization"] = f"Bearer {key}"
         return h
 

@@ -166,6 +166,10 @@ class MoveBookReq(_Req):
     new_root: str = Field(max_length=4096)
 
 
+class SecretReq(_Req):
+    value: str  # length and characters are checked by the service so a rejected key is never echoed back
+
+
 class LoginReq(_Req):
     username: str = Field(max_length=80)
     password: str = Field(max_length=200)
@@ -813,6 +817,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     @app.put("/api/settings")
     def api_settings_put(patch: dict[str, Any]):
         return S.update_settings(ctx, patch)
+
+    @app.put("/api/secrets/{slot}")
+    def api_secret_put(slot: str, req: SecretReq, request: Request):
+        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name", "operator"))
+
+    @app.delete("/api/secrets/{slot}")
+    def api_secret_delete(slot: str, request: Request):
+        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name", "operator"))
 
     @app.get("/api/storage")
     def api_storage():

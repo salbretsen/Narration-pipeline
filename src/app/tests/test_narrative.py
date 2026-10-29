@@ -6,6 +6,7 @@ both are TEST DOUBLES for an LLM - no language model runs in this file."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -992,6 +993,92 @@ def test_api_key_env_is_restricted_to_studio_variables():
     c = LLMClient(LLMSettings(provider="openai_compatible", model="m", api_key_env="STUDIO_LLM_KEY"), environ={})
     with pytest.raises(Exception, match="not set"):
         c._headers()
+
+
+KEY = "sk-test-0123456789abcdef"
+
+
+def test_secret_store_validates_and_keeps_the_key_private(tmp_path):
+    from studio.secrets_store import SecretError, SecretStore
+
+    st = SecretStore(tmp_path / "config" / "secrets.json")
+    assert st.get("llm") == "" and st.status()["llm"]["configured"] is False
+    for bad in ("", "   ", "has space", "line\nbreak", "tab\tkey", "x" * 401, "naïve-key"):
+        with pytest.raises(SecretError):
+            st.set("llm", bad)
+    with pytest.raises(SecretError):
+        st.set("not-a-slot", KEY)
+    st.set("llm", f"  {KEY}  ")
+    assert st.get("llm") == KEY
+    s = st.status()["llm"]
+    assert s["configured"] is True and s["updated_at"] and KEY not in json.dumps(st.status())
+    if os.name == "posix":
+        assert (st.path.stat().st_mode & 0o777) == 0o600
+    assert st.delete("llm") is True and st.delete("llm") is False and st.get("llm") == ""
+
+
+def test_llm_client_prefers_the_saved_key_over_the_environment(tmp_path):
+    from studio.secrets_store import SecretStore
+
+    st = SecretStore(tmp_path / "secrets.json")
+    cfg = LLMSettings(provider="openai_compatible", model="m", api_key_env="STUDIO_LLM_KEY")
+    env = {"STUDIO_LLM_KEY": "env-key"}
+    assert LLMClient(cfg, environ=env, secrets=st)._headers()["Authorization"] == "Bearer env-key"
+    st.set("llm", KEY)
+    assert LLMClient(cfg, environ=env, secrets=st)._headers()["Authorization"] == f"Bearer {KEY}"
+    # a saved key needs no environment variable at all, and no key means no header (local servers)
+    assert LLMClient(LLMSettings(provider="openai_compatible", model="m"), environ={}, secrets=st)._headers()["Authorization"] == f"Bearer {KEY}"
+    st.delete("llm")
+    assert "Authorization" not in LLMClient(LLMSettings(provider="openai_compatible", model="m"), environ={}, secrets=st)._headers()
+
+
+def test_saved_key_is_write_only_audited_without_the_value_and_sent_to_the_endpoint(client, ctx):
+    assert client.get("/api/settings").json()["secrets"]["llm"]["configured"] is False
+    assert client.put("/api/secrets/llm", json={"value": "bad key"}).status_code == 422
+    assert client.put("/api/secrets/nope", json={"value": KEY}).status_code == 422
+    r = client.put("/api/secrets/llm", json={"value": KEY})
+    assert r.status_code == 200 and r.json()["secrets"]["llm"]["configured"] is True
+    for body in (r.text, client.get("/api/settings").text, json.dumps(ctx.settings().model_dump(mode="json"))):
+        assert KEY not in body
+    assert KEY not in (ctx.config_dir / "settings.json").read_text("utf-8")
+    assert KEY in (ctx.config_dir / "secrets.json").read_text("utf-8")
+    with ctx.db.session() as conn:
+        audit = " ".join(f"{a['entity']} {a['action']} {a['detail_json']}" for a in rows(conn, "SELECT * FROM audit_log"))
+        events = " ".join(e["message"] for e in rows(conn, "SELECT message FROM events"))
+    assert "secret" in audit and KEY not in audit and KEY not in events
+    # the worker side builds its client from the same store and sends the key as a Bearer token
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("authorization"))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    c = LLMClient(LLMSettings(provider="openai_compatible", model="m"), transport=httpx.MockTransport(handler), secrets=ctx.secrets)
+    c.chat("s", "u")
+    assert seen == [f"Bearer {KEY}"]
+    assert client.delete("/api/secrets/llm").json()["secrets"]["llm"]["configured"] is False
+    assert ctx.secrets.get("llm") == ""
+
+
+def test_only_admins_can_change_saved_keys(ctx):
+    from fastapi.testclient import TestClient
+
+    from studio.web.app import create_app
+    from studio.web.auth import AuthStore
+
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    with TestClient(create_app(ctx, start_worker=False), base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 401
+        c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"})
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 403
+        assert c.delete("/api/secrets/llm").status_code == 403
+        assert ctx.secrets.get("llm") == ""
+        c.cookies.clear()
+        c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"})
+        assert c.put("/api/secrets/llm", json={"value": KEY}).status_code == 200
+        assert c.delete("/api/secrets/llm").status_code == 200
 
 
 def test_analysis_survives_pause_and_a_worker_restart(client, ctx):

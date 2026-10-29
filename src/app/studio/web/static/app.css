@@ -238,6 +238,9 @@ ins.d-ins, .d-sub ins { background: var(--info-bg); color: var(--info); text-dec
 .path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .6rem; align-items: end; margin-bottom: .6rem; }
 .path-row label { margin-bottom: 0; }
 .path-row .path-status { grid-column: 1 / -1; }
+.key-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .6rem; align-items: end; margin-top: .8rem; }
+.key-field label { margin-bottom: 0; }
+.key-field > p { grid-column: 1 / -1; margin: 0; }
 .path-status { font-size: .82rem; padding: .4rem .6rem; border-radius: 6px; background: var(--surface-2); border-left: 3px solid var(--border); overflow-wrap: anywhere; }
 .path-status.ok { border-left-color: var(--good); }
 .path-status.bad { border-left-color: var(--bad); }

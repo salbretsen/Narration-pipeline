@@ -138,7 +138,7 @@ not applied, shown in the inspector and stored on each attempt (`instruct_used`,
 `context_after_chars 1250`, `attribution_threshold 0.6`, `emotion_sensitivity 0.5`, `auto_character_tracking`, `chapter_summaries`, `tags_with_speaker`, `director_enabled`
 (requires semantic segmentation), `director_lookahead 12`, `continuity_smoothing`, `smoothing_strength 0.6`, `reset_scope chapter`, `cascade_limit 24`, `verify_mode`,
 `verify_sample_rate 0.25`, `delivery{custom_voice, voice_design, max_instruct_chars 160}`, `llm{provider none|openai_compatible, base_url, model, api_key_env, timeout_s, temperature, max_tokens}`.
-The API key is never stored: `api_key_env` names an environment variable that must start with `STUDIO_LLM_` and be set for the service (e.g. in the LaunchAgent environment). Effective
+The API key is entered in Settings > Narrative > Local LLM (write-only, admin only) and stored in `config/secrets.json` (mode 0600; plaintext at rest, like the TLS key and `auth.json`). It is not in `settings.json`, the database, the audit/event logs or any API response, and it is read by the worker on every request, so changes apply immediately. Fallback: `api_key_env` names an environment variable that must start with `STUDIO_LLM_` and be set for the service (e.g. in the LaunchAgent environment); a saved key wins over it. Effective
 settings = global (live) + the book's overrides; segmentation parameters take effect on the next (re)segmentation.
 
 ## Database (migration v2)

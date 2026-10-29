@@ -34,7 +34,7 @@ export const NARRATIVE_FIELDS = [
     ["llm.provider", "Provider", "select", { options: [["none", "none (rules engine only)"], ["openai_compatible", "OpenAI-compatible server"]] }],
     ["llm.base_url", "Base URL (e.g. http://127.0.0.1:1234/v1)", "text"],
     ["llm.model", "Model name", "text"],
-    ["llm.api_key_env", "Environment variable that holds the API key (leave blank if none)", "text"],
+    ["llm.api_key_env", "Fallback: environment variable (STUDIO_LLM_…) holding the API key, used only when no key is saved below", "text"],
     ["llm.timeout_s", "Request timeout (s)", "number", { min: 5, max: 1800 }],
     ["llm.temperature", "Temperature", "number", { min: 0, max: 1.5, step: 0.05 }],
     ["llm.max_tokens", "Maximum reply tokens", "number", { min: 100, max: 8000 }]]],

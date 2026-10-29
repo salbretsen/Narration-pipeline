@@ -447,7 +447,7 @@ class Worker:
 
                 self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['title']}: directing the next {ns.director_lookahead} segments")
                 try:
-                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None)))
+                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None), self.ctx.secrets))
                 except Exception as exc:  # a Director failure must never stop narration; the plan then has no delivery guidance
                     log.exception("director batch failed")
                     with self.ctx.db.tx() as conn:

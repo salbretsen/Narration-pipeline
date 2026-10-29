@@ -1,5 +1,5 @@
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
-import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+import { get, post, put, del, html, setHTML, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
 import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
 
 /** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
@@ -139,7 +139,19 @@ function field(section, [key, label, type, opt = {}], val) {
   return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
 }
 
-function narrativeCard(n) {
+/** Write-only API key control: shows whether a key is saved, never the key. Buttons are handled in onClick. */
+function keyField(slot, info) {
+  const on = info && info.configured;
+  return html`<div class="key-field" data-slot="${slot}">
+    <label>API key (${info ? info.label : slot})
+      <input type="password" name="secret.${slot}" autocomplete="new-password" spellcheck="false" maxlength="400"
+        placeholder="${on ? "A key is saved. Type a new one to replace it." : "Paste the API key (leave empty if the endpoint needs none)"}"></label>
+    <div class="btn-group"><button type="button" class="btn small" data-act="key-save" data-slot="${slot}">Save key</button>
+      <button type="button" class="btn small ghost" data-act="key-clear" data-slot="${slot}" ${on ? "" : html`disabled`}>Remove key</button></div>
+    <p class="small ${on ? "good-text" : "muted"}" role="status">${on ? html`✓ A key is saved (${fmtDate(info.updated_at)}). It is sent as a Bearer token to the URL above and cannot be displayed again.` : "No key saved."}</p></div>`;
+}
+
+function narrativeCard(n, secrets) {
   return html`<section class="card" aria-labelledby="sec-narrative"><h2 id="sec-narrative">Narrative processing (semantic segmentation &amp; Narrative Director)</h2>
     <p class="small muted">These are the global defaults for books imported from now on. A book can override them on its own
       <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
@@ -148,9 +160,11 @@ function narrativeCard(n) {
       ${title.startsWith("Context") ? html`<p class="small muted">Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.</p>` : ""}
       ${title.startsWith("Delivery") ? html`<p class="small muted">Base (voice cloning): <strong>no instruction input — not configurable.</strong> The Base model is conditioned only by the
         reference clip, so emotion direction is recorded but not applied. The 0.6B CustomVoice model ignores instructions as well.</p>` : ""}
-      ${title.startsWith("Local LLM") ? html`<p class="small muted">The API key itself is never stored: enter the <em>name</em> of an environment variable the worker process can read.
-        Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.</p>` : ""}
-      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>`)}
+      ${title.startsWith("Local LLM") ? html`<p class="small muted">Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.
+        The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
+        Key changes take effect immediately and do not need <em>Save settings</em>.</p>` : ""}
+      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>
+      ${title.startsWith("Local LLM") ? keyField("llm", secrets && secrets.llm) : ""}`)}
   </section>`;
 }
 
@@ -211,7 +225,7 @@ export async function render(view) {
       ${sec === "models" ? html`<p class="small muted">Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.</p>` : ""}
       ${sec === "server" ? html`<p class="small muted">The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.</p>` : ""}
       <div class="form-grid">${fields.map((f) => field(sec, f, s.settings[sec][f[0]]))}</div></section>`)}
-    ${narrativeCard(s.settings.narrative)}
+    ${narrativeCard(s.settings.narrative, s.secrets)}
     <div class="sticky-actions"><button class="btn primary" type="submit">Save settings</button>
       <span class="small muted">Saved settings apply to new imports; each existing book keeps its own snapshot.</span></div>
     </form>`);
@@ -255,6 +269,24 @@ export async function render(view) {
 
   async function onClick(e) {
     const b = e.target.closest("button[data-act]"); if (!b) return;
+    if (b.dataset.act === "key-save" || b.dataset.act === "key-clear") {
+      const slot = b.dataset.slot, el = view.querySelector(`[name="secret.${slot}"]`);
+      try {
+        if (b.dataset.act === "key-save") {
+          if (!el.value.trim()) { toast("Paste the API key first.", "error"); return; }
+          const r = await busy(b, () => put(`/api/secrets/${slot}`, { value: el.value }), "API key saved");
+          s.secrets = r.secrets;
+        } else {
+          const r = await busy(b, () => del(`/api/secrets/${slot}`), "API key removed");
+          s.secrets = r.secrets;
+        }
+      } catch { return; } // the server's message is already shown
+      el.value = "";
+      const f = el.closest(".key-field"), tmp = document.createElement("div");
+      setHTML(tmp, keyField(slot, s.secrets[slot]));
+      f.replaceWith(tmp.firstElementChild);
+      return;
+    }
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
     if (b.dataset.act === "browse") {
       const picked = await browseFolder(input.value.trim() || input.placeholder || "");

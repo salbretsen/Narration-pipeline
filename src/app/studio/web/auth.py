@@ -23,6 +23,8 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
 ADMIN_RULES = [
     ("PUT", re.compile(r"^/api/settings$")),
     ("PUT", re.compile(r"^/api/books/\d+/narrative/settings$")),
+    ("PUT", re.compile(r"^/api/secrets/")),
+    ("DELETE", re.compile(r"^/api/secrets/")),
     ("GET", re.compile(r"^/api/storage$")),
     ("GET", re.compile(r"^/api/storage/browse$")),
     ("POST", re.compile(r"^/api/storage/")),
