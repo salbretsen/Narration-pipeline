@@ -106,6 +106,7 @@ List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/
 | GET | `/api/reference-scripts` | the lab's sample scripts (id, tier core/range, category, title, purpose, text, words, est_seconds) and the audition text |
 | POST | `/api/recordings` | multipart `file, script_id, ref_text, label` → draft recording with quality report; `422` (with `details.quality`) if too short/silent/undecodable |
 | GET | `/api/recordings` | drafts (newest first; drafts older than 14 days are deleted on listing) |
+| GET | `/api/recordings/compare?ids=rec_a,rec_b[,...]` | 2-8 saved takes side by side → `{rows:[{id, label, script_title, verdict, duration_s, peak_dbfs, rms_dbfs, noise_floor_dbfs, snr_db, clip_ratio, warnings, fails, ref_text, rank, recommended}], recommended_id}`. Advisory rank: verdict, then fewer warnings, then voice-to-noise; poor takes are never recommended (`recommended_id` null if all poor). `422` outside 2-8 ids, `404` unknown id. Whisper transcript match comes from the existing `check` jobs (the UI merges them). Picking a take = the existing `POST /api/voices/from-recording` |
 | PATCH / DELETE | `/api/recordings/{rid}` | edit the transcript `{ref_text}` / delete |
 | POST | `/api/recordings/{rid}/job` | `{mode: check|audition, text?}` → a preview-kind job. `check` = Whisper vs transcript; `audition` = Base-model clone of `text` |
 | POST | `/api/voices/from-recording` | `{recording_id, name, rights_holder, owner_attest, statement}`; `422` if not attested or rated poor |

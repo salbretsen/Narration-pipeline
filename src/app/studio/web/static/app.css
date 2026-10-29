@@ -332,6 +332,8 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
 .takes { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1rem; margin-top: .6rem; }
 .take { border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; background: var(--surface); min-width: 0; }
 .take.chosen { border-color: var(--accent); }
+.compare { margin: .75rem 0; } .compare .lab-row { flex-wrap: wrap; align-items: end; gap: .5rem; }
+.compare table.cmp { width: 100%; } .compare table.cmp tr.chosen { background: rgba(53, 89, 214, .08); } .compare table.cmp audio { max-width: 12rem; }
 .take-head { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; } .take-head h4 { margin: 0; }
 /* ---------------------------------------------------------------- about */
 .ver-link { color: var(--muted); font-weight: 600; text-decoration: none; }

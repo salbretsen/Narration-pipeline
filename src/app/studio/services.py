@@ -299,6 +299,16 @@ def get_recording(ctx, rid: str) -> dict:
     return loads(p.read_text("utf-8"), {})
 
 
+def compare_recordings(ctx, ids: list[str]) -> dict:
+    """Compare 2-8 saved takes side by side (metrics, verdicts, advisory ranking)."""
+    from . import reference as R
+
+    ids = list(dict.fromkeys(ids))
+    if not 2 <= len(ids) <= 8:
+        raise ServiceError("Choose 2 to 8 takes to compare.", 422)
+    return R.compare_takes([get_recording(ctx, i) for i in ids])
+
+
 def list_recordings(ctx) -> list[dict]:
     import shutil as _sh
 

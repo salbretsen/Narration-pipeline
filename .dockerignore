@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!docker/entrypoint.sh
+!src/app/requirements.txt
+!src/app/studio
+**/__pycache__
+**/*.pyc

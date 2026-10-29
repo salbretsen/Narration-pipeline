@@ -681,6 +681,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_recordings():
         return {"recordings": S.list_recordings(ctx)}
 
+    @app.get("/api/recordings/compare")
+    def api_recordings_compare(ids: str = Query("", max_length=400)):
+        return S.compare_recordings(ctx, [i for i in ids.split(",") if i])
+
     @app.patch("/api/recordings/{rid}")
     def api_recording_text(rid: str, req: RecordingTextReq):
         return S.update_recording_text(ctx, rid, req.ref_text)
