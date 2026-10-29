@@ -3,6 +3,12 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.2.2
+- Documentation set for new sessions: `docs/` (overview, architecture, API, frontend, development workflow, deployment and
+  operations, testing and baseline, decisions/gotchas/backlog) and a root `CLAUDE.md`.
+- The end-to-end verification scripts moved into the repo as `tools/e2e/` (parameterised, with a fixtures generator).
+- `.venv/` ignored by git. No application behaviour changed.
+
 ## v0.2.1
 - The Reference voice lab moved into the Narrator Studio "Add a narrator" card as the **Record a reference voice** tab.
 - Leaving that tab now turns the microphone off, and the lab screen shows it as off when you return.

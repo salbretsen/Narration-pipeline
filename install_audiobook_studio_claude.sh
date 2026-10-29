@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.2.1 (build 20261028225824-0a8c0713)
+#  Version v0.2.2 (build 20261028232018-d6932b10)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -20,8 +20,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.2.1"
-BUILD_ID="20261028225824-0a8c0713"
+STUDIO_VERSION="v0.2.2"
+BUILD_ID="20261028232018-d6932b10"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -377,11 +377,17 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_0d64c43468b1__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_ac83d53ee392__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.2.2
+- Documentation set for new sessions: `docs/` (overview, architecture, API, frontend, development workflow, deployment and
+  operations, testing and baseline, decisions/gotchas/backlog) and a root `CLAUDE.md`.
+- The end-to-end verification scripts moved into the repo as `tools/e2e/` (parameterised, with a fixtures generator).
+- `.venv/` ignored by git. No application behaviour changed.
 
 ## v0.2.1
 - The Reference voice lab moved into the Narrator Studio "Add a narrator" card as the **Record a reference voice** tab.
@@ -399,7 +405,7 @@ additions or overhauls inside the current major release; PATCH = minor adjustmen
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_0d64c43468b1__
+__STUDIO_EOF_ac83d53ee392__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -429,10 +435,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_f03f102ef92b__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_6fdfb1f570b9__'
 # Audiobook Studio
 
-**v0.2.1** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.2.2** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -715,7 +721,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_f03f102ef92b__
+__STUDIO_EOF_6fdfb1f570b9__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -732,7 +738,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_151c61a92ecf__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_313f07b8e271__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -741,13 +747,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_151c61a92ecf__
+__STUDIO_EOF_313f07b8e271__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -12448,7 +12454,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_8c26f2a0f931__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ed2e38a8af94__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -12833,13 +12839,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.2.1" and st["version_label"] == "v0.2.1"
+    assert st["version"] == "0.2.2" and st["version_label"] == "v0.2.2"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.2.1" and "stage" not in a
+    assert a["version_label"] == "v0.2.2" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_8c26f2a0f931__
+__STUDIO_EOF_ed2e38a8af94__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -13256,10 +13262,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_9fd7c32ef976__'
-20261028225824-0a8c0713
-__STUDIO_EOF_9fd7c32ef976__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_30377706e046__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_e5b25dd03863__'
+20261028232018-d6932b10
+__STUDIO_EOF_e5b25dd03863__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_96a6113a69f0__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -13267,12 +13273,12 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-0d64c43468b1f36703c2110eb415d2f1b63b2d78bf80609ed1c7f15c998741da  CHANGELOG.md
+ac83d53ee3927e1e581f4f44180b23291fefdab7f765f3afc8acd4843257b130  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-f03f102ef92be5b51b6f60b41e82a66d1a64d098d790a2ef37b46ea7130fe668  README.md
+6fdfb1f570b9198d5ae3ccfc76abd4d3bf1a8ac8e8b0a51bd8aec2ec94c5cc6f  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-151c61a92ecf2685fc45d60d4eeb4f8ae52c8e254ecb070077a7039d243509a8  studio/__init__.py
+313f07b8e27156bd0e66e02363c16573e870010f7f0a87d7b9b084ea115d6ac9  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -13318,11 +13324,11 @@ afba12b3c069b092f6c182c6c25f2f1fde421281260813a77a0fbec36ad2ce7a  studio/worker.
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-8c26f2a0f931b53c03869562e9f002140c34e3b4bcfff7e299a209e1d56be5ff  tests/test_integration.py
+ed2e38a8af944d16bce92b869a22c16c8b52d13091fd59d5aa680ab9078fa1a1  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-9fd7c32ef9768b22f624b018a9ced6581ff6738540d10dc31ca5d9d07a2d09c0  BUILD
-__STUDIO_EOF_30377706e046__
+e5b25dd038635fc54bc4de556fb82c74bb1f2a50222696f790ec2c28f0e96682  BUILD
+__STUDIO_EOF_96a6113a69f0__
 }
 
 verify_manifest() {
