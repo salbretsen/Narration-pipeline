@@ -73,7 +73,7 @@ Reset lower parts when a higher part increments. The version appears in the Abou
 
 1. Make the change. Add or update tests (see doc 7 for where things go).
 2. Bump `__version__` and update the test assertions that pin the version (`tests/test_integration.py::test_about_page_data_and_version`).
-3. Add a `CHANGELOG.md` entry (and update the README header line `**vX.Y.Z**`).
+3. Add a `CHANGELOG.md` entry (it becomes the GitHub release notes; the release is refused without one) (and update the README header line `**vX.Y.Z**`).
 4. Run `node --input-type=module --check < file.js` on every changed JS file.
 5. Run the full tests. Rebuild: `python tools/build_installer.py`; then `bash -n install_audiobook_studio_claude.sh` and
    `shellcheck -S style install_audiobook_studio_claude.sh` (also the `src/app/bin/*` launchers with `-x -S style`).

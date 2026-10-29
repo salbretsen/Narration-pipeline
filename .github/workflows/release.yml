@@ -134,9 +134,23 @@ jobs:
           CHANNEL: ${{ needs.build.outputs.channel }}
         run: |
           pre=""; [ "$CHANNEL" = beta ] && pre="--prerelease"
+          # the release notes are this version's section of src/app/CHANGELOG.md (the step fails if there is none)
+          python tools/release_notes.py "${GITHUB_REF_NAME}" > dist/notes.md
           gh release create "${GITHUB_REF_NAME}" dist/audiobook-studio-*.tar.gz dist/SHA256SUMS dist/install_audiobook_studio_mac.sh $pre \
-            --title "${GITHUB_REF_NAME}" --generate-notes
+            --title "${GITHUB_REF_NAME}" --notes-file dist/notes.md
           # the index lives on a rolling release per channel; it is replaced only after the archive above is public
           gh release view "index-${CHANNEL}" >/dev/null 2>&1 || gh release create "index-${CHANNEL}" --title "Update index (${CHANNEL})" \
             --notes "Signed release index read by the studio's Update Center. Do not edit." --prerelease
           gh release upload "index-${CHANNEL}" "dist/release-index-${CHANNEL}.json" --clobber
+      - name: Bring the notes of earlier releases in line with the changelog (text only; assets and the signed index are not touched)
+        if: steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tag in $(gh release list --limit 100 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+'); do
+            if python tools/release_notes.py "$tag" > "notes-$tag.md" 2>/dev/null; then
+              gh release edit "$tag" --notes-file "notes-$tag.md" && echo "notes updated: $tag"
+            else
+              echo "no changelog section for $tag; left as is"
+            fi
+          done

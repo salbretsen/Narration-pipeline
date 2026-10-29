@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.6.1 (build 20261029141904-f5d68d01)
+#  Version v0.6.2 (build 20261029142519-4595fd37)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.6.1"
+STUDIO_VERSION="v0.6.2"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261029141904-f5d68d01"
+BUILD_ID="20261029142519-4595fd37"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,16 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_af32c2a166ef__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_59cf814000d2__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.6.2
+- GitHub release notes are now this version's section of this changelog (`tools/release_notes.py`), instead of an automatic commit list. The Release workflow
+  refuses to publish a version that has no changelog section, and re-applies the changelog text to the notes of all earlier releases (text only; assets and the
+  signed index are untouched). A test requires a section for the current version.
 
 ## v0.6.1
 - Fix: the installer's web-address summary (v0.5.9) failed the CI `shellcheck` step (SC2086), so the v0.5.9 and v0.6.0 releases were never built or published.
@@ -649,7 +654,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_af32c2a166ef__
+__STUDIO_EOF_59cf814000d2__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -679,10 +684,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_1fa9018bf80e__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_c718fb7d1e29__'
 # Audiobook Studio
 
-**v0.6.1** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.6.2** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -1014,7 +1019,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_1fa9018bf80e__
+__STUDIO_EOF_c718fb7d1e29__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2813,7 +2818,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_4db5e2bea6b6__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_e518b274b875__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2822,13 +2827,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_4db5e2bea6b6__
+__STUDIO_EOF_e518b274b875__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -25446,7 +25451,7 @@ def test_disk_routes_are_admin_only(ctx):
         assert c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"}).status_code == 200
         assert c.get("/api/disk/usage").status_code == 200
 __STUDIO_EOF_f0e734ac28d0__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_1686e4b8a6a7__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ea943c664cd7__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -25831,13 +25836,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.6.1" and st["version_label"] == "v0.6.1"
+    assert st["version"] == "0.6.2" and st["version_label"] == "v0.6.2"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.6.1" and "stage" not in a
+    assert a["version_label"] == "v0.6.2" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_1686e4b8a6a7__
+__STUDIO_EOF_ea943c664cd7__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -27441,6 +27446,37 @@ def test_voice_pace_validation_and_staleness(client, ctx, make_worker):
     assert done and all(d["duration_s"] for d in done)
     assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1}).json()["stale_segments"] == 0   # unchanged: no-op
 __STUDIO_EOF_abcfa3cf215e__
+cat > "$DEST/tests/test_release_notes.py" <<'__STUDIO_EOF_941bec614861__'
+"""Release notes come from CHANGELOG.md (tools/release_notes.py), and every release must have an entry."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+from studio import __version__
+
+_spec = importlib.util.spec_from_file_location("release_notes", Path(__file__).resolve().parents[3] / "tools" / "release_notes.py")
+rn = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(rn)
+
+SAMPLE = "# Changelog\n\nintro\n\n## v0.7.0\n- new thing\n\n## v0.6.1\n- fix\n- more\n\n## v0.6.0\n- feature\n"
+
+
+def test_section_extraction_and_fallback():
+    assert rn.section(SAMPLE, "v0.6.1") == "- fix\n- more\n"
+    assert rn.section(SAMPLE, "0.7.0") == "- new thing\n"
+    assert rn.section(SAMPLE, "v0.7.0-beta.2") == "- new thing\n"   # beta tags fall back to the release section
+    assert rn.section(SAMPLE, "v9.9.9") is None
+    assert rn.section(SAMPLE, "v0.6") is None                       # no prefix matching
+
+
+def test_every_changelog_version_has_notes_and_current_version_is_covered():
+    text = rn.CHANGELOG.read_text("utf-8")
+    assert rn.section(text, f"v{__version__}"), "add a CHANGELOG.md section for the current version before tagging it"
+    import re
+    for v in re.findall(r"^## (v\d+\.\d+\.\d+)\s*$", text, re.M):
+        assert rn.section(text, v), f"empty CHANGELOG section for {v}"
+__STUDIO_EOF_941bec614861__
 cat > "$DEST/tests/test_scrub_check.py" <<'__STUDIO_EOF_27eceefd664d__'
 """tools/scrub_check.py detects private network details, personal paths and private keys."""
 from __future__ import annotations
@@ -29715,20 +29751,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_4cad804385ea__'
-20261029141904-f5d68d01
-__STUDIO_EOF_4cad804385ea__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_59dbe239f44f__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_c64553c50639__'
+20261029142519-4595fd37
+__STUDIO_EOF_c64553c50639__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_e5b323601260__'
 {
-  "version": "0.6.1",
+  "version": "0.6.2",
   "schema_version": 3,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029141904-f5d68d01",
+  "build": "20261029142519-4595fd37",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_59dbe239f44f__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_92b93dc80626__'
+__STUDIO_EOF_e5b323601260__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_de772812a1fb__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -29737,13 +29773,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-af32c2a166ef0c66fad283f27ab5fb5fa65764b9ce940ebd14d57fdc69834fc7  CHANGELOG.md
+59cf814000d25c4a0fa403f95f7ceec3381c8ef6c39cc47099e2ea2c633f4563  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-1fa9018bf80e8c92a65d4d61d44f612beffbb74e715ffe81711935bb9806e11f  README.md
+c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-4db5e2bea6b6b024e6175aa1b27b1b78c54848887a9e2e16db652698913bdf13  studio/__init__.py
+e518b274b8751507e38b861ad10f1ef59f1abc54295486bc45df8cb94cc34659  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 75ffff87704b7b647ada359296a79f9a88dcb02f42710d98099c58b38fdeec4a  studio/assembly.py
@@ -29841,12 +29877,13 @@ fbdadcf974b84711c6f3d786c73426bbdd9531acd6f58ee7f5cc5220756ddbef  tests/test_att
 a06f481d9cb56f104f988cb4cc454ec7ff4146efd14cfd59cb24f2bae56a51d2  tests/test_auth.py
 8ff8a34089b11e9a539c3c1c6099b7e75d8463a8f06472ef6d6326c97ab4cdef  tests/test_chapter_tools.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
-1686e4b8a6a7994bcadd9a290a72b3ed926dacfd00853bbb750891d905c4bf04  tests/test_integration.py
+ea943c664cd7e2e91d328f8aac060743bd3563482d5b40d9d3e1a682e14a0e22  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
 811fdb836aac5fe1933f5bc19a12a1806b9fea7924647169b9437fb112a2ec36  tests/test_llm_test_connection.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pronunciation.py
+941bec614861c4c3fe8f12141069bce971704d787260ba8f14250304f600e306  tests/test_release_notes.py
 27eceefd664d0a111abd03d3de7c88d560efc9342696fc614943aefb76db8675  tests/test_scrub_check.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
@@ -29854,9 +29891,9 @@ abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pro
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-4cad804385ead1e851d69261822343e1f0e3722649f4e9a963511f4c1b2589b9  BUILD
-59dbe239f44fd52d55597308e9e1ba440f985feba9e7489e3e813ad81e79ae40  release.json
-__STUDIO_EOF_92b93dc80626__
+c64553c506393c968f97457351dc3c1a9327344b4cf1aae92a67de2fa08b1c91  BUILD
+e5b3236012602234fdc89ef814bdf1d02ad73989b5eaf50da8b050adefb52775  release.json
+__STUDIO_EOF_de772812a1fb__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.
