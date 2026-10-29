@@ -17,7 +17,7 @@ and each `review_actions[].actor`. No schema change.
 
 **Admin-only** (operators get 403): `PUT /api/settings`, `GET /api/storage`, `GET /api/storage/browse`, `POST /api/storage/*`,
 `POST /api/books/{id}/move`, `POST /api/books/{id}/archive`, `POST /api/worker/restart`, `POST /api/voices/{id}/archive`,
-`GET|POST /api/auth/users`, `GET /api/doctor`.
+`GET|POST /api/auth/users`, `GET /api/doctor`, and everything under `/api/disk/` (disk management, below).
 
 ## Auth and system
 
@@ -137,6 +137,34 @@ List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/
 **Storage policy (decided):** a per-project path registry. A new library location applies to books imported afterwards; existing
 books stay findable at their recorded paths and can be moved explicitly (copy, verify size + SHA-256, switch the DB in one
 transaction, keep the old copy).
+
+## Disk management (`web/disk_api.py`, logic in `diskmgmt.py`; all admin-only)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/disk/usage` | per book and per category sizes (manuscripts, segments = selected takes, alternates = other takes/attempts, reports, masters, exports; plus a `purgeable` estimate), global items (voices, recordings, previews, import copies, database, backups, logs, model cache), free space of the library volume, model cache and backups folder, and the backup list |
+| GET | `/api/disk/backups` | `{books: [...zip files in backups/books], databases: [...files in backups/db]}` |
+| POST | `/api/disk/books/{id}/delete` | `{confirm: true}`: delete the book (database rows, its storage folders, its import copy). Audited. Moved-away old copies are not touched |
+| POST | `/api/disk/books/{id}/purge` | `{scope: takes\|exports\|masters, confirm: true}`. `takes` removes attempts that are not any segment's selected take (selected and therefore approved takes always survive; in-progress attempts are skipped); `exports` removes export rows and files; `masters` removes chapter renders (re-run Assemble). Audited |
+| POST | `/api/disk/books/{id}/backup` | write a book backup zip to `backups/books/` (refused with `409` while the book's job is running) |
+| POST | `/api/disk/restore` | `{name}`: restore a zip from `backups/books/` as a NEW book (new uid and ids, title gets " (restored)") |
+| POST | `/api/disk/backups/delete` | `{name, confirm: true}` delete one book backup file |
+| POST | `/api/disk/db-backup` | consistent copy of `studio.db` (SQLite online backup) to `backups/db/studio-v<schema>-manual-<time>.db`, verified with `integrity_check` |
+
+Destructive routes need `confirm` to be the JSON boolean `true` (strict: `"yes"` is rejected with `422`). Without it they answer
+`409` with `details` describing what would be removed (item count, bytes), so the UI can show a precise confirmation. Delete and
+purge are refused with `409` while the book has a queued, running or paused job. Backup and restore names must be plain
+`*.zip` file names inside `backups/books/` (no separators, no `..`); anything else is `422`.
+
+**Book backup format** (`audiobook-studio-book-backup`, version 1): a zip with `manifest.json` (format, version, app and schema
+version, book uid and title, created time, and every media file with size and SHA-256), `db.json` (the book row and its rows from
+manuscripts, chapters, characters, segments, attempts, nar_spans, story_notes, directions, direction_log, seg_edits,
+segment_history, chapter_text, analysis_stages, review_actions, chapter_renders, exports; file paths are stored as
+`@cat/<category>/<relative path>` tokens; plus a voice reference list), and `media/<category>/<relative path>` for every file in
+the book's storage folders. Jobs, logs, events and release sign-offs are not included. Restore validates every entry name (no
+absolute paths, `..`, backslashes or unknown categories), streams each file while checking size and SHA-256, requires free space,
+re-roots paths under a fresh uid, maps voices by uid (built-in voices by name; an unknown narrator leaves the book without one
+and a warning is returned), and removes everything it created if any step fails. Archives from a newer schema are refused.
 
 ### Settings schema (`config.Settings`, defaults)
 

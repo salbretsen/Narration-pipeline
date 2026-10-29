@@ -11,8 +11,9 @@ import * as about from "./views/about.js";
 import * as narrative from "./views/narrative.js";
 import * as inspector from "./views/inspector.js";
 import * as updates from "./views/updates.js";
+import * as disk from "./views/disk.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk };
 let cleanup = null;
 let currentKey = "";
 

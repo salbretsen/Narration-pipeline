@@ -90,7 +90,13 @@ are `Secure` only over HTTPS; over the plain HTTP address passwords cross the LA
   (move them explicitly). Volumes seen on the Mac include external disks under `/Volumes` (for example an SSD).
   A disconnected drive pauses its books (reason `storage:`) and they resume automatically.
 - Test artefacts must be cleaned: archive test books and narrators (API, admin), delete recordings (`DELETE /api/recordings/{id}`),
-  remove temporary users. Archived books keep their audio on disk (there is no delete-data feature yet).
+  remove temporary users. Archiving a book keeps its audio on disk; to free the space use **Disk & Backups** (admin): purge superseded
+  takes, exports or masters, or delete the book entirely (typed title confirmation in the UI, `confirm: true` in the API).
+- **Backups (roadmap C3).** Disk & Backups writes per-book zips to `<home>/backups/books/` and database copies to `<home>/backups/db/`
+  (the same folder the pre-migration copies use). A book zip holds the database rows plus all audio and documents and restores as
+  a new book (format in doc 3). Neither folder is part of any release, so updates never remove them. Copy the zips off the Mac
+  (or to an external drive) for real safety; a backup on the same disk does not protect against disk loss. Restored books are
+  labelled "(restored)"; rename them in the book page. Not yet verified on the real Mac (mock engine only).
 
 ## Real-engine behaviour on this hardware (measured)
 

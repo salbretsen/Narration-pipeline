@@ -36,6 +36,7 @@ server restart). `index.html` loads `/static/app.css` and the module `/static/js
 | `js/views/settings.js` | every setting, storage paths with Check / Browse / Finder, the folder-browser dialog |
 | `js/views/narrative.js`, `narrative-fields.js` | route `#/narrative/ID`: analysis stages and actions, project overrides, character directory (edit, merge, voices), story notes; the settings fields are shared with Settings |
 | `js/views/inspector.js` | route `#/inspect/ID`: the Segment Inspector (context, attribution evidence, direction layers, instruction sent, boundary editing, preview, attempts) |
+| `js/views/disk.js` | route `#/disk` (admin): disk usage per book and category, free space, purge/delete with typed or dialog confirmation (the server's `409` preview feeds the dialog), book and database backup, restore |
 | `js/views/about.js` | About page (version, credits), worker, environment check, QA limits, licences |
 
 ## Patterns
