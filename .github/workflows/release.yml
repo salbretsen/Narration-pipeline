@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag  vMAJOR.MINOR.PATCH  (or vX.Y.Z-beta.N for the beta channel).
+# Push a tag  vX.Y.Z  (or vX.Y.Z-beta.N for the beta channel). X = Major, Y = Feature, Z = Minor/Patch.
+# Branch policy (docs/11-roadmap.md section 1): a plain vX.Y.Z tag must sit on a commit already on main; a -beta.N tag on a commit on dev (or main).
 # This workflow builds the update archive and the installer, and signs the release index ONLY IF the secret RELEASE_SIGNING_KEY exists.
 # Without the secret nothing is signed and NO index is published: installed studios keep ignoring this release (they cannot authenticate it).
 # Setup: docs/10-installation-and-updates.md ("Signing secrets").
@@ -20,9 +21,27 @@ jobs:
       channel: ${{ steps.meta.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: the branch guard below needs ancestry
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Branch guard (stable only from main, beta from dev or main) and no re-publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            *-*) allowed="origin/dev origin/main" ;;
+            *)   allowed="origin/main" ;;
+          esac
+          ok=no
+          for b in $allowed; do
+            if git rev-parse --verify -q "refs/remotes/$b" >/dev/null && git merge-base --is-ancestor "${GITHUB_SHA}" "refs/remotes/$b"; then ok=yes; fi
+          done
+          [ "$ok" = yes ] || { echo "::error::${GITHUB_REF_NAME} (${GITHUB_SHA}) is not on: $allowed. Merge it there first (docs/11-roadmap.md, section 1)."; exit 1; }
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::error::a release for ${GITHUB_REF_NAME} already exists; releases are never moved or re-created. Use a new version."; exit 1
+          fi
       - name: Tag must match the application version
         id: meta
         run: |

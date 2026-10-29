@@ -20,7 +20,7 @@ If you are a new session (human or AI), read these in order. Each file is self-c
 | 8 | [08-decisions-gotchas-backlog.md](08-decisions-gotchas-backlog.md) | Why things are the way they are, traps already hit, known limits, backlog |
 | 9 | [09-narrative-pipeline.md](09-narrative-pipeline.md) | v0.3 semantic segmentation, Narrative Director, continuity, characters, per-model delivery, caching |
 | 10 | [10-installation-and-updates.md](10-installation-and-updates.md) | v0.5 no-prerequisite macOS installer, per-user launchd service, signed in-app updates, migration, release/CI/signing, provider interfaces, **manual Mac checklist** |
-| 11 | [11-roadmap.md](11-roadmap.md) | **Draft for owner review:** proposed branch/tag/channel policy, the full remaining roadmap with sizes and priorities, and the questions waiting on the owner |
+| 11 | [11-roadmap.md](11-roadmap.md) | **Adopted** branch/tag/channel policy (v0.5.5), the full remaining roadmap with sizes and priorities, and the questions waiting on the owner |
 
 Also: `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
 the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end scripts), `screenshots/`.
@@ -34,7 +34,7 @@ the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end s
   Real narration/ASR only runs on the Mac.
 - **Deployment:** an M3 Max Mac on the LAN, reached over SSH. Served at `:8080` (HTTP) and `:8443` (HTTPS, needed for
   browser microphone access). Sign-in required. See doc 6.
-- **Rules that always apply:** bump the version (MAJOR.MINOR.PATCH, doc 5) and add a changelog entry for any change;
+- **Rules that always apply:** bump the version (X.Y.Z = Major.Feature.Minor/Patch, doc 5) and add a changelog entry for any change;
   rebuild the installer; run the tests; commit on a version branch and tag; never touch the Mac's firewall or Homebrew;
   use temporary accounts for authenticated testing and remove them; never store or print real passwords in files.
 - **Before adding features:** run the baseline checklist in doc 7 so you know what "working" looks like.

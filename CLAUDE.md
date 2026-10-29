@@ -8,9 +8,9 @@ and run the baseline *before* changing anything.
 
 1. `install_audiobook_studio_mac.sh` (supported, no prerequisites) and `install_audiobook_studio_claude.sh` (legacy, Homebrew) are **generated**. Edit `src/`, then `python tools/build_installer.py`. Never hand-edit the generated files. Homebrew must never appear in the mac installer or the update path.
 2. Mock-engine output is labelled as such. Never claim a GPU/MLX test ran unless it ran on the Mac. Report exactly what was and was not tested.
-3. Versioning is MAJOR.MINOR.PATCH in `src/app/studio/__init__.py`. Never bump MAJOR yourself (needs human acceptance). You may bump MINOR
-   (features) and PATCH (visual/bug fixes/docs). For every change set: bump, update `CHANGELOG.md` and version-pinned tests, rebuild, test, commit on a
-   **version branch** (not `main`), tag `vX.Y.Z`. You have standing permission to commit; do not push unless asked.
+3. Versioning is X.Y.Z in `src/app/studio/__init__.py`: X = Major (owner-triggered only; never bump it yourself), Y = Feature (any new feature), Z = Minor/Patch
+   (bug fix, feature alteration, docs, housekeeping). You may bump Y and Z. For every change set: bump, update `CHANGELOG.md` and version-pinned tests, rebuild, test, commit on a
+   **version branch or `dev`** (never `main`, which only receives fast-forwards of verified commits), tag `vX.Y.Z` (stable tags only on `main`, `-beta.N` tags on `dev`). You have standing permission to commit; do not push unless asked.
 4. Deployment target is the owner's M3 Max Mac over SSH (details in `docs/06-deployment-and-operations.md`). **Never touch its firewall, Homebrew or
    unrelated software.** Use temporary accounts for authenticated testing, tell the owner, remove them, and clean up test books/narrators/recordings.
 5. Never write real passwords, API keys, TLS keys or the SSH key into the repo, docs, memory or commit messages.

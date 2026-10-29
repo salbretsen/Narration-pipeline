@@ -1,6 +1,6 @@
-# 11. Roadmap and branch/channel policy (draft for owner review)
+# 11. Roadmap and branch/channel policy
 
-Status: **proposal**. Nothing here is a commitment, and items marked *needs owner decision* wait for an answer. Sizes: **S** under half a day,
+Status: **section 1 adopted by the owner and implemented in v0.5.5**; the rest is a proposal. Nothing else here is a commitment, and items marked *needs owner decision* wait for an answer. Sizes: **S** under half a day,
 **M** one to two days, **L** several days. Priorities are suggestions: P1 do soon, P2 next, P3 when wanted.
 
 ## 0. Where we are (v0.5.3, 2026-10-29)
@@ -11,7 +11,7 @@ app-owned `uv`, install, health check, 11 s end to end), rollback, drain during 
 local network details, and releases are signed in CI with a protected key. Unverified: real Safari / Add to Dock, a pristine Mac with no developer tools,
 a disk unplugged mid-job.
 
-## 1. Branches, tags and update channels (proposal)
+## 1. Branches, tags and update channels (adopted, v0.5.5)
 
 **Today.** Each change set lives on a version branch (`v0.5.3`), is tagged, and the owner is meant to merge it. Nobody has merged, so the public default
 branch `main` still shows **v0.4.0** code, and the `stable` channel is decided only by the tag name (a `-` suffix means beta). The release workflow
@@ -30,10 +30,10 @@ triggers on any `v*` tag from any branch and does not check that the commit has 
    (tests, installer shellcheck, signed update through the real path, smoke test on the Mac). `main` therefore always equals "what stable users run".
 4. Workflow guard: the Release workflow refuses a plain `vX.Y.Z` tag unless its commit is an ancestor of `origin/main`, and refuses to move or re-create an
    existing release. Protect `main` (no force-push, require the CI check) and protect `v*` tags in repository settings.
-5. Versioning rules are unchanged (MAJOR needs your acceptance; I bump MINOR and PATCH; CHANGELOG and version-pinned tests move with every bump).
+5. Versioning is X.Y.Z: X = Major (owner only), Y = Feature (any new feature), Z = Minor/Patch (bug fix, feature alteration, docs, housekeeping). I bump Y and Z; CHANGELOG and version-pinned tests move with every bump.
 
-*Needs owner decision:* adopt this model? If yes, as a first step I fast-forward `main` to the current verified release (v0.5.3), create `dev`, and add the
-workflow guard. Until then `main` stays where it is.
+**Done in v0.5.5 (locally, nothing pushed):** `main` fast-forwarded to the verified release v0.5.3, `dev` created at v0.5.5, workflow guard added.
+**Still yours:** push `main`, `dev` and the tags, and apply the repository settings in B3 (protect `main` and `v*` tags, require the CI check).
 
 ## 2. Roadmap
 
@@ -83,14 +83,14 @@ workflow guard. Until then `main` stays where it is.
 | D5 | First-party HTTPS release host (`HttpsRepository` already implements the contract) | M | P3 |
 
 ### E. Questions only the owner can answer
-1. Adopt the branch/channel model in section 1?
+1. ~~Adopt the branch/channel model in section 1?~~ Adopted.
 2. Which licence (B1)?
 3. When is v1.0.0, and what are the acceptance criteria? (I will not bump MAJOR myself.)
 4. Should operator accounts be allowed to edit voices, or only use them?
 5. Is the Mac meant to serve the LAN permanently (today: yes, HTTP 8080 and HTTPS 8443, sign-in required)? If not, loopback-only is the safer default.
 
 ## 3. Suggested order
-1. Decide E1 and E2, then B1-B3 and A4 (small, remove the sharpest edges).
+1. Decide E2, then B1-B3 and A4 (small, remove the sharpest edges).
 2. A1, A2, A3 and A5 (finish proving v0.5 and the channel model; A1 and A2 need you or hardware).
 3. C1, then C2 and C3 as the next feature releases (each a beta first, then promoted).
 4. C5 and C6 when you have time for long hardware runs; D-items only on demand.

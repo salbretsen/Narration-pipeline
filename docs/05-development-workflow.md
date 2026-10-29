@@ -56,14 +56,14 @@ Kill stray servers on Windows with `Get-NetTCPConnection -LocalPort 7891 -State 
 
 ## Versioning (policy from the owner)
 
-`MAJOR.MINOR.PATCH`, defined once in `src/app/studio/__init__.py` (`__version__`; `VERSION_LABEL` is `v` + version; there is no
+`X.Y.Z` (Major.Feature.Minor/Patch), defined once in `src/app/studio/__init__.py` (`__version__`; `VERSION_LABEL` is `v` + version; there is no
 "prerelease" label any more).
 
 | Part | Meaning | Who decides |
 |---|---|---|
-| MAJOR | a major release update | **requires human acceptance. Never bump it yourself** |
-| MINOR | feature additions or overhauls inside the current major | you may increment it |
-| PATCH | minor adjustments: visual tweaks, bug fixes (docs/tooling-only changes count as PATCH) | you may increment it |
+| X = Major | a major release update | **owner-triggered only. Never bump it yourself** |
+| Y = Feature | any time a new feature is added | you may increment it |
+| Z = Minor/Patch | any bug fix, feature alteration, documentation update or housekeeping | you may increment it |
 
 Reset lower parts when a higher part increments. The version appears in the About page, the sidebar footer, `/api/auth/status`,
 `/api/about`, the installer banner, the README header and `CHANGELOG.md`.
@@ -77,11 +77,23 @@ Reset lower parts when a higher part increments. The version appears in the Abou
 5. Run the full tests. Rebuild: `python tools/build_installer.py`; then `bash -n install_audiobook_studio_claude.sh` and
    `shellcheck -S style install_audiobook_studio_claude.sh` (also the `src/app/bin/*` launchers with `-x -S style`).
 6. Deploy to the Mac and verify (doc 6, doc 7). Remove any temporary accounts/test data you created there.
-7. Commit on a **version branch** (e.g. `v0.2.2`), not directly on `main` (the owner has committed to `main` directly in the past, but
-   the working rule is: branch first). Message: imperative summary line, a short body, then
+7. Commit on a **version branch** (e.g. `v0.5.5`) or on `dev`, never directly on `main` (`main` only ever receives fast-forwards of
+   verified commits, see "Branches and channels" below). Message: imperative summary line, a short body, then
    `Co-Authored-By: Claude <model> <noreply@anthropic.com>` using the attribution given in the session. Tag `vX.Y.Z`. Tell the owner how to
-   merge (`git checkout main && git merge --ff-only vX.Y.Z`). Do not push unless asked. Never commit secrets (scan with
+   promote (`git checkout main && git merge --ff-only vX.Y.Z`, only after the doc 10 checklist passed). Do not push unless asked. Never commit secrets (scan with
    `grep -rIl "BEGIN .*PRIVATE KEY" .`), passwords, TLS keys, or `.venv/`.
+
+## Branches and channels (adopted in v0.5.5)
+
+| | Branch | Tags | Channel | 
+|---|---|---|---|
+| Stable | `main` | `vX.Y.Z` | `stable` |
+| Beta | `dev` | `vX.Y.Z-beta.N` | `beta` (beta users also see stable) |
+
+Day-to-day work happens on `dev` (or topic/version branches merged into it). Promotion to stable is a fast-forward of `main` to the verified
+commit, then the plain tag. `main` therefore always equals what stable users run. The Release workflow refuses a plain `vX.Y.Z` tag whose
+commit is not already on `origin/main` (beta tags: `origin/dev` or `origin/main`) and refuses to re-create an existing release.
+Owner-side settings still to apply (roadmap B3): protect `main` and `v*` tags, require the CI check.
 
 ## Working-style notes for AI sessions
 

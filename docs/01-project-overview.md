@@ -39,7 +39,7 @@ record a human release approval. **Zero manual intervention during generation; t
 | About page, with the version, developer and company credit | `studio/__init__.py`, `views/about.js` |
 | **Reference voice lab:** record a reference voice in the browser with full guidance and sample scripts | doc 4, `views/voicelab.js`, `studio/reference.py` |
 | HTTPS on `:8443` with a self-signed certificate (browsers need a secure context for the microphone) | `studio/tls.py` |
-| Versioning MAJOR.MINOR.PATCH; permission to commit and bump versions | doc 5 |
+| Versioning X.Y.Z (Major.Feature.Minor/Patch); permission to commit and bump versions | doc 5 |
 
 ## What exists (feature inventory)
 

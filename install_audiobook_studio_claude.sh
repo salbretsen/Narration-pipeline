@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.4 (build 20261029125250-78884704)
+#  Version v0.5.5 (build 20261029130238-8ff0e615)
 #
 #  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
 #  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
@@ -23,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.4"
-BUILD_ID="20261029125250-78884704"
+STUDIO_VERSION="v0.5.5"
+BUILD_ID="20261029130238-8ff0e615"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -416,11 +416,19 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_d7c1844e01c9__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_7037ac5a71cf__'
 # Changelog
 
-Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
-additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
+Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.5.5
+- Branch and channel policy adopted (docs/11-roadmap.md section 1, owner-approved): `main` = stable (`vX.Y.Z` tags), `dev` = beta (`vX.Y.Z-beta.N` tags),
+  day-to-day work on `dev`, promotion to stable by fast-forwarding `main`.
+- Release workflow guard: a plain `vX.Y.Z` tag is refused unless its commit is already on `origin/main` (beta tags: `origin/dev` or `origin/main`), and a
+  release that already exists is never moved or re-created.
+- Version scheme renamed (numbering unchanged): X = Major (owner only), Y = Feature, Z = Minor/Patch (bug fix, feature alteration, docs, housekeeping).
+  Docs, CLAUDE.md and the module docstring updated.
 
 ## v0.5.4
 - Documentation only: `docs/11-roadmap.md` (draft for owner review: branch/tag/channel policy, remaining roadmap, open owner decisions). Not yet tagged or published.
@@ -540,7 +548,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_d7c1844e01c9__
+__STUDIO_EOF_7037ac5a71cf__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -570,10 +578,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_f779f94432e0__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_461d2d0b6433__'
 # Audiobook Studio
 
-**v0.5.4** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.5** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -905,7 +913,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_f779f94432e0__
+__STUDIO_EOF_461d2d0b6433__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2704,22 +2712,22 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_7eb59c4cec26__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_57dc21c8bded__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
-Versioning is MAJOR.MINOR.PATCH:
-  MAJOR  a major release update (requires human acceptance)
-  MINOR  feature additions or overhauls inside the current major release
-  PATCH  minor adjustments: visual tweaks and bug fixes
+Versioning is X.Y.Z (Major.Feature.Minor/Patch):
+  X  Major    a major release update (owner-triggered only, requires human acceptance)
+  Y  Feature  incremented whenever a new feature is added
+  Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.5.4"
+__version__ = "0.5.5"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_7eb59c4cec26__
+__STUDIO_EOF_57dc21c8bded__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -22733,7 +22741,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_52a0f44987fb__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ba7577ace608__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23118,13 +23126,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.4" and st["version_label"] == "v0.5.4"
+    assert st["version"] == "0.5.5" and st["version_label"] == "v0.5.5"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.3" and "stage" not in a
+    assert a["version_label"] == "v0.5.5" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_52a0f44987fb__
+__STUDIO_EOF_ba7577ace608__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -26522,20 +26530,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_a4b8e6841655__'
-20261029125250-78884704
-__STUDIO_EOF_a4b8e6841655__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_51ec6931afbb__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_095e4653ebb3__'
+20261029130238-8ff0e615
+__STUDIO_EOF_095e4653ebb3__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_08755868a0cc__'
 {
-  "version": "0.5.4",
+  "version": "0.5.5",
   "schema_version": 2,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029125250-78884704",
+  "build": "20261029130238-8ff0e615",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_51ec6931afbb__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_59c6b8782192__'
+__STUDIO_EOF_08755868a0cc__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_f20c7921d39a__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -26544,13 +26552,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-d7c1844e01c919d320fa6ce464bb98b2a70499645ab061e1addb9085b34a030b  CHANGELOG.md
+7037ac5a71cfbf5549812d93aad997276e515372255e94b04232527dbfd4c939  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-f779f94432e0acf231c780de606431855d598ebe85f76905e9b87632ebc9bfa2  README.md
+461d2d0b6433d1683dc3edc80576458ba34521d643330a4fa8cd6012a4511f4a  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-7eb59c4cec26a3f3750ef95d297b04a80fbf09010aa6437041673513ca85ac88  studio/__init__.py
+57dc21c8bded0e16d3c3ed0600e0264c69a604971a1739d8ee5cd694a02930f2  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -26637,7 +26645,7 @@ c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-52a0f44987fbf070c7d94b5867508873ca37288480f2e5b710bf318c64da8f80  tests/test_integration.py
+ba7577ace60860ab5bce83b753fd2a4b9187cb2d5e4ea9f3f60f49c4dfe9d3db  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
@@ -26645,9 +26653,9 @@ ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_aut
 4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
 5bb7bcacf24aa1f38a8db4b53969001082ea56c0ce39d2f2340a4e756467a31f  tests/test_update_install.py
 f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-a4b8e6841655af570773fbb898efa4bee416a16b47aef3b818425e63c8884137  BUILD
-51ec6931afbbd09fc56b1ca81dc8f3cc65249fb3869b0361edbfbaf53bcb6fc2  release.json
-__STUDIO_EOF_59c6b8782192__
+095e4653ebb3734f4f5ee6492d3ce4da28dc95cd115afa18d086075c7e3cd405  BUILD
+08755868a0ccf6c8ec201373ceb9cb5c31f9d9916802427dd03e8d5b7a7728ca  release.json
+__STUDIO_EOF_f20c7921d39a__
 }
 
 verify_manifest() {

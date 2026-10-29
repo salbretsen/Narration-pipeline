@@ -1,10 +1,18 @@
 # Changelog
 
-Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
-additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
+Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.5.5
+- Branch and channel policy adopted (docs/11-roadmap.md section 1, owner-approved): `main` = stable (`vX.Y.Z` tags), `dev` = beta (`vX.Y.Z-beta.N` tags),
+  day-to-day work on `dev`, promotion to stable by fast-forwarding `main`.
+- Release workflow guard: a plain `vX.Y.Z` tag is refused unless its commit is already on `origin/main` (beta tags: `origin/dev` or `origin/main`), and a
+  release that already exists is never moved or re-created.
+- Version scheme renamed (numbering unchanged): X = Major (owner only), Y = Feature, Z = Minor/Patch (bug fix, feature alteration, docs, housekeeping).
+  Docs, CLAUDE.md and the module docstring updated.
 
 ## v0.5.4
-- Documentation only: `docs/11-roadmap.md` (draft for owner review: branch/tag/channel policy, remaining roadmap, open owner decisions). Not yet tagged or published.
+- Documentation only: `docs/11-roadmap.md` (was a draft for owner review: branch/tag/channel policy, remaining roadmap, open owner decisions). Not yet tagged or published.
 
 ## v0.5.3
 - First release delivered through the real update path (GitHub Releases, signed index, in-app Update Center, new private Python environment built by
