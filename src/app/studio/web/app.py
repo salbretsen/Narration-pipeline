@@ -746,6 +746,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     register_narrative(app, ctx)
 
+    from .disk_api import register as register_disk
+
+    register_disk(app, ctx)
+
     from ..platform_services import default_platform
     from ..update.launch import make_launcher
     from ..update.layout import Layout

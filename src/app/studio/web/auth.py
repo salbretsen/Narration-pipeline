@@ -36,6 +36,8 @@ ADMIN_RULES = [
     ("GET", re.compile(r"^/api/auth/users$")),
     ("POST", re.compile(r"^/api/auth/users$")),
     ("GET", re.compile(r"^/api/doctor$")),
+    ("GET", re.compile(r"^/api/disk/")),
+    ("POST", re.compile(r"^/api/disk/")),
 ]
 
 
