@@ -93,6 +93,8 @@ function draw(view, s, hist, isAdmin) {
   <section class="card" aria-labelledby="svc-h"><h2 id="svc-h">Service</h2>
     <p class="small">The studio runs as a background service managed by macOS (launchd) and starts when you log in.</p>
     <button class="btn" data-act="restart" ${isAdmin && s.managed && !busyNow ? "" : "disabled"}>Restart service</button>
+    <button class="btn" data-act="rollback" ${isAdmin && s.managed && !busyNow && s.can_rollback ? "" : "disabled"}>Roll back to previous version${s.can_rollback ? ` (${s.can_rollback})` : ""}</button>
+    ${s.can_rollback ? "" : html`<p class="small muted">No previous version is kept on this Mac, so there is nothing to roll back to.</p>`}
     <p class="small muted">Platform ${s.platform}. Installed releases kept for rollback: ${(s.installed_releases || []).join(", ") || "–"}.</p>
   </section>
   <section class="card" aria-labelledby="hist-h"><h2 id="hist-h">History</h2>
@@ -134,7 +136,12 @@ export async function render(view) {
       else if (act === "restart") {
         if (!(await confirmDialog("Restart the service?", "The studio restarts in a few seconds. The segment being narrated finishes or is retried; queued work resumes automatically.", "Restart"))) return;
         await busy(b, () => post("/api/update/restart"), "Restarting…");
-      } else if (act === "install-now" || act === "install-later") {
+      } else if (act === "rollback") {
+        const v = status.can_rollback;
+        if (!v) return;
+        if (!(await confirmDialog(`Roll back to version ${v}?`, `The studio goes back from ${status.installed_version} to ${v} at the next safe segment boundary and restarts. A backup of your database is taken first. If the older version cannot open your data, nothing is changed. Books, voices and settings are kept.`, "Roll back"))) return;
+        await busy(b, () => post("/api/update/rollback", { version: v, mode: "now", confirm: true }), "Rollback scheduled");
+      } else if (act === "install-now" ||act === "install-later") {
         const now = act === "install-now", v = status.staged_version;
         const msg = now ? `Version ${v} installs at the next safe segment boundary and the studio restarts. A backup of your database is taken first, and the previous version is kept for automatic rollback.`
           : `The book being narrated finishes first, then version ${v} installs and the studio restarts. No other book starts in the meantime.`;

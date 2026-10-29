@@ -29,6 +29,7 @@ from typing import Callable
 from ..scheduler import FileQueueScheduler
 from ..util import atomic_write_text, now
 from .archive import ArchiveError, verify_tree_manifest
+from . import housekeeping
 from .layout import Layout
 from .runtime import runtime_python, runtime_ready
 from .status import StatusFile
@@ -75,6 +76,7 @@ class Applier:
         self.journal = layout.update_dir / "journal.json"
         self.request = layout.update_dir / "request.json"
         self._had_request = False
+        self._rollback_mode = False
 
     # ---------------------------------------------------------------- utilities
     def _python_for(self, release_dir: Path) -> Path:
@@ -166,6 +168,15 @@ class Applier:
     # ----------------------------------------------------------------- preflight
     def preflight(self, version: str) -> list[str]:
         problems: list[str] = []
+        if self._rollback_mode:
+            try:
+                need = int(json.loads((self.layout.release_dir(version) / "release.json").read_text("utf-8")).get("schema_version", 0))
+            except (OSError, ValueError):
+                need = 0
+            have = self.ctx.db.schema_version()
+            if need and need < have:
+                problems.append(f"Release {version} uses an older database layout (schema {need}) than your data (schema {have}), so it cannot open it. "
+                                "Roll back is not possible; no changes were made.")
         rel = self.layout.release_dir(version)
         if not self.store.has(version):
             problems.append(f"Release {version} is not staged.")
@@ -184,7 +195,8 @@ class Applier:
         return problems
 
     # ---------------------------------------------------------------------- run
-    def run(self, version: str, mode: str) -> bool:
+    def run(self, version: str, mode: str, rollback: bool = False) -> bool:
+        self._rollback_mode = rollback
         lock = self.layout.update_dir / "apply.lock"
         self.layout.update_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -282,10 +294,12 @@ class Applier:
             warnings.append("Storage is unavailable (" + str(storage.get("detail", "disconnected")) + "); affected jobs stay paused until it returns.")
         self.scheduler.release()
         pruned = self.store.prune(self.ctx.settings().updates.keep_releases)
-        msg = f"Updated to {version}." + (" " + " ".join(warnings) if warnings else "")
-        self.status.update(state="succeeded", message=msg, error=None, error_kind=None, mode=None, staged_version=None, latest=None,
+        housekeeping.run(self.layout)
+        msg = (f"Rolled back to {version}." if self._rollback_mode else f"Updated to {version}.") + (" " + " ".join(warnings) if warnings else "")
+        extra = {} if self._rollback_mode else {"staged_version": None, "latest": None}
+        self.status.update(state="succeeded", message=msg, error=None, error_kind=None, mode=None, **extra,
                            last_installed=version, last_installed_at=now(), warnings=warnings)
-        self.status.add_history("install", version, True, msg, previous=old, backup=str(backup), pruned=pruned)
+        self.status.add_history("rollback" if self._rollback_mode else "install", version, True, msg, previous=old, backup=str(backup), pruned=pruned)
         self._journal(step="done", version=version, old=old)
         return True
 
@@ -308,7 +322,7 @@ class Applier:
             reason += f" (rollback error: {exc})"
         if h:
             self.scheduler.release()
-            msg = f"Update to {version} failed and was rolled back to {old}: {reason}"
+            msg = f"{'Rollback' if self._rollback_mode else 'Update'} to {version} failed and was reverted to {old}: {reason}"
             self.status.update(state="rolled_back", message=msg, error=reason, error_kind="rolled_back", mode=None)
             self.status.add_history("install", version, False, msg, rolled_back_to=old)
             return False
@@ -349,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError):
         pass
     version = a.version or req.get("version")
+    rollback = bool(req.get("rollback")) and req.get("version") == version
     mode = a.mode or req.get("mode") or "after_job"
     if not version:
         print("No update request found.", file=sys.stderr)
@@ -357,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx = Context(layout.state, migrate=False)
     ap_ = Applier(layout, ctx, default_platform(layout.state))
     try:
-        return 0 if ap_.run(version, mode) else 1
+        return 0 if ap_.run(version, mode, rollback) else 1
     except ApplyError as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -109,7 +109,7 @@ LaunchDaemon, no `UserName`). Built by `platform_services.build_plist` from `app
 - `/healthz` (public): `{ok, version, db, schema}`; from loopback it also reports queue counts and whether the library root is writable.
   `/api/version`: version, build, channel, schema, managed.
 - Stop/restart: the worker's existing recovery returns an interrupted job to the queue at its position; completed WAVs are never touched.
-- CLI: `audiobook-studio doctor | start | stop | restart | status | logs [-f] | version | update --check | update --install [--when now|after_job] [--yes] | service install|uninstall | migrate-legacy DIR`.
+- CLI: `audiobook-studio doctor | start | stop | restart | status | logs [-f] | version | update --check | update --install [--when now|after_job] [--yes] | update --rollback [--when now|after_job] [--yes] | service install|uninstall | migrate-legacy DIR`.
 - Network: a fresh install serves the LAN (HTTP + HTTPS, sign-in required); `--local-only` or Settings restricts it to 127.0.0.1.
 - Uninstall: `install_audiobook_studio_mac.sh --uninstall` (service only), `--purge-app` (also application files), `--purge-data` (additionally
   books/settings/models, only after typing a confirmation phrase). Without those flags **no data is deleted**.
@@ -182,12 +182,14 @@ Sidebar **Updates** (plus a dot on the nav item and a notice on the Overview whe
 folder). The page shows installed version/build, channel, latest compatible version, last check and last *successful* check, status and error, release
 notes (plain text, never HTML; the link is only shown for `https://`), eight labelled progress bars (check, download, verify, stage, drain,
 install, restart, health) with `aria-live`, **Check for updates**, **Download & verify**, **Install now**, **Install after current book**,
-**Cancel installation**, **Restart service**, automatic-check preferences (default daily; checks only, never downloads or installs by itself), and the
+**Cancel installation**, **Restart service**, **Roll back to previous version** (confirmation dialog; disabled when no previous release is kept; POST `/api/update/rollback`, admin-only; the same updater drains the queue, backs up the database, switches, health-checks and reverts automatically on failure; refused if the previous release cannot open the current database schema), automatic-check preferences (default daily; checks only, never downloads or installs by itself), and the
 history table. States: up to date, available, downloading, verifying, staging, staged, waiting, draining, installing, restarting, health check,
 succeeded, failed, rolled back, incompatible, offline, switched off. Administrators act; operators can look. Every state-changing route is
 admin-only, requires the `X-Studio-Request` header, same-origin and Host checks, like the rest of the API.
 
 ## 6. Safe update execution
+
+After a successful install or rollback the updater also tidies up (never raising): it deletes installer tool archives in `app/downloads`, removes private runtimes (`app/runtimes/<id>`) that no release still on disk names and that are older than an hour, and removes empty staging folders. The current and previous releases, their runtimes, `app/tools` and everything under `state/` are never touched.
 
 The web process only **checks, downloads, verifies and stages** (adds a new directory under `releases/`; it never touches the running one). Switching
 and restarting is done by a separate process:

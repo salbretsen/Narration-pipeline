@@ -24,6 +24,12 @@ class InstallReq(_Req):
     confirm: bool = False
 
 
+class RollbackReq(_Req):
+    version: str = Field(min_length=5, max_length=40)
+    mode: Literal["now", "after_job"] = "now"
+    confirm: bool = False
+
+
 class PrefsReq(_Req):
     channel: Optional[Literal["stable", "beta"]] = None
     auto_check: Optional[bool] = None
@@ -83,6 +89,12 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
         if not req.confirm:
             raise S.ServiceError("Installing an update needs explicit confirmation.", 422)
         return _wrap(manager.request_install, req.mode, req.version)
+
+    @app.post("/api/update/rollback")
+    def api_update_rollback(req: RollbackReq):
+        if not req.confirm:
+            raise S.ServiceError("Rolling back needs explicit confirmation.", 422)
+        return _wrap(manager.request_rollback, req.mode, req.version)
 
     @app.post("/api/update/cancel")
     def api_update_cancel():
