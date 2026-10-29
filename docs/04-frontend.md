@@ -69,6 +69,11 @@ waveform, editable "exact words", save) → **4 Review & audition** (take cards 
 audition, FAQ on multiple takes and emotion) → **5 Create narrator** (name, rights holder, consent checkbox).
 If the take list already has drafts the lab opens on step 4.
 
+**Take comparison (step 4):** each take card has a "compare" checkbox (`data-cmp`, state `L.cmp`); the compare panel can also add a take from an
+audio file (`#upload-form`, reuses `POST /api/recordings`). "Compare N takes" calls `GET /api/recordings/compare` and renders a ranked table
+(verdict, length, peak, clipping, noise floor, voice-to-noise, Whisper transcript match, audio player, "Use for narrator"). "Whisper-check all" runs
+the existing `check` job per take; `paintJob` refreshes the table cells as jobs finish. Ticking or deleting takes clears the comparison.
+
 Recorder facts (`recorder.js`): `getUserMedia({channelCount:1, echoCancellation:false, noiseSuppression:false, autoGainControl:false})`
 (raw audio on purpose), an `AudioWorklet` forwards samples, the node is routed through a zero-gain node so the graph runs without
 playing the mic back, the WAV is 16-bit mono at the AudioContext's rate (often 48 kHz), uploaded to `POST /api/recordings`.

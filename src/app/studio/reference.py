@@ -153,3 +153,30 @@ def quality_report(metrics: dict) -> dict:
                "good": "Good. One small improvement is possible.",
                "excellent": "Excellent reference quality."}[verdict]
     return {"verdict": verdict, "summary": summary, "checks": checks}
+
+
+_VERDICT_RANK = {"excellent": 3, "good": 2, "usable": 1, "poor": 0}
+
+
+def compare_takes(takes: list[dict]) -> dict:
+    """Side-by-side comparison of several takes of the same reference (their saved metadata).
+
+    Ranking is advisory: verdict first, then fewer warnings, then signal-to-noise. Poor takes are never recommended.
+    Transcript match (Whisper) is run per take by the existing check job and merged by the client."""
+    rows = []
+    for t in takes:
+        m, q = t.get("metrics", {}), t.get("quality", {})
+        checks = q.get("checks", [])
+        snr = round(m.get("rms_dbfs", -90) - m.get("noise_floor_dbfs", -90), 1)
+        rows.append({"id": t["id"], "label": t.get("label", ""), "script_title": t.get("script_title", ""), "verdict": q.get("verdict", "poor"),
+                     "duration_s": t.get("duration_s", m.get("duration_s", 0.0)), "peak_dbfs": m.get("peak_dbfs"), "rms_dbfs": m.get("rms_dbfs"),
+                     "noise_floor_dbfs": m.get("noise_floor_dbfs"), "snr_db": snr, "clip_ratio": m.get("clip_ratio", 0.0),
+                     "warnings": sum(1 for c in checks if c["status"] == "warn"), "fails": sum(1 for c in checks if c["status"] == "fail"),
+                     "ref_text": t.get("ref_text", "")})
+    order = sorted(rows, key=lambda r: (-_VERDICT_RANK.get(r["verdict"], 0), r["warnings"], -r["snr_db"], r["clip_ratio"]))
+    for i, r in enumerate(order):
+        r["rank"] = i + 1
+    best = order[0] if order and order[0]["verdict"] != "poor" else None
+    for r in rows:
+        r["recommended"] = bool(best and r["id"] == best["id"])
+    return {"rows": rows, "recommended_id": best["id"] if best else None}

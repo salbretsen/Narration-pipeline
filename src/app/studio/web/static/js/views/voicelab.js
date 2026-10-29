@@ -24,7 +24,7 @@ export function createLab({ onVoiceCreated }) {
   el.setAttribute("aria-labelledby", "lab-h");
   const mic = new Mic();
   const L = { step: "setup", scripts: [], auditionText: "", takes: [], devices: [], deviceId: "", status: {}, room: null, scriptId: "core-harbour", cur: null, recState: "idle",
-    countdown: 0, count: true, selected: null, jobs: {}, support: micSupport(), openErr: "", saved: null, saveErr: null, roomRun: null, ready: false };
+    countdown: 0, count: true, selected: null, jobs: {}, support: micSupport(), openErr: "", saved: null, saveErr: null, roomRun: null, ready: false, cmp: new Set(), compare: null, cmpErr: "" };
   let raf = 0, timers = new Set(), destroyed = false;
 
   const script = () => L.scripts.find((s) => s.id === L.scriptId);
@@ -170,7 +170,66 @@ export function createLab({ onVoiceCreated }) {
       <div>Whisper agreement with the text: ${(100 - r.wer * 100).toFixed(0)}% · ${r.duration_s}s · ${r.engine}${r.rtf ? ` · RTF ${r.rtf.toFixed(2)}` : ""}</div>
       ${r.note ? html`<div class="warn-text">${r.note}</div>` : ""}<div>Does it sound like <em>you</em>, at the pace and warmth you want for the whole book? If not, try another take.</div></div>`;
   }
-  function paintJob(rid, mode) { const n = el.querySelector(`[data-job="${rid}:${mode}"]`); if (n) setHTML(n, jobHtml(rid, mode)); }
+  function paintJob(rid, mode) {
+    const n = el.querySelector(`[data-job="${rid}:${mode}"]`); if (n) setHTML(n, jobHtml(rid, mode));
+    const c = el.querySelector("#cmp-table"); if (c && L.compare) setHTML(c, compareTable());
+  }
+
+  // ------------------------------------------------------------------ multi-take comparison
+  async function runCompare() {
+    const ids = L.takes.map((t) => t.id).filter((id) => L.cmp.has(id));
+    if (ids.length < 2) { L.compare = null; L.cmpErr = "Tick at least two takes to compare."; paint(); return; }
+    L.cmpErr = "";
+    L.compare = await get(`/api/recordings/compare?ids=${ids.join(",")}`);
+    paint();
+  }
+  async function checkAll(btn) {
+    for (const r of (L.compare ? L.compare.rows : [])) await runJob(r.id, "check", btn);
+  }
+  async function uploadTake(form, btn) {
+    const fd = new FormData(form);
+    const file = fd.get("file");
+    if (!file || !file.size) { toast("Choose an audio file first.", "error"); return; }
+    try {
+      const meta = await busy(btn, () => api("POST", "/api/recordings", fd));
+      L.takes.unshift(meta); L.cmp.add(meta.id); L.compare = null;
+      toast(`Take added (${meta.quality.verdict}). Tick takes and press Compare.`, "success");
+    } catch (e) { toastError(e); }
+    paint();
+  }
+  function matchCell(id) {
+    const j = L.jobs[`${id}:check`];
+    if (!j) return html`<span class="muted">not checked</span>`;
+    if (j.status === "failed") return html`<span class="err">failed</span>`;
+    if (j.status !== "completed") return html`<span class="muted">checking…</span>`;
+    const r = j.result || {};
+    return html`<span class="badge tone-${r.matches ? "good" : "warn"}">${r.matches ? "matches" : "differs"}</span> <span class="small muted">WER ${((r.wer || 0) * 100).toFixed(0)}%</span>`;
+  }
+  function compareTable() {
+    const rows = [...L.compare.rows].sort((a, b) => a.rank - b.rank);
+    return html`<table class="table cmp"><caption class="sr-only">Takes ranked by advisory quality score</caption>
+      <thead><tr><th scope="col">Take</th><th scope="col">Verdict</th><th scope="col">Length</th><th scope="col">Peak</th><th scope="col">Clipping</th>
+        <th scope="col">Noise floor</th><th scope="col">Voice-to-noise</th><th scope="col">Transcript</th><th scope="col">Listen</th><th scope="col">Choose</th></tr></thead>
+      <tbody>${rows.map((r) => html`<tr class="${r.recommended ? "chosen" : ""}"><th scope="row">#${r.rank} ${r.label || r.script_title}${r.recommended ? html` <span class="badge tone-good">suggested</span>` : ""}</th>
+        <td><span class="badge tone-${r.verdict === "poor" ? "bad" : r.verdict === "usable" ? "warn" : "good"}">${r.verdict}</span></td>
+        <td>${Number(r.duration_s).toFixed(1)} s</td><td>${Number(r.peak_dbfs).toFixed(0)} dBFS</td><td>${r.clip_ratio > 0.0005 ? html`<span class="err">clipped</span>` : "none"}</td>
+        <td>${Number(r.noise_floor_dbfs).toFixed(0)} dBFS</td><td>${r.snr_db} dB</td><td>${matchCell(r.id)}</td>
+        <td>${player(`/media/recording/${r.id}`, `Take #${r.rank}`)}</td>
+        <td><button class="btn small primary" data-act="use-take" data-id="${r.id}" ${r.verdict === "poor" ? html`disabled title="Rated poor quality"` : ""}>Use for narrator →</button></td></tr>`)}</tbody></table>`;
+  }
+  function comparePanel() {
+    return html`<section class="compare" aria-labelledby="cmp-h"><h4 id="cmp-h">Compare takes side by side</h4>
+      <p class="small muted">Tick two or more takes below (or add one from a file), then press Compare. The suggestion is advisory: it ranks by quality verdict, warnings and voice-to-noise,
+        so always listen. Run the Whisper check on all to see which transcripts match what was actually said.</p>
+      <form id="upload-form" class="form lab-row"><label>Audio file <input type="file" name="file" accept="audio/*,.wav,.mp3,.m4a,.flac"></label>
+        <label>Exact words <input name="ref_text" required minlength="5" maxlength="1000" placeholder="What is said in the file"></label>
+        <label>Label <input name="label" maxlength="80" placeholder="optional"></label>
+        <button class="btn small" type="submit">Add take from file</button></form>
+      <div class="form-actions"><button class="btn primary" data-act="cmp-run" ${L.cmp.size >= 2 ? "" : html`disabled`}>Compare ${L.cmp.size} take${L.cmp.size === 1 ? "" : "s"}</button>
+        ${L.compare ? html`<button class="btn" data-act="cmp-check">Whisper-check all</button>` : ""}</div>
+      ${L.cmpErr ? html`<div class="callout warn small" role="alert">${L.cmpErr}</div>` : ""}
+      ${L.compare ? html`<div id="cmp-table" aria-live="polite">${compareTable()}</div>` : ""}</section>`;
+  }
 
   async function createNarrator(form, btn) {
     const fd = new FormData(form);
@@ -331,7 +390,7 @@ export function createLab({ onVoiceCreated }) {
   function takeCard(t) {
     const sel = L.selected === t.id;
     return html`<article class="take ${sel ? "chosen" : ""}" aria-labelledby="t-${t.id}">
-      <header class="take-head"><h4 id="t-${t.id}">${t.script_title}</h4><span class="badge tone-${t.quality.verdict === "poor" ? "bad" : t.quality.verdict === "usable" ? "warn" : "good"}">${t.quality.verdict}</span>
+      <header class="take-head"><label class="check"><input type="checkbox" data-cmp="${t.id}" ${L.cmp.has(t.id) ? html`checked` : ""} aria-label="Compare this take"> compare</label><h4 id="t-${t.id}">${t.script_title}</h4><span class="badge tone-${t.quality.verdict === "poor" ? "bad" : t.quality.verdict === "usable" ? "warn" : "good"}">${t.quality.verdict}</span>
         <span class="small muted">${t.duration_s}s · ${fmtDate(t.created_at)}</span></header>
       ${player(`/media/recording/${t.id}`, `Take: ${t.script_title}`)}
       <details><summary>Quality report</summary>${qualityBlock(t.quality)}</details>
@@ -350,7 +409,7 @@ export function createLab({ onVoiceCreated }) {
       ${L.takes.length ? html`
         <label>Audition passage (the same text is synthesized from each take so you can compare fairly)
           <textarea id="audition-text" rows="3" maxlength="600">${L.auditionText}</textarea></label>
-        <div class="takes">${L.takes.map(takeCard)}</div>`
+        ${comparePanel()}<div class="takes">${L.takes.map(takeCard)}</div>`
         : html`<p class="muted">No takes yet. <button class="linklike" data-step="record">Record your first take</button>.</p>`}
       <details class="guide"><summary>Should I record several takes? Should they differ in emotion?</summary>
         <ul>
@@ -412,11 +471,13 @@ export function createLab({ onVoiceCreated }) {
       else if (act === "rec-save") await saveTake(b);
       else if (act === "job-check") await runJob(id, "check", b);
       else if (act === "job-audition") await runJob(id, "audition", b);
+      else if (act === "cmp-run") await busy(b, runCompare);
+      else if (act === "cmp-check") await checkAll(b);
       else if (act === "use-take") { L.selected = id; L.step = "create"; paint(); }
       else if (act === "del-take") {
         if (!(await confirmDialog("Delete this take?", "The recording is removed from this Mac. Narrators already created from it are not affected.", "Delete", true))) return;
         await api("DELETE", `/api/recordings/${id}`);
-        L.takes = L.takes.filter((t) => t.id !== id); if (L.selected === id) L.selected = null; paint();
+        L.takes = L.takes.filter((t) => t.id !== id); L.cmp.delete(id); L.compare = null; if (L.selected === id) L.selected = null; paint();
       } else if (act === "edit-text") {
         const t = L.takes.find((x) => x.id === id);
         const v = window.prompt("Exactly what is said in this recording:", t.ref_text);
@@ -425,11 +486,15 @@ export function createLab({ onVoiceCreated }) {
     } catch (err) { toastError(err); }
   });
   el.addEventListener("change", (e) => {
+    if (e.target.dataset && e.target.dataset.cmp) {
+      if (e.target.checked) L.cmp.add(e.target.dataset.cmp); else L.cmp.delete(e.target.dataset.cmp);
+      L.compare = null; paint(); return;
+    }
     if (e.target.id === "lab-script") { L.scriptId = e.target.value; L.saved = null; paint(); }
     else if (e.target.id === "lab-count") L.count = e.target.checked;
     else if (e.target.id === "lab-device" && micOn()) { L.deviceId = e.target.value; openMic(); }
   });
-  el.addEventListener("submit", (e) => { if (e.target.id === "create-form") { e.preventDefault(); createNarrator(e.target, e.submitter); } });
+  el.addEventListener("submit", (e) => { if (e.target.id === "upload-form") { e.preventDefault(); uploadTake(e.target, e.submitter); return; } if (e.target.id === "create-form") { e.preventDefault(); createNarrator(e.target, e.submitter); } });
 
   return {
     el, init,
