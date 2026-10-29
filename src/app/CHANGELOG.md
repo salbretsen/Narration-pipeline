@@ -3,6 +3,9 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.5.9
+- The installer's final summary now lists every web address: HTTP and HTTPS on this Mac, and on the network by IP address and `.local` name, read from the saved settings.
+
 ## v0.5.8
 - First sign-in without leaving the web console: a fresh managed install creates `admin` with the starter password `admin`, flagged "must change". The sign-in
   leads straight to a "Choose a new password" page; every other API call is refused (403, `must_change_password`) until it is done. The random password file

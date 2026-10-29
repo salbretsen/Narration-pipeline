@@ -404,6 +404,35 @@ install_launcher() {
   ok "command line: $ROOT/audiobook-studio"
 }
 
+# Every address the web client answers on, read from the saved settings (so it also reflects a kept or migrated configuration).
+print_urls() {
+  local cfg="$ROOT/state/config/settings.json" vals http_port https_port remote https
+  vals="$("$PY" -c 'import json,sys;s=json.load(open(sys.argv[1])).get("server",{});print(s.get("port",7861),s.get("https_port",8443),int(bool(s.get("allow_remote"))),int(bool(s.get("https_enabled"))))' "$cfg" 2>/dev/null)" || return 0
+  set -- $vals
+  http_port="$1"; https_port="$2"; remote="$3"; https="$4"
+  echo
+  echo "    Web addresses"
+  echo "      On this Mac:       http://127.0.0.1:$http_port"
+  [ "$https" = 1 ] && echo "                         https://localhost:$https_port   (needed for the microphone in the voice lab)"
+  if [ "$remote" = 1 ]; then
+    local host ip
+    host="$(/usr/sbin/scutil --get LocalHostName 2>/dev/null)"
+    [ -n "$host" ] && host="$host.local"
+    for ip in $(/sbin/ifconfig 2>/dev/null | /usr/bin/awk '$1=="inet" && $2!~/^127\./ {print $2}'); do
+      echo "      On your network:   http://$ip:$http_port"
+      [ "$https" = 1 ] && echo "                         https://$ip:$https_port"
+    done
+    if [ -n "$host" ]; then
+      echo "                         http://$host:$http_port"
+      [ "$https" = 1 ] && echo "                         https://$host:$https_port"
+    fi
+    [ "$https" = 1 ] && echo "      The HTTPS address uses a certificate made on this Mac, so the browser warns once: accept it."
+    echo "      Anyone who opens a network address must sign in."
+  else
+    echo "      Serving this Mac only (reinstall without --local-only, or change it in Settings, to share on the network)."
+  fi
+}
+
 studio() { AUDIOBOOK_STUDIO_ROOT="$ROOT" AUDIOBOOK_STUDIO_LOGS="$LOGS" "$ROOT/audiobook-studio" "$@"; }
 
 configure_state() {
@@ -544,6 +573,7 @@ main() {
                     library  $LIBRARY
                     models   $MODEL_CACHE
 EOF
+  print_urls
   if [ "$NEW_ADMIN" = 1 ]; then
     echo
     echo "    First sign-in: user '$ADMIN_USER', password 'admin'. You will be asked to choose a new password straight away."
