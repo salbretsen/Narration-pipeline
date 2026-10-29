@@ -434,6 +434,10 @@ class Worker:
         if seg is None:
             self._finish_book(job, book)
             return
+        warm = getattr(self.tts, "warm_models", None)
+        if warm is not None:
+            with self.ctx.db.session() as conn:
+                seg = N_store.pick_segment(conn, book, seg, warm())
         ns = N_store.book_ns(self.ctx, book)
         if ns.director_enabled:
             with self.ctx.db.session() as conn:

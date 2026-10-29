@@ -111,6 +111,25 @@ works. Without HTTPS the lab explains this and you can still upload a recording 
 to keep the best. Keep the emotional register neutral-to-warm and consistent: a clone inherits the delivery
 of its reference. For a different mood, create a separate narrator from an emotional take.
 
+### Characters, voices and delivery (Narrative, optional)
+
+Settings > **Narrative** turns on *intelligent semantic segmentation* for books imported from then on. The studio then reads each chapter
+twice: first to find chapters, scenes, narration versus dialogue and **who speaks each line** (from speech tags, names, pronouns and
+conversation turn-taking; a line with no evidence is **flagged "speaker?" for review**, never guessed), then to cut it into narration
+segments (default ceiling 500 characters) at natural boundaries. Open a book's **Narrative** page to see the analysis stages, the
+**character directory** (aliases, gender, accent, personality, and a **voice per character**) and story notes.
+
+- Giving a character a voice re-cuts only the affected text and regenerates only those segments; changing it back reuses the earlier audio.
+- The **Segment Inspector** (from the review list or the Narrative page) shows the text with its surrounding context (analysis only, never
+  spoken), who the studio thinks speaks it and why, the delivery direction, the exact instruction and text sent to the voice engine, and lets
+  you correct the speaker, voice, emotion, intensity, pacing and boundaries, preview the segment, and regenerate it.
+- Turn on the **Narrative Director** to give each segment an emotion, intensity, pacing and delivery note, kept consistent from one segment
+  to the next. Without a local LLM it uses a built-in rules engine; to use an LLM, run any OpenAI-compatible local server (LM Studio,
+  `mlx_lm.server`, ...) and set its URL and model in Settings > Narrative. Delivery notes only reach voices that accept them: **preset
+  (CustomVoice) voices** take an instruction, **designed voices** get it appended to their description (their sound can drift), **cloned
+  voices** cannot be directed and rely on the reference clip.
+- Whisper verification can be set to every segment (default), a sample, or off.
+
 ### Drafts and release
 
 Exports are labelled **DRAFT** until a person records release approval. Approval is only

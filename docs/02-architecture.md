@@ -80,6 +80,8 @@ Per-book data lives under the book's own recorded directories (the **per-project
 | `web/auth.py` | PBKDF2 users, signed session tokens, roles, `ADMIN_RULES`, login limiter |
 | `web/security.py` | Host allowlist, CSRF checks, auth enforcement, security headers |
 | `web/media.py` | RFC 7233 range responder, MIME map, path containment `ensure_inside` |
+| `web/narrative_api.py` | endpoints for the narrative layer (characters, inspector, boundary edits, analysis, project overrides, metadata) |
+| `narrative/` | **v0.3**, see doc 9: `structure` (Pass 1), `segmenter` (Pass 2), `windows`, `llm`, `director`, `continuity`, `delivery`, `cast`, `store` (persistence, reconciliation, plan/gen key, inspector), `analysis` (stages + `analyze` job), `voicecheck`, `vocab` |
 
 **Rule:** business logic belongs in `services.py` (or the domain modules it calls), raising `ServiceError(message, status, details)`.
 Endpoints stay thin. The CLI and smoke test call the same functions.
@@ -94,9 +96,13 @@ model, seed, temperature, spoken text, ASR text/JSON, WER, issues, acoustics, sc
 versions); `jobs`; `job_logs`; `events`; `review_actions`; `audit_log`; `worker_state` (single row lease); `chapter_renders`;
 `exports`; `releases`; `imports` (uploaded manuscripts awaiting confirmation).
 
+**Schema v2 (v0.3.0)** adds `chapter_text`, `characters`, `nar_spans`, `story_notes`, `directions`, `direction_log`, `director_cache`, `seg_edits`, `segment_history`,
+`analysis_stages`, and columns on `books` (`narrative_json`), `segments` (offsets, speaker, scene, review flags) and `attempts` (`gen_key`, `instruct_used`, ...). Jobs gained the kind
+`analyze` (the table was rebuilt; `migrate()` runs with foreign keys off and verifies them before commit). Details: doc 9.
+
 Key constraints: a **partial unique index allows only one active (`queued/running/paused`) book job per book**; segments'
 `status` is checked (`pending, synthesizing, passed, flagged, approved`); jobs' `kind` is checked
-(`book, preview, assemble, export`) and `status` (`queued, running, paused, completed, failed, cancelled`).
+(`book, preview, assemble, export, analyze`) and `status` (`queued, running, paused, completed, failed, cancelled`).
 **Adding a column or table requires a new migration appended to `MIGRATIONS` in `db.py` (never edit a released one).**
 Recording-lab jobs deliberately reuse `kind='preview'` with `payload_json.recording_id` to avoid a migration.
 

@@ -69,6 +69,29 @@ or network bind without users.
 | POST | `/api/segments/{id}/select-take` | `{attempt_id}`; only takes with the current fingerprint |
 | POST | `/api/segments/{id}/note` | `{note}` |
 
+## Narrative (v0.3; all in `web/narrative_api.py`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/narrative/vocabulary` | emotions, pacings, intensity range |
+| GET | `/api/books/{id}/narrative` | stage status/stats/errors, counts (segments, directed, speaker/direction review, stale), latest analysis job, Director cache |
+| GET, PUT | `/api/books/{id}/narrative/settings` | effective settings + overrides + defaults; PUT `{overrides}` merges (null removes a key); **admin only** |
+| POST | `/api/books/{id}/analyze` | `{stages?, rebuild?, confirm?}` queues the `analyze` job (409 NeedsConfirmation when converting a rendered legacy book) |
+| POST | `/api/books/{id}/resegment` | Pass 2 again (reconciles; resets only segments whose voice/delivery changed) |
+| POST | `/api/books/{id}/continuity/recompute` | re-smooth all stored directions (no LLM calls) |
+| GET | `/api/books/{id}/narrative/metadata` | JSON of characters and every segment (offsets, speaker, status, direction, instruction) |
+| GET, POST | `/api/books/{id}/characters` | directory (+ voices list); create |
+| PATCH | `/api/characters/{id}` | name, aliases, gender, `voice_id`, accent, speech pattern, personality, description, delivery preference, relationships; a voice change re-cuts and resets only affected segments |
+| POST | `/api/characters/{id}/merge` | `{into_id}` |
+| GET, POST | `/api/books/{id}/notes`; DELETE `/api/notes/{id}` | story notes/summaries; user facts are confirmed |
+| GET | `/api/segments/{id}/inspect` | context windows, spans with evidence, speaker, voice, direction (raw/smoothed/user/final), neighbours, instruction + spoken text sent to the engine, history, attempts with `gen_key` match |
+| PATCH | `/api/segments/{id}/narrative` | `character_id, voice_id, emotion, intensity, tension, pacing, delivery`; regenerates only this segment |
+| POST | `/api/segments/{id}/boundary` | `{op: split|merge_next|move_end, offset}` |
+| POST | `/api/segments/{id}/preview` | queues a preview with the segment's own voice and delivery (not saved as a take) |
+| POST | `/api/segments/{id}/redirect` | marks the direction stale and queues a Director run |
+
+List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/segments/{id}` now include `gen_key, instruct_used, delivery_applied, asr_skipped, peak_mem_gb, voice_id_used`.
+
 ## Voices and the recording lab
 
 | Method | Path | Purpose |
@@ -119,6 +142,7 @@ transaction, keep the old copy).
 - `models`: `engine` (mlx on Apple Silicon else mock), `custom_voice_model`, `base_model`, `voice_design_model`
   (`mlx-community/Qwen3-TTS-12Hz-1.7B-{CustomVoice,Base,VoiceDesign}-bf16`), `asr_model` (`mlx-community/whisper-large-v3-turbo`),
   `language`, `temperature/top_p/repetition_penalty` (null = model default), `retry_temperatures [0.7, 0.55]`, `max_warm_models 2`, `allow_downloads`.
+- `narrative` (v0.3, doc 9): `semantic_segmentation` (default off), `max_segment_chars 500`, `min_segment_chars 120`, `context_before_chars 1250`, `context_after_chars 1250`, `attribution_threshold 0.6`, `emotion_sensitivity 0.5`, `director_enabled`, `director_lookahead 12`, `continuity_smoothing`, `smoothing_strength 0.6`, `reset_scope`, `cascade_limit 24`, `verify_mode every|sample|off`, `delivery{...}`, `llm{...}` (key by environment-variable name `STUDIO_LLM_*`, never stored).
 - `export`: `sample_rate 44100`, `mp3_bitrate_kbps 192`, `m4b_bitrate_kbps 96`, `loudness_normalize`, `target_lufs -19`, `true_peak_db -3`, `auto_assemble_drafts`.
 - `server`: `host 127.0.0.1`, `port 7861`, `allow_remote false`, `https_enabled false`, `https_port 8443`, `allowed_hosts []`,
   `max_manuscript_mb 100`, `max_reference_mb 25`. A non-loopback host requires `allow_remote`. **The Mac's deployment uses host `0.0.0.0`, port 8080, https on 8443.**

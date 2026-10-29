@@ -21,7 +21,18 @@
 | Mock engine writes tones with a transcript sidecar; labelled everywhere | Lets the full pipeline be tested honestly on a machine without MLX |
 | One reference clip per cloned narrator; extra takes are audition candidates | The Base model's API takes a single `ref_audio/ref_text`; mixing moods in one clip gave unpredictable blends in the experiment |
 
+| Narrative layer is opt-in and offset based (v0.3) | Existing books and tests stay compatible; stable ids, exact slices and reconciliation keep edits local |
+| `jobs` rebuilt for `analyze`; migrations run with foreign keys off | SQLite cannot widen a CHECK; deferred foreign keys do not survive dropping the parent (tried and failed), so `foreign_key_check` runs before commit |
+| Unknown speaker = flagged and voiced by the narrator | A confident wrong voice is worse than a visible flag |
+| `api_key_env` limited to `STUDIO_LLM_*` | Otherwise a settings admin could send any environment secret to the configured URL |
+| Segments are synthesised model-first, assembled by index | Avoids a 30 s model reload per voice switch with three model families and two warm slots |
+
 ## Gotchas already hit (do not rediscover them)
+
+- (v0.3) Patch scripts with backslashes passed through a shell heredoc corrupted regexes (`\b` became a backspace character). Use the Edit tool, a script file, or `chr(92)`.
+- (v0.3) `promote` only accepts previews of **designed** voices; archive needs a JSON body (`{"archived": true}`); a book cannot be archived while any job (including `analyze`) is active.
+- (v0.3) Mock fault keys match the spoken (normalised) text ("Mrs." is spoken "Missus").
+- (v0.3) The first real-hardware run found that `redirect` set `stale` but the job never consumed it. `narrative_real.py` exists to catch what unit tests miss.
 
 **Environment and tooling**
 - The Bash tool mangles inline heredocs with quotes/backslashes/backticks and corrupted files twice. Write patch scripts to files, or use Edit.
@@ -70,7 +81,20 @@
 - Distributor (ACX/Audible) technical compliance is not verified; the studio produces local publication candidates only.
 - Model licences must be re-verified before commercial use (`MODEL_LICENSES.md`).
 
+## Narrative layer (v0.3) known limitations
+
+- Speaker attribution is rules-based plus an optional LLM and is **not validated on real novels**. Weak spots: unattributed lines, pronoun-only tags with two same-gender characters (both flagged), and single-quote (British) dialogue (not detected).
+- The rules Director reads lexical cues only and cannot understand context, irony or subtext. It is deterministic and labelled (`source: rules`). The LLM path is tested against stubs only.
+- Emotion control exists only for CustomVoice 1.7B (and is appended to VoiceDesign descriptions). Base cloning cannot be directed. The audible effect of an instruction was not evaluated by listening.
+- Very short segments (1-2 s) can come back truncated from the model and get flagged; separate voices make them more likely (`tags_with_speaker` and `min_segment_chars` reduce them).
+- VoiceDesign voices are re-created on every call and may drift. Pitch consistency was measured on tiny samples only. Whisper pass/fail says nothing about emotion or speaker identity.
+- A legacy book can be converted (it re-cuts every segment); semantic segmentation cannot be switched off afterwards. The import preview's segment count still uses the legacy chunker estimate.
+- Summaries are extractive; an optional LLM summary stays unconfirmed. A downstream cascade never resets approved segments.
+- `lan_e2e.py` and `lab_local.py` were not re-run for v0.3.0 (the smoke test and `narrative_real.py` were).
+
 ## Backlog / ideas (none are commitments)
+
+0. Run a real local LLM (for example `mlx_lm.server`) through `narrative_real.py` and measure attribution and direction quality; a listening study of directed versus undirected output; single-quote dialogue; a CLI `analyze` command; ship the narrative metadata inside exports.
 
 1. Attribute every audit/review action to the signed-in user.
 2. Pronunciation dictionary (global and per book) feeding `override_text`; per-voice pace control.

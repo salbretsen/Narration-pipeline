@@ -21,9 +21,9 @@ and run the baseline *before* changing anything.
 ## Quick commands (from `src/app`, Windows dev)
 
 ```text
-pytest -q -p no:cacheprovider tests              # expect 96 passed
+pytest -q -p no:cacheprovider tests              # expect 158 passed (about 75 s)
 node --input-type=module --check < path/to.js     # JS syntax
 python ../../tools/build_installer.py             # regenerate the installer, then bash -n and shellcheck -S style
 ```
 
-Everything else (architecture, API, frontend patterns, deploy/redeploy, troubleshooting, decisions, gotchas, backlog) is in `docs/`.
+Everything else (architecture, API, frontend patterns, deploy/redeploy, troubleshooting, decisions, gotchas, backlog, and the v0.3 narrative layer in `docs/09-narrative-pipeline.md`) is in `docs/`.

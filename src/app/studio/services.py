@@ -1071,7 +1071,9 @@ def segment_detail(ctx, segment_id: int) -> dict:
             "seed": a["seed"], "temperature": a["temperature"], "text_spoken": a["text_spoken"], "duration_s": a["duration_s"], "wer": a["wer"],
             "wer_raw": asr.get("wer_raw"), "asr_text": a["asr_text"], "diff": asr.get("diff", []), "counts": asr.get("counts"),
             "issues": loads(a["issues_json"], []), "acoustics": loads(a["acoustics_json"], {}), "score": a["score"], "passed": a["passed"],
-            "rtf": a["rtf"], "error": a["error"], "selected": a["id"] == s["selected_attempt_id"], "created_at": a["created_at"],
+            "rtf": a["rtf"], "peak_mem_gb": a["peak_mem_gb"], "instruct_used": a["instruct_used"], "gen_key": a["gen_key"],
+            "delivery_applied": a["delivery_applied"], "asr_skipped": bool(a["asr_skipped"]), "voice_id_used": a["voice_id_used"],
+            "error": a["error"], "selected": a["id"] == s["selected_attempt_id"], "created_at": a["created_at"],
             "playable": bool(a["wav_path"]) and resolve_take(b, a) is not None, "fingerprint_ok": a["fingerprint"] == b["synth_fingerprint"],
             "versions": loads(a["versions_json"], {}),
         })

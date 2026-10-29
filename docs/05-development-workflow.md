@@ -13,7 +13,7 @@ python -m venv .venv                      # .venv/ is gitignored
 # needs on PATH: ffmpeg + ffprobe (tests that touch audio are skipped without them), node (JS syntax checks), bash (Git Bash)
 ```
 
-Run the tests from `src/app`: `..\..\.venv\Scripts\python -m pytest -q -p no:cacheprovider tests` (about 30 s, 96 tests).
+Run the tests from `src/app`: `..\..\.venv\Scripts\python -m pytest -q -p no:cacheprovider tests` (about 75 s, 158 tests).
 Run a local mock studio: from `src/app`, with `AUDIOBOOK_STUDIO_HOME` pointing at a scratch folder,
 `STUDIO_ENGINE=mock python -m studio serve --port 7891` (a worker subprocess is started automatically unless `STUDIO_NO_WORKER=1`).
 Kill stray servers on Windows with `Get-NetTCPConnection -LocalPort 7891 -State Listen | % { Stop-Process -Id $_.OwningProcess -Force }`.

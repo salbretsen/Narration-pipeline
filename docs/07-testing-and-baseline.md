@@ -5,7 +5,7 @@ done until the same checks pass (plus new tests for the new behaviour).
 
 ## Automated suite (`src/app/tests`, mock engine, real FFmpeg, FastAPI TestClient)
 
-Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **96 passed** (about 30 s). Tests needing ffmpeg are skipped
+Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **158 passed** (about 75 s; it was 96 at v0.2.x). Tests needing ffmpeg are skipped
 without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per test), the mock engine, a worker you drive in-process
 (`make_worker(faults).run_until_idle()`), and builders for TXT, DOCX, EPUB and WAV fixtures.
 
@@ -15,6 +15,7 @@ without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per t
 | `test_audio.py` (7) | acoustic QA on synthetic signals, WAV round trip and trim, audio sniffing, Range parsing, path validation, settings validation |
 | `test_integration.py` (13) | HTTP flows: upload two books, queue/reorder/duplicate protection, retries and flagging, review actions, assembly/exports/streaming/release gating, blocked exports, settings paths, voice upload and consent, security (CSRF, Host, traversal, tampered rows), crash recovery without endless retry, missing storage pause, failure isolation, narrator change confirmation, UI shell, About/version |
 | `test_auth.py` (11) | login/session cookies, forged tokens, roles, password change and confirmation, rate limiting, Host/LAN names, CSRF while signed in, network-bind refusal without users, auth store rules (including `remove_user`), folder browser (admin only, folders only, mkdir rules) |
+| `test_narrative.py` (59 functions) | v0.3: speaker attribution on fixture manuscripts (known cases, ambiguity flagged, aliases, threshold), segmentation invariants (exact once, in order, ceiling, scenes/headings, unrelated dialogue, long sentences, emotional splits, manual cut/join), context windows, Director schema/grounding/leak guard/cache/fallback/repair, continuity (grief, intentional change, escalation, resets), per-model delivery, migration v1 to v2, imports, voice assignment and targeted regeneration, audio-cache reuse, character merge and confirmed-fact precedence, boundary edits, Whisper modes, assembly order, project overrides, inspector, segment preview, pause/cancel/restart recovery, model-aware ordering, redirect, an HTTP stub LLM end to end. Fixtures in `narrative_fixtures.py`. The LLM tests use an httpx MockTransport or a local HTTP stub: **no language model runs in the suite**. |
 | `test_lab.py` (9) | sample-script lengths/variety, quality verdicts, the recording flow (upload → analysis → Whisper check → audition → create narrator), bad/clipped recordings, noise-floor estimation, certificate generation/reuse, HTTPS settings validation |
 
 What these cannot show: real speech quality, the GPU engine, a real browser's microphone, the LAN, macOS behaviour, launchd.
@@ -62,6 +63,31 @@ python tools/build_installer.py && bash install_audiobook_studio_claude.sh --ext
 
 `docs/lan_e2e_results.json` holds the machine-readable output of the first full LAN pass (it ends at the point the old harness crashed on a
 console encoding error; later full passes are summarised above).
+
+## Baseline results recorded at v0.3.0 (real M3 Max, 2026-10-29)
+
+`tools/e2e/narrative_real.py`: 19 of 19 checks passed on the second full run (the first run found a real bug, re-directing a segment did nothing, now fixed and covered by a unit test).
+Real Qwen3-TTS (CustomVoice, VoiceDesign, Base) and Whisper. The Narrative Director ran its **rules** engine: no LLM is installed on the Mac, so LLM output quality is unmeasured.
+Manuscript: 3 chapters, 511 words, 30 segments at import (46 once three characters had their own voices), 4 voices (Ryan narrator, Aiden preset, a designed voice, a clone made from real VoiceDesign speech).
+
+| Measure | Result |
+|---|---|
+| Text fidelity | all 511 source words appear once, in order, in the segments; longest segment 370 characters (ceiling 500) |
+| Pass 1 + Pass 2 (server side) | 0.025 s; the whole import request took 0.07 s |
+| Analysis job (summaries, 46 directions, rules Director) | 2.2 s; the Director itself 0.01 s |
+| TTS + Whisper QA, 46 segments | 106.9 s wall for 213 s of audio (overall RTF 0.50, median per-attempt RTF 0.35); 49 attempts, 3 retries; mean WER 1.3 %, max 33 % on a short segment |
+| Memory | peak GPU memory 16.7 GB (MLX); worker RSS peak 10.5 GB (sampled every 12 s, so a lower bound) |
+| QA outcome | 45 passed, 1 flagged: a 1.6 s line the model rendered in 0.7 s on all 4 attempts ("Suspiciously short"); very short segments are unstable on the real model and the flag worked as designed |
+| Delivery plumbing | the Base clone voice received no instruction in any of its 4 segments; CustomVoice segments with non-neutral direction received `instruct`; the text sent to the engine equalled the segment text for all 46 |
+| Targeted regeneration | giving one character another voice reset 9 of 46 segments (37 kept their take); 15.1 s to re-render |
+| Audio cache | switching the voice back reused all 9 earlier takes: 3.1 s instead of 15.1 s |
+| Director cache | re-directing 6 segments gave 6 cache hits and no new analysis (the second book's 46 directions were also all cache hits because the first run had cached identical text and context) |
+| Boundary edit | splitting one segment created 2, retired 1, left all others untouched; 9-12 s to re-render |
+| Smoke test (legacy path, same build) | PASS: 20/20 segments, M4B exported and validated |
+| Voice consistency (acoustic; f0 coefficient of variation across independent segments) | Ryan 0.14 (22 segments, includes dialogue vs narration prosody), Aiden 0.07 (2), designed voice 0.13 (4), clone 0.11 (2). Three of the four samples are tiny and pitch is a crude proxy: it shows drift is measurable, not that any voice is consistent |
+
+Not measured: LLM attribution/direction quality; audio quality or emotional accuracy by listening (nobody listened); books longer than about 500 words; `max_warm_models=1`; the
+real-microphone/LAN browser suites (not re-run for v0.3.0; the UI was driven locally against the mock engine in Edge/Playwright).
 
 ## Pitfalls when testing
 

@@ -168,6 +168,10 @@ class MlxQwenEngine:
             self._models[model_id] = model
             return model
 
+    def warm_models(self) -> list[str]:
+        with self._lock:
+            return list(self._models)
+
     def unload_all(self) -> None:
         with self._lock:
             self._models.clear()

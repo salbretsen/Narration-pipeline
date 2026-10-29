@@ -1021,3 +1021,49 @@ def test_analysis_survives_pause_and_a_worker_restart(client, ctx):
     worker_with(ctx).run_until_idle()
     assert client.get(f"/api/jobs/{job2['id']}").json()["status"] == "cancelled"
     assert client.get(f"/api/books/{bid}/narrative").json()["directed"] == len(all_segments(ctx, bid))
+
+
+def test_worker_prefers_segments_whose_model_is_already_loaded(client, ctx):
+    from studio.narrative import store as ST
+
+    bid = import_semantic(client)["id"]
+    hale = chars(client, bid)["Hale"]
+    d = client.post("/api/voices/design", json={"name": "Dr voice", "description": "A gruff older male voice, low and slow, with a dry edge."}).json()
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": d["id"]})
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
+        pending = rows(conn, "SELECT s.* FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.book_id=? ORDER BY c.idx, s.idx", (bid,))
+        first = pending[0]                                   # the chapter heading: narrator model
+        design_model = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (d["version"]["id"],))["model_id"]
+        narrator_model = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (book["voice_version_id"],))["model_id"]
+        assert design_model != narrator_model
+        assert ST.pick_segment(conn, book, first, [])["id"] == first["id"]                       # nothing loaded: book order
+        assert ST.pick_segment(conn, book, first, [narrator_model])["id"] == first["id"]
+        picked = ST.pick_segment(conn, book, first, [design_model])                               # only the design model is warm
+        assert picked["character_id"] == hale["id"] and picked["id"] != first["id"]
+        assert ST.pick_segment(conn, book, first, ["some/other-model"])["id"] == first["id"]     # nothing warm matches: no reordering
+    # the output is still assembled in segment order whatever the synthesis order was
+    eng = RecordingEngine()
+    eng.warm_models = lambda: [design_model]
+    w = worker_with(ctx, eng)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    assert all(s["status"] == "passed" for s in all_segments(ctx, bid))
+    assert eng.log[0]["kind"] == "design"
+
+
+def test_redirect_reruns_the_director_for_that_segment_through_the_cache(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    seg = all_segments(ctx, bid)[2]
+    with ctx.db.session() as conn:
+        hits0 = scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0)
+    assert client.post(f"/api/segments/{seg['id']}/redirect").status_code == 200
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 1
+    worker_with(ctx).run_until_idle()
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 0
+        assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) > hits0
+        assert len(rows(conn, "SELECT id FROM direction_log WHERE segment_id=?", (seg["id"],))) >= 2

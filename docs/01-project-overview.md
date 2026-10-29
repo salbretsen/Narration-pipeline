@@ -55,7 +55,7 @@ moves; authentication, TLS, service management; CLI; automated tests; end-to-end
 
 Verified, with evidence in doc 7:
 
-- 96 automated tests pass on the Windows dev machine with the **mock** engine and real FFmpeg.
+- 96 automated tests passed at v0.2.x; v0.3.0 has 158 (see doc 7). All use the **mock** engine and real FFmpeg.
 - On the M3 Max with the **real** engine: the smoke test passes (CustomVoice, Base cloning, VoiceDesign, queue of two
   manuscripts, chapter M4B) with 20/20 segments passing QA. Measured real-time factor 0.33 to 0.64 for presets/designed,
   about 0.4 for warm cloning; peak memory 8 to 15 GB.

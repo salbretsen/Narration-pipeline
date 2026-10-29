@@ -400,6 +400,30 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"])
 
 
+def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
+    """Which pending segment to synthesise next. Output order does not depend on synthesis order (chapters
+    are assembled by segment index), so when a book mixes voices that need different Qwen3-TTS models, prefer
+    a segment whose model is already loaded instead of reloading a model (about 30 s) for every switch."""
+    if not warm:
+        return first
+    vmodel = {r["id"]: r["model_id"] for r in rows(conn, "SELECT v.id, vv.model_id FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id")}
+    chmodel = {r["id"]: r["model_id"] for r in rows(
+        conn, """SELECT c.id, vv.model_id FROM characters c JOIN voice_versions vv ON vv.id=COALESCE(c.voice_version_id,
+                 (SELECT current_version_id FROM voices WHERE id=c.voice_id)) WHERE c.book_id=? AND c.voice_id IS NOT NULL AND c.archived=0""", (book["id"],))}
+    narr = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (book["voice_version_id"],))["model_id"]
+
+    def model_of(s: dict) -> str:
+        return vmodel.get(s.get("voice_override_id")) or chmodel.get(s.get("character_id")) or narr
+
+    if model_of(first) in warm:
+        return first
+    for s in rows(conn, """SELECT s.* FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.book_id=? AND s.status IN ('pending','synthesizing')
+                           ORDER BY c.idx, s.idx LIMIT ?""", (book["id"], window)):
+        if model_of(s) in warm:
+            return s
+    return first
+
+
 def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = None, include_approved: bool = False) -> list[int]:
     """Segments whose rendered take no longer matches the plan (voice or delivery changed) go back to
     pending; unchanged ones are untouched. -> ids of segments reset."""

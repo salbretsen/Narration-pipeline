@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.3.0 (build 20261028235813-7911947c)
+#  Version v0.3.0 (build 20261029001754-2ac2760d)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -21,7 +21,7 @@ set -Eeuo pipefail
 umask 022
 
 STUDIO_VERSION="v0.3.0"
-BUILD_ID="20261028235813-7911947c"
+BUILD_ID="20261029001754-2ac2760d"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -464,7 +464,7 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_f5991d1fa71c__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_3278ad4c85c5__'
 # Audiobook Studio
 
 **v0.3.0** · Developed by Scott Albretsen, TSAL Solutions LLC
@@ -577,6 +577,25 @@ works. Without HTTPS the lab explains this and you can still upload a recording 
 **Several takes?** One narrator uses **one reference clip**. Record 2–4 neutral takes and audition them
 to keep the best. Keep the emotional register neutral-to-warm and consistent: a clone inherits the delivery
 of its reference. For a different mood, create a separate narrator from an emotional take.
+
+### Characters, voices and delivery (Narrative, optional)
+
+Settings > **Narrative** turns on *intelligent semantic segmentation* for books imported from then on. The studio then reads each chapter
+twice: first to find chapters, scenes, narration versus dialogue and **who speaks each line** (from speech tags, names, pronouns and
+conversation turn-taking; a line with no evidence is **flagged "speaker?" for review**, never guessed), then to cut it into narration
+segments (default ceiling 500 characters) at natural boundaries. Open a book's **Narrative** page to see the analysis stages, the
+**character directory** (aliases, gender, accent, personality, and a **voice per character**) and story notes.
+
+- Giving a character a voice re-cuts only the affected text and regenerates only those segments; changing it back reuses the earlier audio.
+- The **Segment Inspector** (from the review list or the Narrative page) shows the text with its surrounding context (analysis only, never
+  spoken), who the studio thinks speaks it and why, the delivery direction, the exact instruction and text sent to the voice engine, and lets
+  you correct the speaker, voice, emotion, intensity, pacing and boundaries, preview the segment, and regenerate it.
+- Turn on the **Narrative Director** to give each segment an emotion, intensity, pacing and delivery note, kept consistent from one segment
+  to the next. Without a local LLM it uses a built-in rules engine; to use an LLM, run any OpenAI-compatible local server (LM Studio,
+  `mlx_lm.server`, ...) and set its URL and model in Settings > Narrative. Delivery notes only reach voices that accept them: **preset
+  (CustomVoice) voices** take an instruction, **designed voices** get it appended to their description (their sound can drift), **cloned
+  voices** cannot be directed and rely on the reference clip.
+- Whisper verification can be set to every segment (default), a sample, or off.
 
 ### Drafts and release
 
@@ -750,7 +769,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_f5991d1fa71c__
+__STUDIO_EOF_3278ad4c85c5__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -3363,7 +3382,7 @@ def run_checks(ctx, deep: bool = False) -> list[dict]:
     out.append(_check("Studio version", "ok", __version__))
     return out
 __STUDIO_EOF_df299aa34968__
-cat > "$DEST/studio/engines.py" <<'__STUDIO_EOF_9df2a6804c72__'
+cat > "$DEST/studio/engines.py" <<'__STUDIO_EOF_5fb1a9635011__'
 """Speech synthesis and recognition engines.
 
 ``MlxQwenEngine`` / ``MlxWhisperASR`` run real local inference on Apple Silicon through
@@ -3533,6 +3552,10 @@ class MlxQwenEngine:
             log.info("Loaded %s in %.1fs (sample rate %s)", model_id, time.time() - t0, getattr(model, "sample_rate", "?"))
             self._models[model_id] = model
             return model
+
+    def warm_models(self) -> list[str]:
+        with self._lock:
+            return list(self._models)
 
     def unload_all(self) -> None:
         with self._lock:
@@ -3755,7 +3778,7 @@ def create_asr(ctx) -> object:
     if ctx.engine_mode == "mock":
         return MockASR()
     return MlxWhisperASR(s.models.asr_model, allow_downloads=s.models.allow_downloads)
-__STUDIO_EOF_9df2a6804c72__
+__STUDIO_EOF_5fb1a9635011__
   mkdir -p "$DEST/studio/narrative"
 cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
 """Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
@@ -3774,7 +3797,7 @@ Module map
   voicecheck   acoustic voice-consistency measurement across independently generated segments
 """
 __STUDIO_EOF_6fc98fbc881d__
-cat > "$DEST/studio/narrative/analysis.py" <<'__STUDIO_EOF_c3a3ee251354__'
+cat > "$DEST/studio/narrative/analysis.py" <<'__STUDIO_EOF_476c939e3196__'
 """Analysis stages that run in the worker, ahead of synthesis.
 
 Stage order: structure -> attribution (LLM, only for flagged spans) -> characters -> summaries ->
@@ -4215,7 +4238,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
             save(f"Summaries: {r['made']} chapter(s) summarised, {r['skipped']} unchanged")
             return "continue"
         if "director" in stages and ns.director_enabled:
-            r = director_batch(ctx, bid, ns.director_lookahead, client)
+            r = director_batch(ctx, bid, ns.director_lookahead, client, redo_stale=True)
             prog["directed"] = prog.get("directed", 0) + r["directed"]
             if r["directed"]:
                 save(f"Director: {prog['directed']} segment(s) directed ({r['cache_hits']} cached, {r['llm_calls']} LLM calls, {r['rules']} rules)")
@@ -4233,7 +4256,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
         with ctx.db.tx() as conn:
             ST.set_stage(conn, bid, "director" if prog.get("resegment") else "structure", "error", None, f"{type(exc).__name__}: {exc}"[:400])
         raise
-__STUDIO_EOF_c3a3ee251354__
+__STUDIO_EOF_476c939e3196__
 cat > "$DEST/studio/narrative/cast.py" <<'__STUDIO_EOF_cf297e52cdeb__'
 """Per-manuscript characters and story notes.
 
@@ -5323,7 +5346,7 @@ def check_coverage(struct: ChapterStructure, segs: list[Seg]) -> list[str]:
             break
     return problems[:10]
 __STUDIO_EOF_42741318923c__
-cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_07e3bd8e8640__'
+cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_0f322d908c44__'
 """Persistence and orchestration for semantic segmentation (Pass 1 + Pass 2).
 
 Segments keep stable ids. Re-segmentation (after a voice assignment, a merge of characters, a
@@ -5726,6 +5749,30 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"])
 
 
+def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
+    """Which pending segment to synthesise next. Output order does not depend on synthesis order (chapters
+    are assembled by segment index), so when a book mixes voices that need different Qwen3-TTS models, prefer
+    a segment whose model is already loaded instead of reloading a model (about 30 s) for every switch."""
+    if not warm:
+        return first
+    vmodel = {r["id"]: r["model_id"] for r in rows(conn, "SELECT v.id, vv.model_id FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id")}
+    chmodel = {r["id"]: r["model_id"] for r in rows(
+        conn, """SELECT c.id, vv.model_id FROM characters c JOIN voice_versions vv ON vv.id=COALESCE(c.voice_version_id,
+                 (SELECT current_version_id FROM voices WHERE id=c.voice_id)) WHERE c.book_id=? AND c.voice_id IS NOT NULL AND c.archived=0""", (book["id"],))}
+    narr = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (book["voice_version_id"],))["model_id"]
+
+    def model_of(s: dict) -> str:
+        return vmodel.get(s.get("voice_override_id")) or chmodel.get(s.get("character_id")) or narr
+
+    if model_of(first) in warm:
+        return first
+    for s in rows(conn, """SELECT s.* FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.book_id=? AND s.status IN ('pending','synthesizing')
+                           ORDER BY c.idx, s.idx LIMIT ?""", (book["id"], window)):
+        if model_of(s) in warm:
+            return s
+    return first
+
+
 def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = None, include_approved: bool = False) -> list[int]:
     """Segments whose rendered take no longer matches the plan (voice or delivery changed) go back to
     pending; unchanged ones are untouched. -> ids of segments reset."""
@@ -6029,7 +6076,7 @@ def narrative_status(ctx, book_id: int) -> dict:
             "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
             "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
                          "semantic_segmentation": ns.semantic_segmentation}}
-__STUDIO_EOF_07e3bd8e8640__
+__STUDIO_EOF_0f322d908c44__
 cat > "$DEST/studio/narrative/structure.py" <<'__STUDIO_EOF_e99ef7430c0a__'
 """Pass 1 - manuscript structure and speaker analysis.
 
@@ -8869,7 +8916,7 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_5c7f622586db__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_a8dde92edb17__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_c09924757e32__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -9943,7 +9990,9 @@ def segment_detail(ctx, segment_id: int) -> dict:
             "seed": a["seed"], "temperature": a["temperature"], "text_spoken": a["text_spoken"], "duration_s": a["duration_s"], "wer": a["wer"],
             "wer_raw": asr.get("wer_raw"), "asr_text": a["asr_text"], "diff": asr.get("diff", []), "counts": asr.get("counts"),
             "issues": loads(a["issues_json"], []), "acoustics": loads(a["acoustics_json"], {}), "score": a["score"], "passed": a["passed"],
-            "rtf": a["rtf"], "error": a["error"], "selected": a["id"] == s["selected_attempt_id"], "created_at": a["created_at"],
+            "rtf": a["rtf"], "peak_mem_gb": a["peak_mem_gb"], "instruct_used": a["instruct_used"], "gen_key": a["gen_key"],
+            "delivery_applied": a["delivery_applied"], "asr_skipped": bool(a["asr_skipped"]), "voice_id_used": a["voice_id_used"],
+            "error": a["error"], "selected": a["id"] == s["selected_attempt_id"], "created_at": a["created_at"],
             "playable": bool(a["wav_path"]) and resolve_take(b, a) is not None, "fingerprint_ok": a["fingerprint"] == b["synth_fingerprint"],
             "versions": loads(a["versions_json"], {}),
         })
@@ -10210,7 +10259,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_a8dde92edb17__
+__STUDIO_EOF_c09924757e32__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -16050,7 +16099,7 @@ export async function render(view) {
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
 __STUDIO_EOF_e2b77877580d__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_9e12ba5609e9__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_4bc2e4b7c08d__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -16487,6 +16536,10 @@ class Worker:
         if seg is None:
             self._finish_book(job, book)
             return
+        warm = getattr(self.tts, "warm_models", None)
+        if warm is not None:
+            with self.ctx.db.session() as conn:
+                seg = N_store.pick_segment(conn, book, seg, warm())
         ns = N_store.book_ns(self.ctx, book)
         if ns.director_enabled:
             with self.ctx.db.session() as conn:
@@ -16580,7 +16633,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_9e12ba5609e9__
+__STUDIO_EOF_4bc2e4b7c08d__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
@@ -17699,7 +17752,7 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
 __STUDIO_EOF_1c0cca55ee5a__
-cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_7e9fb985e21b__'
+cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_41e0f321c7ec__'
 """Semantic segmentation, speaker attribution, Narrative Director, continuity and their integration
 with the queue. Pure-logic tests run on the fixture manuscripts in ``narrative_fixtures``; integration
 tests use the real worker/scheduler/SQLite with the MOCK engine (synthetic tones, not speech).
@@ -18723,7 +18776,53 @@ def test_analysis_survives_pause_and_a_worker_restart(client, ctx):
     worker_with(ctx).run_until_idle()
     assert client.get(f"/api/jobs/{job2['id']}").json()["status"] == "cancelled"
     assert client.get(f"/api/books/{bid}/narrative").json()["directed"] == len(all_segments(ctx, bid))
-__STUDIO_EOF_7e9fb985e21b__
+
+
+def test_worker_prefers_segments_whose_model_is_already_loaded(client, ctx):
+    from studio.narrative import store as ST
+
+    bid = import_semantic(client)["id"]
+    hale = chars(client, bid)["Hale"]
+    d = client.post("/api/voices/design", json={"name": "Dr voice", "description": "A gruff older male voice, low and slow, with a dry edge."}).json()
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": d["id"]})
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
+        pending = rows(conn, "SELECT s.* FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.book_id=? ORDER BY c.idx, s.idx", (bid,))
+        first = pending[0]                                   # the chapter heading: narrator model
+        design_model = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (d["version"]["id"],))["model_id"]
+        narrator_model = row(conn, "SELECT model_id FROM voice_versions WHERE id=?", (book["voice_version_id"],))["model_id"]
+        assert design_model != narrator_model
+        assert ST.pick_segment(conn, book, first, [])["id"] == first["id"]                       # nothing loaded: book order
+        assert ST.pick_segment(conn, book, first, [narrator_model])["id"] == first["id"]
+        picked = ST.pick_segment(conn, book, first, [design_model])                               # only the design model is warm
+        assert picked["character_id"] == hale["id"] and picked["id"] != first["id"]
+        assert ST.pick_segment(conn, book, first, ["some/other-model"])["id"] == first["id"]     # nothing warm matches: no reordering
+    # the output is still assembled in segment order whatever the synthesis order was
+    eng = RecordingEngine()
+    eng.warm_models = lambda: [design_model]
+    w = worker_with(ctx, eng)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    assert all(s["status"] == "passed" for s in all_segments(ctx, bid))
+    assert eng.log[0]["kind"] == "design"
+
+
+def test_redirect_reruns_the_director_for_that_segment_through_the_cache(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    seg = all_segments(ctx, bid)[2]
+    with ctx.db.session() as conn:
+        hits0 = scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0)
+    assert client.post(f"/api/segments/{seg['id']}/redirect").status_code == 200
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 1
+    worker_with(ctx).run_until_idle()
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 0
+        assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) > hits0
+        assert len(rows(conn, "SELECT id FROM direction_log WHERE segment_id=?", (seg["id"],))) >= 2
+__STUDIO_EOF_41e0f321c7ec__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -18961,10 +19060,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_b469221398a6__'
-20261028235813-7911947c
-__STUDIO_EOF_b469221398a6__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e8ea5c765471__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_e175d1667114__'
+20261029001754-2ac2760d
+__STUDIO_EOF_e175d1667114__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e255908b68f0__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -18974,7 +19073,7 @@ db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studi
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
 a92815240f706a833c8352b8860d74df246954259c6d4c19e2359e924f8c7d72  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-f5991d1fa71ca266dc8d699eb0cfeb69f9e18ccacfe1980b09a7c37ec8c8b6f4  README.md
+3278ad4c85c5c51123720d8726a9d47547a98b47c22bb4632d4966e7da0318f4  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
 b430e4e22eca466a70192b2d4435c0c011f41163b3717b7aa7ef41da83efdd1e  studio/__init__.py
@@ -18988,16 +19087,16 @@ c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.p
 fb2d7cc679920f354415e6c7f1dd0b9bfc844fe9a8960acae3c9453876319528  studio/context.py
 be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
 df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
-9df2a6804c7244f4b4ee0b71da0c7f0d1e8080cd70ab16059dba315d325331d3  studio/engines.py
+5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
-c3a3ee25135498f9a8f345ec36df9096ed3c754b11c19893586908daf967e4a8  studio/narrative/analysis.py
+476c939e31963c205032594ed6df68700c005023d8971db5467c7209870848ae  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
 29cef5adfd5e89d915811a0b9bbaca954bfb230daeeccd8ff47d83344defb31a  studio/narrative/continuity.py
 708bc7550271f7cbc056d84fdaae78f958fb27036da77c42a34509e93281890c  studio/narrative/delivery.py
 4f4935b0c20f0400f0348476f8f9a5ebefc56cf4ca22272f31c97d9c8d27af14  studio/narrative/director.py
 524e9293fdbad5ba9940ae6d4b3f97165de5c04b851ce798a473b44d1d725b51  studio/narrative/llm.py
 42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
-07e3bd8e86404574c701e270964e2b8ca13075646ddc278e5f246a42297cc7b5  studio/narrative/store.py
+0f322d908c4496a58aeef60d1440b8ee2c7bf7180fe0f32ce66b878c317b9b8f  studio/narrative/store.py
 e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
 7443afaba3bf1e77c6b6cb5af09210f66a24fd4df2c92efeb92da31f3b12e138  studio/narrative/vocab.py
 fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrative/voicecheck.py
@@ -19007,7 +19106,7 @@ fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrati
 5a45663174aeac322ec15751f3c980782338f8b8d455e7b1e913ce410e1108dc  studio/pipeline.py
 0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
-a8dde92edb17b748bcc5d9956112781e6b7776487a00397d26bee2206b7ccb84  studio/services.py
+c09924757e3271f006f7a90837971cbacfe6f43ab77a4e4bcb98784d925cc0d3  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
@@ -19036,17 +19135,17 @@ c628a052087f18c4d8b751e949839fb1bc41290f4a83f38f58bd9ca4e8be75ed  studio/web/sta
 7c09d161bd59894e92a5e675b4fb4e7bbf5e533a552173a7e1e98e4491c04725  studio/web/static/js/views/settings.js
 513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
-9e12ba5609e9145ceb2211dc3019e4791bdaa668ba7f68117c6c3b6f5c61dae5  studio/worker.py
+4bc2e4b7c08dc3ea68f8fc9363a5c9d1f1b7695ca6a73f87d7f515854fa77f42  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
 309007d956a5082862268889b0860c6346ac9c435c11b80128f4bfc1bed3ccfe  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
-7e9fb985e21bdf8f9f85afc54945599efd3c8438ca5686bced680f92f2998b49  tests/test_narrative.py
+41e0f321c7eca31ca3bd24c9187d1d1c001792b688c1c53fdd3f9885b2cc77da  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-b469221398a64ff9c6296457f0ef113b8fb7b6cca9854b963da82657e9f606f0  BUILD
-__STUDIO_EOF_e8ea5c765471__
+e175d1667114602eb96a62aff6c86b8b5f07a26163a8fe234f2ffb08bab2c0c7  BUILD
+__STUDIO_EOF_e255908b68f0__
 }
 
 verify_manifest() {

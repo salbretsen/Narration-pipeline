@@ -18,6 +18,7 @@ If you are a new session (human or AI), read these in order. Each file is self-c
 | 6 | [06-deployment-and-operations.md](06-deployment-and-operations.md) | The M3 Max deployment, redeploying, service, TLS, accounts, logs, troubleshooting |
 | 7 | [07-testing-and-baseline.md](07-testing-and-baseline.md) | Test inventory and the checklist that **establishes a baseline before you change anything** |
 | 8 | [08-decisions-gotchas-backlog.md](08-decisions-gotchas-backlog.md) | Why things are the way they are, traps already hit, known limits, backlog |
+| 9 | [09-narrative-pipeline.md](09-narrative-pipeline.md) | v0.3 semantic segmentation, Narrative Director, continuity, characters, per-model delivery, caching |
 
 Also: `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
 the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end scripts), `screenshots/`.
@@ -35,3 +36,4 @@ the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end s
   rebuild the installer; run the tests; commit on a version branch and tag; never touch the Mac's firewall or Homebrew;
   use temporary accounts for authenticated testing and remove them; never store or print real passwords in files.
 - **Before adding features:** run the baseline checklist in doc 7 so you know what "working" looks like.
+- **v0.3 adds an opt-in narrative layer** (multi-character voices, delivery direction, segment inspector). It is off by default; doc 9 is its reference.

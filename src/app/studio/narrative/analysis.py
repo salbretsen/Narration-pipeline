@@ -438,7 +438,7 @@ def analysis_step(ctx, job: dict, llm_transport=None) -> str:
             save(f"Summaries: {r['made']} chapter(s) summarised, {r['skipped']} unchanged")
             return "continue"
         if "director" in stages and ns.director_enabled:
-            r = director_batch(ctx, bid, ns.director_lookahead, client)
+            r = director_batch(ctx, bid, ns.director_lookahead, client, redo_stale=True)
             prog["directed"] = prog.get("directed", 0) + r["directed"]
             if r["directed"]:
                 save(f"Director: {prog['directed']} segment(s) directed ({r['cache_hits']} cached, {r['llm_calls']} LLM calls, {r['rules']} rules)")

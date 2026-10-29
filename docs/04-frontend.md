@@ -34,6 +34,8 @@ server restart). `index.html` loads `/static/app.css` and the module `/static/js
 | `js/views/review.js` | review workspace (segment list, detail, takes, ASR diff, shortcuts J K A R E P /) |
 | `js/views/book.js` | book page: chapters/masters, exports, QA report, release signoff, metadata, narrator, storage move |
 | `js/views/settings.js` | every setting, storage paths with Check / Browse / Finder, the folder-browser dialog |
+| `js/views/narrative.js`, `narrative-fields.js` | route `#/narrative/ID`: analysis stages and actions, project overrides, character directory (edit, merge, voices), story notes; the settings fields are shared with Settings |
+| `js/views/inspector.js` | route `#/inspect/ID`: the Segment Inspector (context, attribution evidence, direction layers, instruction sent, boundary editing, preview, attempts) |
 | `js/views/about.js` | About page (version, credits), worker, environment check, QA limits, licences |
 
 ## Patterns
