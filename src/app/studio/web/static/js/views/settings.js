@@ -165,7 +165,10 @@ function narrativeCard(n, secrets) {
         The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
         Key changes take effect immediately and do not need <em>Save settings</em>.</p>` : ""}
       <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>
-      ${title.startsWith("Local LLM") ? keyField("llm", secrets && secrets.llm) : ""}`)}
+      ${title.startsWith("Local LLM") ? html`${keyField("llm", secrets && secrets.llm)}
+        <div class="btn-group"><button type="button" class="btn small" data-act="llm-test">Test connection</button></div>
+        <div id="llm-test-result" class="small" role="status" aria-live="polite"></div>
+        <p class="small muted">Tests the address and model typed above (even before saving), using the saved key. It sends one tiny question and touches no book.</p>` : ""}`)}
   </section>`;
 }
 
@@ -286,6 +289,18 @@ export async function render(view) {
       const f = el.closest(".key-field"), tmp = document.createElement("div");
       setHTML(tmp, keyField(slot, s.secrets[slot]));
       f.replaceWith(tmp.firstElementChild);
+      return;
+    }
+    if (b.dataset.act === "llm-test") {
+      const out = view.querySelector("#llm-test-result");
+      setHTML(out, html`Testing...`);
+      try {
+        const r = await busy(b, () => post("/api/narrative/llm/test", {
+          base_url: view.querySelector('[name="narrative.llm.base_url"]').value.trim(),
+          model: view.querySelector('[name="narrative.llm.model"]').value.trim() }));
+        setHTML(out, html`<ul class="plain">${r.checks.map((c) => html`<li class="${c.ok ? "good-text" : "bad-text"}">${c.ok ? "✓" : "✗"} <strong>${c.name}:</strong> ${c.detail}</li>`)}</ul>
+          <p><strong>${r.ok ? "The endpoint and model work." : "The test failed."}</strong> (${r.seconds} s)</p>`);
+      } catch { setHTML(out, html``); } // the server's message is already shown
       return;
     }
     const input = view.querySelector(`[name="${b.dataset.field}"]`);

@@ -85,6 +85,71 @@ class LLMClient:
         except Exception as exc:
             raise LLMError(f"Unexpected LLM response shape: {str(data)[:200]}") from exc
 
+    def test_connection(self) -> dict:
+        """Check the endpoint and model name without touching any book: list the models (informational; not every server offers it),
+        then ask one tiny question. Returns ``{ok, checks:[{name, ok, detail}], seconds}``; never raises."""
+        import httpx
+
+        checks: list[dict] = []
+        t0 = time.time()
+
+        def done(ok: bool) -> dict:
+            return {"ok": ok, "checks": checks, "seconds": round(time.time() - t0, 2)}
+
+        if not self.cfg.model.strip():
+            checks.append({"name": "Model name", "ok": False, "detail": "Enter the model name first."})
+            return done(False)
+        try:
+            headers = self._headers()
+        except LLMError as exc:
+            checks.append({"name": "API key", "ok": False, "detail": str(exc)})
+            return done(False)
+        base = self.cfg.base_url
+        try:
+            with httpx.Client(timeout=min(self.cfg.timeout_s, 30.0), transport=self._transport) as c:
+                try:
+                    r = c.get(f"{base}/models", headers=headers)
+                except httpx.HTTPError as exc:
+                    checks.append({"name": "Reach the endpoint", "ok": False,
+                                   "detail": f"Could not connect to {base}: {type(exc).__name__}. Is the server running, and is the address and port right?"})
+                    return done(False)
+                if r.status_code in (401, 403):
+                    checks.append({"name": "Reach the endpoint", "ok": False, "detail": f"The server answered HTTP {r.status_code}: the API key is missing or wrong."})
+                    return done(False)
+                checks.append({"name": "Reach the endpoint", "ok": True, "detail": f"{base} answered (HTTP {r.status_code})."})
+                ids: list[str] = []
+                if r.status_code == 200:
+                    try:
+                        ids = [str(m.get("id")) for m in r.json().get("data", []) if isinstance(m, dict)]
+                    except ValueError:
+                        ids = []
+                if ids:
+                    listed = self.cfg.model in ids
+                    checks.append({"name": "Model is listed", "ok": listed,
+                                   "detail": f"'{self.cfg.model}' is available." if listed else
+                                   f"'{self.cfg.model}' is not in the server's list. Available: {', '.join(ids[:8])}{' ...' if len(ids) > 8 else ''}"})
+                else:
+                    checks.append({"name": "Model is listed", "ok": True, "detail": "The server does not list its models; trying the model directly."})
+                body = {"model": self.cfg.model, "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+                        "temperature": 0, "max_tokens": 16, "stream": False}
+                try:
+                    r = c.post(f"{base}/chat/completions", headers=headers, json=body)
+                except httpx.HTTPError as exc:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"No answer: {type(exc).__name__}. A slow model may need a longer timeout."})
+                    return done(False)
+                if r.status_code != 200:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"HTTP {r.status_code}: {r.text[:200]}"})
+                    return done(False)
+                try:
+                    reply = str(r.json()["choices"][0]["message"]["content"] or "").strip()
+                except Exception:
+                    checks.append({"name": "Ask the model", "ok": False, "detail": f"The reply was not a chat completion: {r.text[:160]}"})
+                    return done(False)
+                checks.append({"name": "Ask the model", "ok": True, "detail": f"Replied: {reply[:80] or '(empty)'}"})
+        except Exception as exc:  # defensive: a test must report, never crash
+            checks.append({"name": "Unexpected error", "ok": False, "detail": f"{type(exc).__name__}: {exc}"})
+        return done(all(c["ok"] for c in checks))
+
     def chat_json(self, system: str, user: str, validate: Callable[[dict], T], retries: int = 1) -> T:
         """Ask for one JSON object and validate it. One repair round is attempted with the
         validation error fed back to the model."""

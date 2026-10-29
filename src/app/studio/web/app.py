@@ -181,6 +181,11 @@ class PasswordReq(_Req):
     confirm: str = Field(max_length=200)
 
 
+class LLMTestReq(_Req):
+    base_url: str = Field(max_length=300)
+    model: str = Field("", max_length=200)
+
+
 class UserReq(_Req):
     username: str = Field(max_length=40)
     password: str = Field(min_length=10, max_length=200)
@@ -850,6 +855,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     @app.put("/api/settings")
     def api_settings_put(patch: dict[str, Any]):
         return S.update_settings(ctx, patch)
+
+    @app.post("/api/narrative/llm/test")
+    def api_llm_test(req: LLMTestReq):
+        return S.test_llm(ctx, req.base_url, req.model)
 
     @app.put("/api/secrets/{slot}")
     def api_secret_put(slot: str, req: SecretReq, request: Request):

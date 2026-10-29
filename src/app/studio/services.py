@@ -1307,6 +1307,21 @@ def get_settings(ctx) -> dict:
             "secrets": ctx.secrets.status()}
 
 
+def test_llm(ctx, base_url: str, model: str, transport=None) -> dict:
+    """Try the endpoint and model currently typed in Settings (saved or not); uses the saved key slot and key-env setting."""
+    from pydantic import ValidationError
+
+    from .config import LLMSettings
+    from .narrative.llm import LLMClient
+
+    saved = ctx.settings().narrative.llm
+    try:
+        cfg = LLMSettings(provider="openai_compatible", base_url=base_url, model=model, api_key_env=saved.api_key_env, timeout_s=30.0)
+    except ValidationError as exc:
+        raise ServiceError("; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()), 422)
+    return LLMClient(cfg, transport=transport, secrets=ctx.secrets).test_connection()
+
+
 def set_secret(ctx, slot: str, value: str | None, actor: str = "operator") -> dict:
     """Save (or, with value=None, remove) the API key in a slot. The key itself is never audited or returned."""
     try:
