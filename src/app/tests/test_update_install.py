@@ -428,6 +428,12 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     assert man["python"].replace(chr(92), "/").endswith("app/venv/bin/python") and man["label"] == "com.audiobookstudio.app"
     r = _cli("configure", "--manifest-only", env_extra=env)
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
+    r = _cli("configure", "--lan", env_extra=env)
+    sv = json.loads((root / "state" / "config" / "settings.json").read_text())["server"]
+    assert r.returncode == 0 and sv["host"] == "0.0.0.0" and sv["allow_remote"] and sv["https_enabled"]
+    r = _cli("configure", "--local-only", env_extra=env)
+    sv = json.loads((root / "state" / "config" / "settings.json").read_text())["server"]
+    assert r.returncode == 0 and sv["host"] == "127.0.0.1" and not sv["allow_remote"] and not sv["https_enabled"]
     r = _cli("doctor", "--json", env_extra=env)
     names = {c["name"]: c for c in json.loads(r.stdout)}
     assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "ok"

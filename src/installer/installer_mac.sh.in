@@ -36,6 +36,7 @@ LOGS="${AUDIOBOOK_STUDIO_LOGS:-$HOME/Library/Logs/Audiobook Studio}"
 LIBRARY=""
 MODEL_CACHE=""
 PORT=""
+LOCAL_ONLY=0
 ASSUME_YES=0
 CHECK_ONLY=0
 DOWNLOAD_MODELS=""      # "", yes, all, no
@@ -72,6 +73,7 @@ Other
   --migrate-from DIR   Adopt an old Bash/Homebrew installation (usually ~/audiobook-studio-claude). Its data is copied and
                        backed up, the new backend is tested, and only then is the old service replaced. The old folder is kept.
   --keep-network       With --migrate-from: keep serving the LAN if the old install did (default: this Mac only)
+  --local-only         Serve this Mac only (127.0.0.1). Default for a new install: serve the LAN (HTTP and HTTPS); sign-in is always required.
   --admin-user NAME    Name of the first administrator (default: admin). A random password is shown once.
   --no-service         Install but do not register the login service.
   --check              Run the pre-flight checks and stop. Changes nothing.
@@ -100,6 +102,7 @@ while [ $# -gt 0 ]; do
     --no-models) DOWNLOAD_MODELS="no" ;;
     --migrate-from) need_val "$@"; MIGRATE_FROM="$2"; shift ;;
     --keep-network) KEEP_NETWORK=1 ;;
+    --local-only) LOCAL_ONLY=1 ;;
     --admin-user) need_val "$@"; ADMIN_USER="$2"; shift ;;
     --no-service) NO_SERVICE=1 ;;
     --check) CHECK_ONLY=1 ;;
@@ -412,6 +415,7 @@ configure_state() {
   if [ "$fresh" = 1 ] || [ -n "$LIBRARY_FLAG" ]; then set -- "$@" --library "$LIBRARY"; fi
   if [ "$fresh" = 1 ] || [ -n "$MODEL_FLAG" ]; then set -- "$@" --model-cache "$MODEL_CACHE"; fi
   if [ -n "$PORT" ]; then set -- "$@" --port "$PORT"; fi
+  if [ "$LOCAL_ONLY" = 1 ]; then set -- "$@" --local-only; elif [ "$fresh" = 1 ] && [ -z "$MIGRATE_FROM" ]; then set -- "$@" --lan; fi
   studio "$@"
   ensure_admin
 }

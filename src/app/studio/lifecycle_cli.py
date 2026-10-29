@@ -223,6 +223,12 @@ def cmd_configure(a):
     if a.port:
         s.server.port = a.port
         changed.append("port")
+    if a.lan:
+        s.server.allow_remote, s.server.https_enabled, s.server.host = True, True, "0.0.0.0"   # validated per assignment: allow first
+        changed.append("LAN serving (sign-in required)")
+    elif a.local_only:
+        s.server.host, s.server.allow_remote, s.server.https_enabled = "127.0.0.1", False, False
+        changed.append("this Mac only")
     if changed:
         ctx.save_settings(s)
     _write_manifest(layout)
@@ -271,6 +277,8 @@ def register(sub) -> None:
     sp.add_argument("--library")
     sp.add_argument("--model-cache")
     sp.add_argument("--port", type=int)
+    sp.add_argument("--lan", action="store_true", help="serve the LAN (HTTP + HTTPS); sign-in stays required")
+    sp.add_argument("--local-only", action="store_true", help="serve this Mac only (127.0.0.1)")
     sp.add_argument("--manifest-only", action="store_true", help="write only app/service.json (touches no data)")
     sp.set_defaults(func=cmd_configure)
     sp = sub.add_parser("migrate-legacy", help="adopt a Bash/Homebrew-era installation (backs it up first, never deletes it)")

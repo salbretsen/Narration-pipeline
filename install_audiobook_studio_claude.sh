@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.6 (build 20261029131033-12e81564)
+#  Version v0.5.7 (build 20261029131700-bd49b995)
 #
 #  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
 #  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
@@ -23,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.6"
-BUILD_ID="20261029131033-12e81564"
+STUDIO_VERSION="v0.5.7"
+BUILD_ID="20261029131700-bd49b995"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -416,11 +416,16 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_84ee04843a43__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_4978f853ba9a__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.5.7
+- Added the MIT `LICENSE` (copyright notice must be kept: others may use it if properly credited).
+- A fresh managed install now serves the LAN by default (HTTP and HTTPS, sign-in required); `--local-only` restricts it to this Mac. Existing
+  installs and `--migrate-from` keep their current network setting. `audiobook-studio configure --lan | --local-only`.
 
 ## v0.5.6
 - Documentation only: dropped the GitHub branch/tag protection setup (roadmap B3) as unnecessary for this tool. The automatic workflow guard stays; no owner-side configuration is required.
@@ -551,7 +556,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_84ee04843a43__
+__STUDIO_EOF_4978f853ba9a__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -581,10 +586,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_bcb49fb8909b__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_4606b61eb443__'
 # Audiobook Studio
 
-**v0.5.6** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.7** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -916,7 +921,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_bcb49fb8909b__
+__STUDIO_EOF_4606b61eb443__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2715,7 +2720,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_3aa191c7cf24__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_678d1f664202__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2724,13 +2729,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_3aa191c7cf24__
+__STUDIO_EOF_678d1f664202__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -6193,7 +6198,7 @@ def migrate_legacy(old_home: Path, layout: Layout, dry_run: bool = False, keep_n
          f"To go back: restore {bk / (LEGACY_LABEL + '.plist')} to ~/Library/LaunchAgents and stop the new service.")
     return 0
 __STUDIO_EOF_b799e3082700__
-cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_d9d33993f68e__'
+cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_17909c976256__'
 """Command-line lifecycle: ``version``, ``start|stop|restart|status|logs``, ``service install|uninstall``, ``update``, ``migrate-legacy``.
 These talk to the per-user service through the platform layer; they never need sudo."""
 from __future__ import annotations
@@ -6419,6 +6424,12 @@ def cmd_configure(a):
     if a.port:
         s.server.port = a.port
         changed.append("port")
+    if a.lan:
+        s.server.allow_remote, s.server.https_enabled, s.server.host = True, True, "0.0.0.0"   # validated per assignment: allow first
+        changed.append("LAN serving (sign-in required)")
+    elif a.local_only:
+        s.server.host, s.server.allow_remote, s.server.https_enabled = "127.0.0.1", False, False
+        changed.append("this Mac only")
     if changed:
         ctx.save_settings(s)
     _write_manifest(layout)
@@ -6467,6 +6478,8 @@ def register(sub) -> None:
     sp.add_argument("--library")
     sp.add_argument("--model-cache")
     sp.add_argument("--port", type=int)
+    sp.add_argument("--lan", action="store_true", help="serve the LAN (HTTP + HTTPS); sign-in stays required")
+    sp.add_argument("--local-only", action="store_true", help="serve this Mac only (127.0.0.1)")
     sp.add_argument("--manifest-only", action="store_true", help="write only app/service.json (touches no data)")
     sp.set_defaults(func=cmd_configure)
     sp = sub.add_parser("migrate-legacy", help="adopt a Bash/Homebrew-era installation (backs it up first, never deletes it)")
@@ -6474,7 +6487,7 @@ def register(sub) -> None:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--keep-network", action="store_true", help="keep serving the LAN if the old install did (default: loopback only)")
     sp.set_defaults(func=cmd_migrate_legacy)
-__STUDIO_EOF_d9d33993f68e__
+__STUDIO_EOF_17909c976256__
   mkdir -p "$DEST/studio/narrative"
 cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
 """Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
@@ -22744,7 +22757,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_fa54d73287ce__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ce351d20aee8__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23129,13 +23142,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.6" and st["version_label"] == "v0.5.6"
+    assert st["version"] == "0.5.7" and st["version_label"] == "v0.5.7"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.6" and "stage" not in a
+    assert a["version_label"] == "v0.5.7" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_fa54d73287ce__
+__STUDIO_EOF_ce351d20aee8__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -25919,7 +25932,7 @@ def test_supervised_worker_exits_when_its_server_disappears(ctx, monkeypatch):
     monkeypatch.delenv("STUDIO_SUPERVISED_WORKER")
     assert Worker(ctx, tts=MockEngine({}), asr=MockASR()).parent_gone() is False     # foreground `studio worker` is never auto-stopped
 __STUDIO_EOF_4a18f1347cef__
-cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_5bb7bcacf24a__'
+cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_e0a39c35e7b1__'
 """Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
 or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
 from __future__ import annotations
@@ -26350,6 +26363,12 @@ def test_cli_version_configure_doctor_and_update_status(tmp_path):
     assert man["python"].replace(chr(92), "/").endswith("app/venv/bin/python") and man["label"] == "com.audiobookstudio.app"
     r = _cli("configure", "--manifest-only", env_extra=env)
     assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
+    r = _cli("configure", "--lan", env_extra=env)
+    sv = json.loads((root / "state" / "config" / "settings.json").read_text())["server"]
+    assert r.returncode == 0 and sv["host"] == "0.0.0.0" and sv["allow_remote"] and sv["https_enabled"]
+    r = _cli("configure", "--local-only", env_extra=env)
+    sv = json.loads((root / "state" / "config" / "settings.json").read_text())["server"]
+    assert r.returncode == 0 and sv["host"] == "127.0.0.1" and not sv["allow_remote"] and not sv["https_enabled"]
     r = _cli("doctor", "--json", env_extra=env)
     names = {c["name"]: c for c in json.loads(r.stdout)}
     assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "ok"
@@ -26381,7 +26400,7 @@ def test_provider_boundaries_do_not_import_each_other_directly():
             assert "launchctl" not in t, p
         if "web" in p.parts:
             assert "github.com" not in t.replace("github.com/salbretsen", ""), p
-__STUDIO_EOF_5bb7bcacf24a__
+__STUDIO_EOF_e0a39c35e7b1__
 cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_f5ccd3b476bf__'
 """Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
 (Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
@@ -26533,20 +26552,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_dbf5c1c42cea__'
-20261029131033-12e81564
-__STUDIO_EOF_dbf5c1c42cea__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_d2f07860062f__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_690f890a4f7b__'
+20261029131700-bd49b995
+__STUDIO_EOF_690f890a4f7b__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_e7128f212a27__'
 {
-  "version": "0.5.6",
+  "version": "0.5.7",
   "schema_version": 2,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029131033-12e81564",
+  "build": "20261029131700-bd49b995",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_d2f07860062f__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_84970e54610a__'
+__STUDIO_EOF_e7128f212a27__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_476b10ff6de6__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -26555,13 +26574,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-84ee04843a43d7a0b2648189e63185e71d02261c57f4995b7c5b793cae3596ec  CHANGELOG.md
+4978f853ba9a9aa2f8eb2f59a396b3b8153310a1f9c83f7814a1629ac72fb7e3  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-bcb49fb8909b50c1c39a15e990d02d9ab86aaa95b5b865a839d50791ebca0cd6  README.md
+4606b61eb4434b219af7472e5f0373624c782d1633fb375c85a51d4f047d06e9  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-3aa191c7cf244294a452c5cdc944ba1595512272d71cb3e2562ab2ba0b5a9989  studio/__init__.py
+678d1f6642022250c69628327663acdf35b66774afb8a39c94b648bea15cd64a  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
@@ -26575,7 +26594,7 @@ be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
 b799e30827000692564e06be6b625527b617e24f96fa01579dafc9d547a259ad  studio/legacy.py
-d9d33993f68e0a811710bde26ef0ad7fe2aef808a6ecc7eeb6a2a7fe6bda7f01  studio/lifecycle_cli.py
+17909c976256c3a83612e05a41bff0187431fe869faa190a8855d93d73617eee  studio/lifecycle_cli.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
 91b51363ce097d3d38f1702bb996dbccd6947fc62038d0a698f040416f2338f7  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
@@ -26648,17 +26667,17 @@ c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-fa54d73287ce61b917d00b2e4c7e7e802067a8beda7e7f46d31d9178a4bf1a09  tests/test_integration.py
+ce351d20aee87df59aaf7b803ea7f31ba1a6efc63109a8f63983ce4e8db3c601  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
 4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
-5bb7bcacf24aa1f38a8db4b53969001082ea56c0ce39d2f2340a4e756467a31f  tests/test_update_install.py
+e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-dbf5c1c42ceaee974fccdd30366e6ace850091be62cb706ee59a7de5177ac35c  BUILD
-d2f07860062f3e0fb08c72db41d39dfbfcc5ab863126f71f3d26f3c2400681a0  release.json
-__STUDIO_EOF_84970e54610a__
+690f890a4f7b4a6611c380ec23e1da070a0fe37f7deca5a19290de9d51a71983  BUILD
+e7128f212a2763453d214affeaf6d78853d3948044fe049fbc30e97e62261beb  release.json
+__STUDIO_EOF_476b10ff6de6__
 }
 
 verify_manifest() {

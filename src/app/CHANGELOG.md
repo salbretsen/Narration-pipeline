@@ -3,6 +3,11 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.5.7
+- Added the MIT `LICENSE` (copyright notice must be kept: others may use it if properly credited).
+- A fresh managed install now serves the LAN by default (HTTP and HTTPS, sign-in required); `--local-only` restricts it to this Mac. Existing
+  installs and `--migrate-from` keep their current network setting. `audiobook-studio configure --lan | --local-only`.
+
 ## v0.5.6
 - Documentation only: dropped the GitHub branch/tag protection setup (roadmap B3) as unnecessary for this tool. The automatic workflow guard stays; no owner-side configuration is required.
 

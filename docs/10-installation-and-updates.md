@@ -110,6 +110,7 @@ LaunchDaemon, no `UserName`). Built by `platform_services.build_plist` from `app
   `/api/version`: version, build, channel, schema, managed.
 - Stop/restart: the worker's existing recovery returns an interrupted job to the queue at its position; completed WAVs are never touched.
 - CLI: `audiobook-studio doctor | start | stop | restart | status | logs [-f] | version | update --check | update --install [--when now|after_job] [--yes] | service install|uninstall | migrate-legacy DIR`.
+- Network: a fresh install serves the LAN (HTTP + HTTPS, sign-in required); `--local-only` or Settings restricts it to 127.0.0.1.
 - Uninstall: `install_audiobook_studio_mac.sh --uninstall` (service only), `--purge-app` (also application files), `--purge-data` (additionally
   books/settings/models, only after typing a confirmation phrase). Without those flags **no data is deleted**.
 
