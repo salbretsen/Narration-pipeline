@@ -197,3 +197,39 @@ def test_alignment_locates_issue_with_word_times():
     ev = evaluate("one two three four five six seven eight", "one two three seven eight", words)
     drop = next(i for i in ev["issues"] if i["kind"] == "dropped")
     assert drop["at_s"] == 1.0
+
+
+def test_short_segment_single_error_is_not_a_wer_flag(ctx):
+    """One misheard word in a 5-word heading is 20% WER; it must not flag on WER alone,
+    while two errors still do."""
+    from studio import services as S
+    from studio.db import row
+    from studio.engines import MockASR, MockEngine
+    from studio.worker import Worker
+
+    class Mishear(MockASR):
+        def __init__(self, heard):
+            super().__init__()
+            self.heard = heard
+
+        def transcribe(self, wav_path, language="en"):
+            out = super().transcribe(wav_path, language)
+            if "second light" in out["text"].lower():
+                out["text"] = self.heard
+            return out
+
+    v = S.list_voices(ctx)[0]
+    results = {}
+    for heard in ("Chapter Two: The Second Life", "Chapter Too: The Second Life"):
+        text = "Chapter One\n\nChapter Two: The Second Light\n\n" + "A long enough body paragraph to read aloud here. " * 6
+        prev = S.create_import(ctx, "b.txt", text.encode())
+        b = S.confirm_import(ctx, prev["token"], {"title": "T" + heard[-9:], "voice_id": v["id"], "queue": True})
+        w = Worker(ctx, tts=MockEngine(), asr=Mishear(heard))
+        with ctx.db.tx() as conn:
+            conn.execute("UPDATE worker_state SET heartbeat_at=0 WHERE id=1")
+        assert w.acquire_lease()
+        w.run_until_idle()
+        with ctx.db.session() as conn:
+            results[heard] = row(conn, "SELECT status FROM segments WHERE book_id=? AND original_text LIKE '%Second Light%'", (b["id"],))["status"]
+    assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
+    assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged

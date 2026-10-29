@@ -1,5 +1,74 @@
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
-import { get, post, put, html, setHTML, fmtBytes, toast, busy } from "../ui.js";
+import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+
+/** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
+function browseFolder(startPath) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "modal browse";
+    dlg.setAttribute("aria-labelledby", "br-title");
+    document.body.appendChild(dlg);
+    let cur = null, result = null;
+    const close = () => { dlg.close(); };
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    dlg.addEventListener("cancel", () => { result = null; });
+
+    async function go(path) {
+      let d;
+      try { d = await get("/api/storage/browse" + (path ? `?path=${encodeURIComponent(path)}` : "")); }
+      catch (e) { toast(e.message, "error", 9000); if (!cur) close(); return; }
+      cur = d;
+      let check = null;
+      try { check = await post("/api/storage/validate", { path: d.path }); } catch (e) { /* shown in list header */ }
+      setHTML(dlg, html`<div class="modal-inner">
+        <h2 id="br-title">Choose a folder on ${d.hostname}</h2>
+        <p class="small muted">You are browsing the Mac that hosts the studio, not this computer. Only folders are shown.</p>
+        <form id="br-go" class="br-go"><label class="sr-only" for="br-path">Folder path</label>
+          <input id="br-path" value="${d.path}" spellcheck="false"><button class="btn small" type="submit">Go</button></form>
+        <div class="br-short" role="group" aria-label="Shortcuts">
+          ${d.shortcuts.map((s) => html`<button type="button" class="btn small ghost" data-go="${s.path}">${s.label}</button>`)}
+          <button type="button" class="btn small ghost" data-go="/">Macintosh HD (/)</button>
+          ${d.volumes.map((v) => html`<button type="button" class="btn small ghost" data-go="${v.path}" title="${fmtBytes(v.free_bytes)} free">⏏ ${v.label}</button>`)}
+        </div>
+        <div class="br-status ${check && check.ok ? "ok" : "bad"}" role="status">
+          <strong>${d.path}</strong> · ${d.writable ? "writable" : "NOT writable"}${d.free_bytes !== null ? html` · ${fmtBytes(d.free_bytes)} free of ${fmtBytes(d.total_bytes)}` : ""}
+          ${check ? check.errors.map((e) => html`<div class="err">${e}</div>`) : ""}${check ? check.warnings.map((w) => html`<div class="warn-text">${w}</div>`) : ""}
+        </div>
+        <ul class="br-list" aria-label="Folders in ${d.path}">
+          ${d.parent ? html`<li><button type="button" class="br-item" data-go="${d.parent}">↰ Up to ${d.parent}</button></li>` : ""}
+          ${d.entries.map((e) => html`<li><button type="button" class="br-item" data-go="${e.path}">📁 ${e.name}${e.mount ? " (volume)" : ""}${e.writable ? "" : " 🔒"}</button></li>`)}
+          ${!d.entries.length ? html`<li class="muted small br-empty">No sub-folders here.</li>` : ""}
+        </ul>
+        ${d.truncated ? html`<p class="small warn-text">Only the first ${d.entries.length} folders are shown. Type a path above to go deeper.</p>` : ""}
+        <form id="br-new" class="br-go"><label class="sr-only" for="br-name">New folder name</label>
+          <input id="br-name" placeholder="New folder name" maxlength="80"><button class="btn small" type="submit" ${d.writable ? "" : html`disabled`}>Create folder here</button></form>
+        <div class="modal-actions">
+          <button type="button" class="btn primary" data-use ${check && check.ok ? "" : html`disabled`}>Use this folder</button>
+          <button type="button" class="btn ghost" data-cancel>Cancel</button></div></div>`);
+      const inp = dlg.querySelector("#br-path"); if (inp && !dlg.dataset.focused) { dlg.dataset.focused = "1"; }
+    }
+
+    dlg.addEventListener("click", async (e) => {
+      const g = e.target.closest("[data-go]");
+      if (g) { go(g.dataset.go); return; }
+      if (e.target.closest("[data-use]")) { result = cur.path; close(); return; }
+      if (e.target.closest("[data-cancel]")) { result = null; close(); }
+    });
+    dlg.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (e.target.id === "br-go") go(dlg.querySelector("#br-path").value.trim());
+      else if (e.target.id === "br-new") {
+        const name = dlg.querySelector("#br-name").value.trim();
+        if (!name) return;
+        try { const r = await post("/api/storage/mkdir", { parent: cur.path, name }); toast(`Created ${r.path}`, "success"); go(r.path); }
+        catch (err) { toastError(err); }
+      }
+    });
+    dlg.showModal();
+    go(startPath || "");
+  });
+}
+
 
 const SECTIONS = [
   ["chunking", "Segmentation", [
@@ -81,6 +150,7 @@ function pathStatus(v) {
 }
 
 export async function render(view) {
+  const localPage = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
   let s = await get("/api/settings");
   let storage = await get("/api/storage");
   const checks = {};
@@ -93,16 +163,19 @@ export async function render(view) {
     <section class="card" aria-labelledby="stor-h"><h2 id="stor-h">Storage locations</h2>
       <p class="small">A web page cannot hand the server access to arbitrary folders, so locations are typed as paths on this Mac
         (e.g. <code>~/AudiobookLibrary</code> or <code>/Volumes/AudiobooksSSD/Library</code>) and validated by the server.
-        ${storage.native_chooser ? html`On macOS you can also use <strong>Choose…</strong>, which opens the real Finder folder picker on this Mac.` : ""}</p>
+        <strong>Browse…</strong> opens a folder browser that lists the real folders on <em>this Mac</em> (including external drives under /Volumes) from any computer on the network; you can create a new folder there too.
+        ${localPage ? html`On the Mac itself, <strong>Finder…</strong> opens the native Finder picker.` : ""}</p>
       <p class="callout info small"><strong>How changes apply:</strong> ${storage.policy}</p>
       <div class="path-row"><label>Library root <input name="storage.library_root" value="${st.library_root}" placeholder="${s.library_root}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="validate" data-field="storage.library_root">Check</button>
-        ${storage.native_chooser ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.library_root">Choose…</button>` : ""}</div>
+        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.library_root">Browse…</button>
+        <button type="button" class="btn small" data-act="validate" data-field="storage.library_root">Check</button>
+        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.library_root">Finder…</button>` : ""}</div>
         ${pathStatus(checks["storage.library_root"] || storage.library_root)}</div>
       <details><summary>Per-category locations (optional overrides)</summary>
       ${Object.entries(s.categories).map(([cat, label]) => html`<div class="path-row"><label>${label} <input name="storage.${cat}_dir" value="${st[cat + "_dir"]}" placeholder="${s.effective_paths[cat]}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="validate" data-field="storage.${cat}_dir">Check</button>
-        ${storage.native_chooser ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.${cat}_dir">Choose…</button>` : ""}</div>
+        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.${cat}_dir">Browse…</button>
+        <button type="button" class="btn small" data-act="validate" data-field="storage.${cat}_dir">Check</button>
+        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.${cat}_dir">Finder…</button>` : ""}</div>
         ${pathStatus(checks[`storage.${cat}_dir`] || catByName[cat])}</div>`)}
       </details>
       <h3>Where existing books live</h3>
@@ -149,7 +222,10 @@ export async function render(view) {
   async function onClick(e) {
     const b = e.target.closest("button[data-act]"); if (!b) return;
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
-    if (b.dataset.act === "validate") {
+    if (b.dataset.act === "browse") {
+      const picked = await browseFolder(input.value.trim() || input.placeholder || "");
+      if (picked) { input.value = picked; toast("Folder selected. Press Save settings to apply it.", "success", 7000); }
+    } else if (b.dataset.act === "validate") {
       const path = input.value.trim() || input.placeholder;
       checks[b.dataset.field] = await busy(b, () => post("/api/storage/validate", { path }));
       const row = b.closest(".path-row"); const old = row.querySelector(".path-status");

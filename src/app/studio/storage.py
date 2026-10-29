@@ -193,6 +193,104 @@ def storage_overview(ctx) -> dict:
     }
 
 
+MAX_BROWSE_ENTRIES = 400
+_FOLDER_NAME = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,79}$")
+
+
+def browse(path: str | None, show_hidden: bool = False) -> dict:
+    """List the sub-folders of a directory on THIS machine so an administrator using the web UI
+    from anywhere on the network can find and pick a storage location. Directories only; files
+    are never listed or readable through this call."""
+    raw = (path or "").strip() or "~"
+    if "\x00" in raw:
+        raise PathRejected("Path contains a NUL byte.")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        raise PathRejected("Use an absolute path such as /Volumes/AudiobooksSSD or ~/Documents.")
+    vol = volume_of(p)
+    if vol is not None and not os.path.ismount(vol):
+        raise PathRejected(f"{vol} is not mounted. Connect the drive, then browse again.")
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathRejected(f"{p} does not exist on this computer.")
+    if not rp.is_dir():
+        raise PathRejected(f"{rp} is not a folder.")
+    entries, truncated = [], False
+    try:
+        children = sorted(os.scandir(rp), key=lambda e: e.name.lower())
+    except PermissionError:
+        raise PathRejected(f"macOS denied access to {rp}. Grant the studio's Python Full Disk Access (System Settings > Privacy & Security) or choose another folder.")
+    except OSError as exc:
+        raise PathRejected(f"Cannot read {rp}: {exc}")
+    for e in children:
+        if not show_hidden and e.name.startswith("."):
+            continue
+        try:
+            if not e.is_dir(follow_symlinks=True):
+                continue
+        except OSError:
+            continue
+        if len(entries) >= MAX_BROWSE_ENTRIES:
+            truncated = True
+            break
+        full = rp / e.name
+        entries.append({"name": e.name, "path": str(full), "writable": os.access(full, os.W_OK), "symlink": e.is_symlink(),
+                        "mount": os.path.ismount(full)})
+    shortcuts = [{"label": "Home", "path": str(Path.home())}]
+    for extra in ("Documents", "Desktop", "Music", "Movies"):
+        d = Path.home() / extra
+        if d.is_dir():
+            shortcuts.append({"label": extra, "path": str(d)})
+    volumes = []
+    vroot = Path("/Volumes")
+    if vroot.is_dir():
+        for v in sorted(vroot.iterdir(), key=lambda x: x.name.lower()):
+            try:
+                if v.is_dir() and not v.is_symlink():
+                    free = shutil.disk_usage(v).free
+                    volumes.append({"label": v.name, "path": str(v), "free_bytes": free, "mounted": os.path.ismount(v)})
+            except OSError:
+                continue
+    try:
+        du = shutil.disk_usage(rp)
+        free, total = du.free, du.total
+    except OSError:
+        free = total = None
+    return {"path": str(rp), "parent": str(rp.parent) if rp.parent != rp else None, "entries": entries, "truncated": truncated,
+            "writable": os.access(rp, os.W_OK), "free_bytes": free, "total_bytes": total, "shortcuts": shortcuts, "volumes": volumes,
+            "hostname": __import__("socket").gethostname()}
+
+
+def make_folder(parent: str, name: str) -> str:
+    name = (name or "").strip()
+    if not _FOLDER_NAME.match(name) or name.endswith("."):
+        raise PathRejected("Folder names may use letters, digits, space and . _ ( ) - (up to 80 characters).")
+    p = Path(parent).expanduser()
+    if not p.is_absolute():
+        raise PathRejected("Parent must be an absolute path.")
+    vol = volume_of(p)
+    if vol is not None and not os.path.ismount(vol):
+        raise PathRejected(f"{vol} is not mounted.")
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathRejected("The parent folder does not exist.")
+    if not rp.is_dir() or not os.access(rp, os.W_OK):
+        raise PathRejected(f"{rp} is not a writable folder.")
+    for pref in SYSTEM_PREFIXES:
+        if str(rp) == pref or str(rp).startswith(pref + "/"):
+            raise PathRejected(f"Creating folders inside the system location {pref} is not allowed.")
+    target = rp / name
+    if target.exists():
+        raise PathRejected(f"'{name}' already exists here.")
+    try:
+        target.mkdir()
+    except OSError as exc:
+        raise PathRejected(f"Could not create the folder: {exc}")
+    return str(target)
+
+
 def choose_folder_native(prompt: str = "Choose a folder for audiobook data") -> str | None:
     """Open the real macOS folder chooser (only meaningful when the server runs on the same Mac)."""
     if sys.platform != "darwin":

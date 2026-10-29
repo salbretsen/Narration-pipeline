@@ -228,7 +228,7 @@ def run_smoke(args) -> int:
         key = ", ".join(f"{k}={d[k]}" for k in ("rtf", "mean_rtf", "wer", "peak_mem_gb", "audio_s", "segment_status", "chapters", "codec") if k in d)
         md.append(f"| {st['name']} | {'yes' if st['ok'] else 'NO'} | {st['seconds']} | {key or st.get('error', '')} |")
     md += ["", "## Defects", *(f"- {d}" for d in rep["defects"] or ["none"]), "",
-           "## Still manual", "- Open http://127.0.0.1:7861, listen to an output segment in Review, approve it, and record release signoff.",
+           "## Still manual", "- Open the studio URL (see ./studio-service status), sign in, listen to an output segment in Review, approve it, and record release signoff.",
            "- Listen to the exported chapter M4B in Apple Books / QuickTime and check chapter markers."]
     (out_dir / "smoke_report.md").write_text("\n".join(md) + "\n", "utf-8")
     print(f"\nSmoke test {rep['result']}. Report: {out_dir / 'smoke_report.md'}")

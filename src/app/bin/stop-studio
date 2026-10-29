@@ -17,6 +17,10 @@ stop_pid() {
   fi
   rm -f "$file"
 }
+if [ -x "$STUDIO_ROOT/studio-service" ] && { launchctl print "gui/$(id -u)/com.audiobookstudio.claude" >/dev/null 2>&1 \
+     || launchctl print "user/$(id -u)/com.audiobookstudio.claude" >/dev/null 2>&1; }; then
+  "$STUDIO_ROOT/studio-service" stop
+fi
 stop_pid "web server" "$AUDIOBOOK_STUDIO_HOME/run/server.pid"
 stop_pid "GPU worker" "$AUDIOBOOK_STUDIO_HOME/run/worker.pid"
 echo "Audiobook Studio stopped."

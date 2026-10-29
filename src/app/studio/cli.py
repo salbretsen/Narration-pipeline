@@ -39,10 +39,13 @@ def cmd_serve(a):
     s = ctx.settings()
     host = a.host or s.server.host
     port = a.port or s.server.port
-    if not is_loopback(host) and not (s.server.allow_remote and a.allow_remote):
-        sys.exit("Refusing to bind to a non-loopback address. This studio has no authentication. "
-                 "If you really need it, set server.allow_remote=true in Settings AND pass --allow-remote.")
+    if not is_loopback(host) and not (s.server.allow_remote or a.allow_remote):
+        sys.exit("Refusing to bind to a non-loopback address. Set server.allow_remote=true (installer --lan does this).")
     from .web.app import create_app
+    from .web.auth import AuthStore
+
+    if not is_loopback(host) and not AuthStore(ctx.config_dir / "auth.json").enabled():
+        sys.exit("Refusing to bind to a network address without any user account. Create one: ./studio auth add-user NAME --role admin --generate")
 
     app = create_app(ctx)
     app.state.port = port
@@ -62,6 +65,41 @@ def cmd_worker(a):
     ctx = Context()
     setup_logging(ctx, "worker")
     main(ctx)
+
+
+def cmd_auth(a):
+    import getpass
+
+    from .web.auth import AuthStore, generate_password
+
+    ctx = _ctx()
+    store = AuthStore(ctx.config_dir / "auth.json")
+    if a.action == "list":
+        for u in store.list_users():
+            print(f"{u['name']:<20} {u['role']}")
+        return
+    if not a.name:
+        sys.exit("NAME is required")
+    if a.action == "remove-user":
+        try:
+            store.remove_user(a.name)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(f"User '{a.name}' removed (their sessions stop working immediately).")
+        return
+    pw = a.password or os.environ.get("STUDIO_NEW_PASSWORD")
+    generated = False
+    if not pw and a.generate:
+        pw, generated = generate_password(), True
+    if not pw:
+        pw = getpass.getpass("Password (min 10 chars): ")
+        if getpass.getpass("Type it again: ") != pw:
+            sys.exit("The two passwords do not match. Nothing was changed.")
+    try:
+        store.set_user(a.name, pw, a.role)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else ""))
 
 
 def cmd_migrate(a):
@@ -249,6 +287,13 @@ def main(argv=None):
     sp.set_defaults(func=cmd_serve)
     sub.add_parser("worker", help="run the GPU worker in the foreground").set_defaults(func=cmd_worker)
     sub.add_parser("migrate", help="apply database migrations").set_defaults(func=cmd_migrate)
+    sp = sub.add_parser("auth", help="manage web UI users")
+    sp.add_argument("action", choices=["add-user", "set-password", "remove-user", "list"])
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--role", choices=["admin", "operator"], default="operator")
+    sp.add_argument("--password")
+    sp.add_argument("--generate", action="store_true", help="generate and print a random password")
+    sp.set_defaults(func=cmd_auth)
     sp = sub.add_parser("doctor", help="check the environment")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_doctor)

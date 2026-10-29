@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Audiobook Studio (Claude build) - self-contained installer for macOS on Apple Silicon
+#  Audiobook Studio - self-contained installer for macOS on Apple Silicon
+#  Developed by Scott Albretsen, TSAL Solutions LLC
 #  Version @@VERSION@@ (build @@BUILD_ID@@)
 #
 #  Installs a local, autonomous audiobook production studio:
@@ -28,6 +29,10 @@ SKIP_TESTS=0
 STOP_RUNNING=0
 EXTRACT_ONLY=""
 PORT=""
+LAN=0
+HOST=""
+ADMIN_USER="admin"
+INSTALL_SERVICE=0
 
 usage() {
   cat <<'USAGE'
@@ -39,12 +44,19 @@ Options:
   --skip-tests       Do not run the automated test suite after installing.
   --port N           Web UI port (default 7861; applied to settings).
   --stop-running     Stop a running studio before upgrading it.
+  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required.
+  --host ADDR        Bind address (default 127.0.0.1; --lan sets 0.0.0.0).
+  --admin-user NAME  Administrator account created on first install (default: admin). A random
+                     password is generated, printed once and saved to config/initial-admin-password.txt.
+  --install-service  Install and start the background service (macOS LaunchAgent).
   --extract-only DIR Only write the application files into DIR/app (no venv, no downloads).
   -h, --help         Show this help.
 
 Environment:
   AUDIOBOOK_STUDIO_HOME   Install location (default ~/audiobook-studio-claude).
   STUDIO_PYTHON           Python 3.12 interpreter to use (default: Homebrew python@3.12).
+                          If set, and ffmpeg/ffprobe are already on PATH (or in $AUDIOBOOK_STUDIO_HOME/tools/bin),
+                          Homebrew is not required.
   STUDIO_MLX_AUDIO_SPEC   Override the mlx-audio requirement (default mlx-audio==0.6.3).
   AUDIOBOOK_STUDIO_ALLOW_NON_MAC=1  Allow a mock-engine test install on Linux (CI only).
 USAGE
@@ -56,6 +68,10 @@ while [ $# -gt 0 ]; do
     --prefetch-all) PREFETCH_ALL=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
     --stop-running) STOP_RUNNING=1 ;;
+    --lan) LAN=1 ;;
+    --install-service) INSTALL_SERVICE=1 ;;
+    --host) [ $# -ge 2 ] || { echo "--host needs a value" >&2; exit 2; }; HOST="$2"; shift ;;
+    --admin-user) [ $# -ge 2 ] || { echo "--admin-user needs a value" >&2; exit 2; }; ADMIN_USER="$2"; shift ;;
     --port)
       [ $# -ge 2 ] || { echo "--port needs a value" >&2; exit 2; }
       PORT="$2"; shift
@@ -138,11 +154,17 @@ find_brew() {
 
 ensure_tools() {
   if [ "$IS_MAC_ARM" = 1 ]; then
-    local BREW
-    BREW="$(find_brew)" || die "Homebrew is required (https://brew.sh). Install it with:
+    local BREW=""
+    export PATH="$APP_HOME/tools/bin:$PATH"
+    if BREW="$(find_brew)"; then
+      eval "$("$BREW" shellenv)"
+    elif [ -n "${STUDIO_PYTHON:-}" ] && command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+      info "Homebrew not found; using STUDIO_PYTHON and the ffmpeg already on PATH."
+    else
+      die "Homebrew is required (https://brew.sh) - or provide STUDIO_PYTHON (a Python 3.12) plus ffmpeg/ffprobe on PATH. Install Homebrew with:
     /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
 then run this installer again."
-    eval "$("$BREW" shellenv)"
+    fi
     if [ -z "${STUDIO_PYTHON:-}" ]; then
       if ! "$BREW" list --versions python@3.12 >/dev/null 2>&1; then
         say "Installing Python 3.12 with Homebrew"
@@ -150,7 +172,7 @@ then run this installer again."
       fi
       STUDIO_PYTHON="$("$BREW" --prefix python@3.12)/bin/python3.12"
     fi
-    if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+    if { ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; } && [ -n "$BREW" ]; then
       say "Installing FFmpeg with Homebrew"
       "$BREW" install ffmpeg
     fi
@@ -213,7 +235,7 @@ on_error() {
 
 install_launchers() {
   local f
-  for f in start-studio stop-studio studio run-tests smoke-test; do
+  for f in start-studio stop-studio studio studio-service run-tests smoke-test; do
     cp "$APP_HOME/app/bin/$f" "$APP_HOME/$f"
     chmod 755 "$APP_HOME/$f"
   done
@@ -223,17 +245,44 @@ install_launchers() {
   cp "$APP_HOME/app/MODEL_LICENSES.md" "$APP_HOME/MODEL_LICENSES.md"
 }
 
-set_setting_port() {
-  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" <<'PY'
+set_server_settings() {
+  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" <<'PY'
 import json, os, sys
-path, port = sys.argv[1], int(sys.argv[2])
+path, host, port, remote = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 data = json.load(open(path)) if os.path.exists(path) else {}
-data.setdefault("server", {})["port"] = port
+srv = data.setdefault("server", {})
+if host:
+    srv["host"] = host
+    srv["allow_remote"] = remote
+if port:
+    srv["port"] = int(port)
 tmp = path + ".tmp"
 with open(tmp, "w") as fh:
     fh.write(json.dumps(data, indent=2) + "\n")
 os.replace(tmp, path)
 PY
+}
+
+ensure_admin() {
+  local users
+  users="$(cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio auth list 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$users" = "0" ]; then
+    local out pwfile="$APP_HOME/config/initial-admin-password.txt"
+    out="$(cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio auth add-user "$ADMIN_USER" --role admin --generate)"
+    GENERATED_PW="${out##*Generated password: }"
+    ( umask 077; printf 'user: %s\npassword: %s\n(delete this file after you have stored the password; change it in the UI via Password)\n' "$ADMIN_USER" "$GENERATED_PW" > "$pwfile" )
+    info "Created administrator '$ADMIN_USER' (initial password saved to $pwfile)"
+  else
+    info "Existing user accounts kept ($users)."
+  fi
+}
+
+lan_addresses() {
+  if [ "$OS" = "Darwin" ]; then
+    ifconfig 2>/dev/null | awk '/^[a-z0-9]+:/{i=$1} /inet /&&$2!="127.0.0.1"{print $2}'
+  else
+    hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true
+  fi
 }
 
 prefetch_models() {
@@ -328,7 +377,17 @@ main() {
 
   say "Database and settings"
   (cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio migrate) | sed 's/^/    /'
-  if [ -n "$PORT" ]; then set_setting_port "$PORT"; info "Port set to $PORT"; fi
+  if [ "$LAN" = 1 ]; then
+    [ -n "$HOST" ] || HOST="0.0.0.0"
+    [ -n "$PORT" ] || PORT="8080"
+  fi
+  if [ -n "$HOST" ] || [ -n "$PORT" ]; then
+    case "$HOST" in ""|127.0.0.1|localhost) REMOTE=0 ;; *) REMOTE=1 ;; esac
+    set_server_settings "$HOST" "$PORT" "$REMOTE"
+    info "Server: host=${HOST:-unchanged} port=${PORT:-unchanged}"
+  fi
+  GENERATED_PW=""
+  if [ "$LAN" = 1 ] || [ -n "$HOST" ]; then ensure_admin; fi
   SWAPPED=0  # from here on the new code is committed
   # keep the five most recent code backups
   # shellcheck disable=SC2012
@@ -349,12 +408,20 @@ main() {
 
   if [ "$IS_MAC_ARM" = 1 ] && [ "$NO_MODELS" = 0 ]; then prefetch_models; fi
 
-  local port
+  local port host
   port="$("$VENV/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("server",{}).get("port",7861))' "$APP_HOME/config/settings.json")"
+  host="$("$VENV/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("server",{}).get("host","127.0.0.1"))' "$APP_HOME/config/settings.json")"
+  if [ "$INSTALL_SERVICE" = 1 ]; then
+    say "Installing the background service"
+    "$APP_HOME/studio-service" install
+  fi
   printf '\n%sAudiobook Studio %s is installed.%s\n\n' "$G" "$STUDIO_VERSION" "$N"
   cat <<EOF
   Start the studio:      cd "$APP_HOME" && ./start-studio
-  Then open:             http://127.0.0.1:$port   (local only; nothing is exposed to your network)
+  Then open:             http://127.0.0.1:$port   (this Mac)
+$(if [ "$host" != "127.0.0.1" ]; then for ip in $(lan_addresses); do echo "  On your network:       http://$ip:$port   (sign-in required)"; done; echo "  By name:               http://$(hostname):$port"; fi)
+$(if [ -n "$GENERATED_PW" ]; then echo "  First sign-in:         user '$ADMIN_USER'  password '$GENERATED_PW'   (also in config/initial-admin-password.txt)"; fi)
+  Background service:   ./studio-service install | start | stop | restart | status | logs
   Stop:                  ./stop-studio
   Command line:          ./studio doctor | list | import | run | issues | approve | report | export
   Automated tests:       ./run-tests          (mock engine)

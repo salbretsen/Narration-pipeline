@@ -18,7 +18,7 @@ TEMPLATE = ROOT / "src" / "installer" / "installer.sh.in"
 OUT = ROOT / "install_audiobook_studio_claude.sh"
 EXCLUDE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
-EXECUTABLE = {"bin/start-studio", "bin/stop-studio", "bin/studio", "bin/run-tests", "bin/smoke-test"}
+EXECUTABLE = {"bin/start-studio", "bin/stop-studio", "bin/studio", "bin/studio-service", "bin/run-tests", "bin/smoke-test"}
 
 
 def collect() -> list[tuple[str, str]]:
@@ -40,8 +40,12 @@ def collect() -> list[tuple[str, str]]:
 
 
 def main() -> None:
-    from_version = re.search(r'__version__ = "([^"]+)"', (SRC_APP / "studio" / "__init__.py").read_text("utf-8")).group(1)
+    init = (SRC_APP / "studio" / "__init__.py").read_text("utf-8")
+    from_version = "v" + re.search(r'__version__ = "([^"]+)"', init).group(1) + " - " + re.search(r'RELEASE_STAGE = "([^"]+)"', init).group(1)
     files = collect()
+    manifest = "".join(f"{hashlib.sha256(t.encode('utf-8')).hexdigest()}  {rel}\n" for rel, t in files)
+    build_id = time.strftime("%Y%m%d%H%M%S") + "-" + hashlib.sha256(manifest.encode()).hexdigest()[:8]
+    files.append(("BUILD", build_id + "\n"))
     manifest = "".join(f"{hashlib.sha256(t.encode('utf-8')).hexdigest()}  {rel}\n" for rel, t in files)
     files.append(("MANIFEST.sha256", manifest))
     parts: list[str] = []
@@ -61,7 +65,6 @@ def main() -> None:
         if rel in EXECUTABLE:
             parts.append(f'  chmod 755 "$DEST/{rel}"')
     template = TEMPLATE.read_text("utf-8")
-    build_id = time.strftime("%Y%m%d%H%M%S") + "-" + hashlib.sha256(manifest.encode()).hexdigest()[:8]
     out = (template.replace("@@VERSION@@", from_version).replace("@@BUILD_ID@@", build_id)
            .replace("@@EMBEDDED_FILES@@", "\n".join(parts)))
     OUT.write_bytes(out.encode("utf-8"))

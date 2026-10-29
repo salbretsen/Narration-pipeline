@@ -378,3 +378,13 @@ def test_ui_shell_and_static_assets(client):
         assert client.get(p).status_code == 200
     assert client.get("/api/doctor").json()["checks"]
     assert client.get("/api/about").json()["engine_mode"] == "mock"
+
+
+def test_about_page_data_and_version(client):
+    st = client.get("/api/auth/status").json()
+    assert st["version"] == "0.1" and st["version_label"] == "v0.1 - prerelease"
+    a = client.get("/api/about").json()
+    assert a["version_label"] == "v0.1 - prerelease" and a["stage"] == "prerelease"
+    assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
+    assert a["licenses"] and a["qa_limitations"] and "python" in a
+    assert 'id="ver"' in client.get("/").text

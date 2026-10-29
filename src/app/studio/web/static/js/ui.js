@@ -52,6 +52,7 @@ export async function api(method, path, body, opts = {}) {
   let data = null;
   const text = await res.text();
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("studio:unauth"));
   if (!res.ok) throw new ApiError((data && (data.error || data.detail)) || `${res.status} ${res.statusText}`, res.status, data && data.details);
   return data;
 }

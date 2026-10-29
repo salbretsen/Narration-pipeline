@@ -20,6 +20,9 @@
         <span>Audiobook Studio</span></a>
       <div class="topbar-status" id="worker-pill" role="status" aria-live="polite"><span class="dot"></span><span class="label">Connecting…</span></div>
       <span class="engine-badge" id="engine-badge" hidden></span>
+      <div class="user-box" id="user-box" hidden><span class="uname"></span>
+        <button class="btn small ghost" type="button" id="chpw">Password</button>
+        <button class="btn small ghost" type="button" id="signout">Sign out</button></div>
     </header>
     <nav class="sidenav" id="sidenav" aria-label="Main">
       <ul>
@@ -29,9 +32,9 @@
         <li><a href="#/voices" data-nav="voices"><span aria-hidden="true">♪</span> Narrator Studio</a></li>
         <li><a href="#/review" data-nav="review"><span aria-hidden="true">✓</span> Review &amp; QA</a></li>
         <li><a href="#/settings" data-nav="settings"><span aria-hidden="true">⚙</span> Settings &amp; Storage</a></li>
-        <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> System &amp; Licenses</a></li>
+        <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> About &amp; System</a></li>
       </ul>
-      <p class="nav-foot">Local-only · 127.0.0.1<br>No uploads to third parties</p>
+      <p class="nav-foot"><a href="#/about" id="ver" class="ver-link">Audiobook Studio</a><br>TSAL Solutions LLC<br>Private network only<br>No uploads to third parties</p>
     </nav>
     <main id="main" tabindex="-1">
       <div class="banner" id="conn-banner" role="status" hidden></div>

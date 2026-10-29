@@ -20,15 +20,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import __version__, services as S
+from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, RELEASE_STAGE, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
 from ..doctor import MODEL_LICENSES, run_checks
 from ..pipeline import book_dirs, resolve_take
 from ..reports import QA_LIMITATIONS, write_report
-from ..storage import PathRejected, choose_folder_native, move_book, storage_overview, validate_dir
+from ..storage import PathRejected, browse, choose_folder_native, make_folder, move_book, storage_overview, validate_dir
 from ..util import dumps, loads, title_filename
 from . import security
+from .auth import COOKIE, ROLES, SESSION_TTL
 from .media import ensure_inside, file_response
 
 log = logging.getLogger("studio.web")
@@ -156,8 +157,31 @@ class PathReq(_Req):
     path: str = Field(max_length=4096)
 
 
+class MkdirReq(_Req):
+    parent: str = Field(max_length=4096)
+    name: str = Field(max_length=120)
+
+
 class MoveBookReq(_Req):
     new_root: str = Field(max_length=4096)
+
+
+class LoginReq(_Req):
+    username: str = Field(max_length=80)
+    password: str = Field(max_length=200)
+
+
+class PasswordReq(_Req):
+    current: str = Field(max_length=200)
+    new: str = Field(min_length=10, max_length=200)
+    confirm: str = Field(max_length=200)
+
+
+class UserReq(_Req):
+    username: str = Field(max_length=40)
+    password: str = Field(min_length=10, max_length=200)
+    confirm: str = Field(max_length=200)
+    role: str = "operator"
 
 
 class ArchiveReq(_Req):
@@ -304,6 +328,79 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 raise S.ServiceError(f"Upload exceeds the {limit // (1024 * 1024)} MB limit.", 413)
             chunks.append(data)
         return b"".join(chunks)
+
+    # ------------------------------------------------------------------- auth
+    def _client_key(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
+    def _session(resp, user):
+        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
+        return resp
+
+    @app.get("/api/auth/status")
+    def api_auth_status(request: Request):
+        return {"auth_required": app.state.auth.enabled(), "user": request.state.user, "engine": ctx.engine_mode,
+                "version": __version__, "version_label": VERSION_LABEL}
+
+    @app.post("/api/auth/login")
+    def api_login(req: LoginReq, request: Request):
+        a, lim = app.state.auth, app.state.limiter
+        key = _client_key(request)
+        wait = lim.blocked(key)
+        if wait:
+            return JSONResponse({"error": f"Too many failed sign-ins. Try again in {wait // 60 + 1} min."}, status_code=429)
+        user = a.verify(req.username.strip(), req.password)
+        if not user:
+            lim.fail(key)
+            with ctx.db.tx() as conn:
+                ctx.audit(conn, "auth", req.username.strip()[:40], "login_failed", {"ip": key}, "anonymous")
+            return JSONResponse({"error": "Wrong user name or password."}, status_code=401)
+        lim.ok(key)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", user["name"], "login", {"ip": key}, user["name"])
+        return _session(JSONResponse({"ok": True, "user": user}), user)
+
+    @app.post("/api/auth/logout")
+    def api_logout():
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(COOKIE, path="/")
+        return resp
+
+    @app.post("/api/auth/password")
+    def api_password(req: PasswordReq, request: Request):
+        u = request.state.user
+        if not u:
+            raise S.ServiceError("Sign in required.", 401)
+        if req.new != req.confirm:
+            raise S.ServiceError("The new password and its confirmation do not match. Nothing was changed.", 422)
+        a = app.state.auth
+        if not a.verify(u["name"], req.current):
+            raise S.ServiceError("Current password is wrong.", 403)
+        try:
+            a.set_user(u["name"], req.new, u["role"])
+        except ValueError as exc:
+            raise S.ServiceError(str(exc), 422)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", u["name"], "password_changed", {}, u["name"])
+        return _session(JSONResponse({"ok": True}), u)
+
+    @app.get("/api/auth/users")
+    def api_users():
+        return {"users": app.state.auth.list_users()}
+
+    @app.post("/api/auth/users")
+    def api_user_add(req: UserReq, request: Request):
+        if req.role not in ROLES:
+            raise S.ServiceError("role must be admin or operator", 422)
+        if req.password != req.confirm:
+            raise S.ServiceError("The password and its confirmation do not match.", 422)
+        try:
+            app.state.auth.set_user(req.username, req.password, req.role)
+        except ValueError as exc:
+            raise S.ServiceError(str(exc), 422)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name", "operator"))
+        return {"users": app.state.auth.list_users()}
 
     # ------------------------------------------------------------------ pages
     @app.get("/", include_in_schema=False)
@@ -645,11 +742,24 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_storage_validate(req: PathReq):
         return validate_dir(req.path, ctx.home, create=False, measure=True)
 
+    @app.get("/api/storage/browse")
+    def api_storage_browse(path: Optional[str] = Query(None, max_length=4096), hidden: bool = False):
+        """Server-side folder browser (admin only): lists folders on the hosting Mac."""
+        return browse(path, hidden)
+
+    @app.post("/api/storage/mkdir")
+    def api_storage_mkdir(req: MkdirReq, request: Request):
+        created = make_folder(req.parent, req.name)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name", "operator"))
+        return {"path": created}
+
     @app.post("/api/storage/choose-folder")
-    def api_choose_folder():
+    def api_choose_folder(request: Request):
         from ..config import is_loopback
-        if not is_loopback(ctx.settings().server.host):
-            raise S.ServiceError("The native chooser is disabled when the studio is reachable from other machines.", 403)
+        client = request.client.host if request.client else ""
+        if not is_loopback(client):
+            raise S.ServiceError("The Finder picker opens on the Mac's own screen, so it only works from the Mac itself. Use Browse instead.", 403)
         path = choose_folder_native()
         return {"path": path, "cancelled": path is None}
 
@@ -660,7 +770,15 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
 
     @app.get("/api/about")
     def api_about():
-        return {"version": __version__, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES, "qa_limitations": QA_LIMITATIONS,
-                "home": str(ctx.home), "python": sys.version.split()[0]}
+        from ..engines import package_version
+        build = ""
+        try:
+            build = (ctx.app_dir / "BUILD").read_text("utf-8").strip()
+        except OSError:
+            pass
+        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "stage": RELEASE_STAGE, "developer": DEVELOPER,
+                "company": COMPANY, "copyright": COPYRIGHT, "build": build, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES,
+                "qa_limitations": QA_LIMITATIONS, "home": str(ctx.home), "python": sys.version.split()[0],
+                "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app

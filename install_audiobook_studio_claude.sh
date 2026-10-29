@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Audiobook Studio (Claude build) - self-contained installer for macOS on Apple Silicon
-#  Version 1.0.0 (build 20261028211255-d01658e1)
+#  Audiobook Studio - self-contained installer for macOS on Apple Silicon
+#  Developed by Scott Albretsen, TSAL Solutions LLC
+#  Version v0.1 - prerelease (build 20261028220955-ea0494f9)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -19,8 +20,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="1.0.0"
-BUILD_ID="20261028211255-d01658e1"
+STUDIO_VERSION="v0.1 - prerelease"
+BUILD_ID="20261028220955-ea0494f9"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -28,6 +29,10 @@ SKIP_TESTS=0
 STOP_RUNNING=0
 EXTRACT_ONLY=""
 PORT=""
+LAN=0
+HOST=""
+ADMIN_USER="admin"
+INSTALL_SERVICE=0
 
 usage() {
   cat <<'USAGE'
@@ -39,12 +44,19 @@ Options:
   --skip-tests       Do not run the automated test suite after installing.
   --port N           Web UI port (default 7861; applied to settings).
   --stop-running     Stop a running studio before upgrading it.
+  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required.
+  --host ADDR        Bind address (default 127.0.0.1; --lan sets 0.0.0.0).
+  --admin-user NAME  Administrator account created on first install (default: admin). A random
+                     password is generated, printed once and saved to config/initial-admin-password.txt.
+  --install-service  Install and start the background service (macOS LaunchAgent).
   --extract-only DIR Only write the application files into DIR/app (no venv, no downloads).
   -h, --help         Show this help.
 
 Environment:
   AUDIOBOOK_STUDIO_HOME   Install location (default ~/audiobook-studio-claude).
   STUDIO_PYTHON           Python 3.12 interpreter to use (default: Homebrew python@3.12).
+                          If set, and ffmpeg/ffprobe are already on PATH (or in $AUDIOBOOK_STUDIO_HOME/tools/bin),
+                          Homebrew is not required.
   STUDIO_MLX_AUDIO_SPEC   Override the mlx-audio requirement (default mlx-audio==0.6.3).
   AUDIOBOOK_STUDIO_ALLOW_NON_MAC=1  Allow a mock-engine test install on Linux (CI only).
 USAGE
@@ -56,6 +68,10 @@ while [ $# -gt 0 ]; do
     --prefetch-all) PREFETCH_ALL=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
     --stop-running) STOP_RUNNING=1 ;;
+    --lan) LAN=1 ;;
+    --install-service) INSTALL_SERVICE=1 ;;
+    --host) [ $# -ge 2 ] || { echo "--host needs a value" >&2; exit 2; }; HOST="$2"; shift ;;
+    --admin-user) [ $# -ge 2 ] || { echo "--admin-user needs a value" >&2; exit 2; }; ADMIN_USER="$2"; shift ;;
     --port)
       [ $# -ge 2 ] || { echo "--port needs a value" >&2; exit 2; }
       PORT="$2"; shift
@@ -81,7 +97,7 @@ extract_files() {
   local DEST="$1"
   mkdir -p "$DEST"
   mkdir -p "$DEST/bin"
-cat > "$DEST/bin/_env.sh" <<'__STUDIO_EOF_d4e4cee745d5__'
+cat > "$DEST/bin/_env.sh" <<'__STUDIO_EOF_45c27eed4a2a__'
 # Shared environment for the Audiobook Studio launchers (sourced, not executed).
 # shellcheck shell=bash
 STUDIO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,6 +109,7 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
 # shellcheck disable=SC2034  # used by the scripts that source this file
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$AUDIOBOOK_STUDIO_HOME/tools/bin:$PATH"
 STUDIO_PY="$STUDIO_ROOT/venv/bin/python"
 # shellcheck disable=SC2034
 STUDIO_APP="$STUDIO_ROOT/app"
@@ -120,7 +137,7 @@ except Exception:
     print(7861)' "$AUDIOBOOK_STUDIO_HOME/config/settings.json"
 }
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
-__STUDIO_EOF_d4e4cee745d5__
+__STUDIO_EOF_45c27eed4a2a__
 cat > "$DEST/bin/run-tests" <<'__STUDIO_EOF_3c447bcd621e__'
 #!/usr/bin/env bash
 # Automated tests (unit + HTTP integration). They use the MOCK engine (synthetic test tones)
@@ -207,7 +224,7 @@ fi
 wait "$SERVER_PID"
 __STUDIO_EOF_39a3966fcd35__
   chmod 755 "$DEST/bin/start-studio"
-cat > "$DEST/bin/stop-studio" <<'__STUDIO_EOF_fae3f16b8d58__'
+cat > "$DEST/bin/stop-studio" <<'__STUDIO_EOF_db6095bef8ef__'
 #!/usr/bin/env bash
 # Stop the Audiobook Studio server and GPU worker gracefully. Completed segments and the
 # queue are stored on disk; an interrupted segment is resumed (and counted) on next start.
@@ -227,10 +244,14 @@ stop_pid() {
   fi
   rm -f "$file"
 }
+if [ -x "$STUDIO_ROOT/studio-service" ] && { launchctl print "gui/$(id -u)/com.audiobookstudio.claude" >/dev/null 2>&1 \
+     || launchctl print "user/$(id -u)/com.audiobookstudio.claude" >/dev/null 2>&1; }; then
+  "$STUDIO_ROOT/studio-service" stop
+fi
 stop_pid "web server" "$AUDIOBOOK_STUDIO_HOME/run/server.pid"
 stop_pid "GPU worker" "$AUDIOBOOK_STUDIO_HOME/run/worker.pid"
 echo "Audiobook Studio stopped."
-__STUDIO_EOF_fae3f16b8d58__
+__STUDIO_EOF_db6095bef8ef__
   chmod 755 "$DEST/bin/stop-studio"
 cat > "$DEST/bin/studio" <<'__STUDIO_EOF_19463d394fba__'
 #!/usr/bin/env bash
@@ -242,6 +263,116 @@ cd "$STUDIO_APP"
 exec "$STUDIO_PY" -m studio "$@"
 __STUDIO_EOF_19463d394fba__
   chmod 755 "$DEST/bin/studio"
+cat > "$DEST/bin/studio-service" <<'__STUDIO_EOF_f6f85c632513__'
+#!/usr/bin/env bash
+# Run Audiobook Studio as a background macOS service (no terminal needed).
+#
+#   ./studio-service install      create + load the LaunchAgent (starts at login, restarts on crash)
+#   ./studio-service start|stop|restart|status|logs
+#   ./studio-service uninstall    unload and remove the LaunchAgent
+#   ./studio-service daemon-plist print a LaunchDaemon (starts at BOOT, before login) and the sudo
+#                                 commands to install it. Needs an administrator password.
+#
+# A LaunchAgent only runs while this user is logged in (graphical login, or a session kept by
+# auto-login). For unattended operation after a reboot, enable automatic login for this user in
+# System Settings > Users & Groups, or use the LaunchDaemon from `daemon-plist`.
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+
+LABEL="com.audiobookstudio.claude"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UIDN="$(id -u)"
+OUT="$AUDIOBOOK_STUDIO_HOME/logs/launchd.out.log"
+
+make_plist() {
+  local who="${1:-}" path="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$AUDIOBOOK_STUDIO_HOME/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>$STUDIO_PY</string><string>-m</string><string>studio</string><string>serve</string></array>
+  <key>WorkingDirectory</key><string>$STUDIO_APP</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUDIOBOOK_STUDIO_HOME</key><string>$AUDIOBOOK_STUDIO_HOME</string>
+    <key>HF_HOME</key><string>$HF_HOME</string>
+    <key>HF_HUB_DISABLE_TELEMETRY</key><string>1</string>
+    <key>DO_NOT_TRACK</key><string>1</string>
+    <key>TOKENIZERS_PARALLELISM</key><string>false</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+    <key>HOME</key><string>$HOME</string>
+    <key>PATH</key><string>$path</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>45</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>$OUT</string>
+  <key>StandardErrorPath</key><string>$OUT</string>
+${who:+  <key>UserName</key><string>$who</string>}
+</dict>
+</plist>
+EOF
+}
+
+domain() {
+  if launchctl print "gui/$UIDN" >/dev/null 2>&1; then echo "gui/$UIDN"; else echo "user/$UIDN"; fi
+}
+loaded() { launchctl print "$(domain)/$LABEL" >/dev/null 2>&1; }
+
+case "${1:-status}" in
+  install)
+    mkdir -p "$HOME/Library/LaunchAgents" "$AUDIOBOOK_STUDIO_HOME/logs"
+    make_plist | grep -v '^$' > "$PLIST"
+    plutil -lint "$PLIST" >/dev/null
+    if loaded; then launchctl bootout "$(domain)/$LABEL" 2>/dev/null || true; sleep 1; fi
+    launchctl bootstrap "$(domain)" "$PLIST"
+    launchctl enable "$(domain)/$LABEL" 2>/dev/null || true
+    echo "Installed $PLIST (domain $(domain)). Logs: $OUT"
+    ;;
+  uninstall)
+    if loaded; then launchctl bootout "$(domain)/$LABEL" || true; fi
+    rm -f "$PLIST"
+    echo "Service removed."
+    ;;
+  start)
+    if ! loaded; then launchctl bootstrap "$(domain)" "$PLIST"; fi
+    launchctl kickstart "$(domain)/$LABEL"
+    echo "Started."
+    ;;
+  stop)
+    # bootout stops the process and prevents KeepAlive from restarting it until `start`
+    if loaded; then launchctl bootout "$(domain)/$LABEL"; echo "Stopped (the GPU worker finishes or abandons its current segment safely)."; else echo "Not running."; fi
+    ;;
+  restart)
+    if loaded; then launchctl kickstart -k "$(domain)/$LABEL"; else launchctl bootstrap "$(domain)" "$PLIST"; fi
+    echo "Restarted."
+    ;;
+  status)
+    if loaded; then launchctl print "$(domain)/$LABEL" | grep -E "state =|pid =|last exit|runs =" | sed 's/^[ \t]*/  /'; else echo "  service not loaded"; fi
+    ;;
+  logs)
+    tail -n "${2:-80}" "$OUT" "$AUDIOBOOK_STUDIO_HOME/logs/server.log" 2>/dev/null
+    ;;
+  daemon-plist)
+    D="/Library/LaunchDaemons/$LABEL.plist"
+    TMPF="$AUDIOBOOK_STUDIO_HOME/run/$LABEL.daemon.plist"
+    mkdir -p "$AUDIOBOOK_STUDIO_HOME/run"
+    make_plist "$(id -un)" | grep -v '^$' > "$TMPF"
+    echo "Wrote $TMPF. To run at boot (before login) an administrator must run:"
+    echo "  ./studio-service uninstall"
+    echo "  sudo cp '$TMPF' '$D' && sudo chown root:wheel '$D' && sudo chmod 644 '$D'"
+    echo "  sudo launchctl bootstrap system '$D'"
+    ;;
+  *) echo "usage: $0 install|uninstall|start|stop|restart|status|logs|daemon-plist" >&2; exit 2 ;;
+esac
+__STUDIO_EOF_f6f85c632513__
+  chmod 755 "$DEST/bin/studio-service"
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -271,8 +402,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_331accb4ff90__'
-# Audiobook Studio (Claude build)
+cat > "$DEST/README.md" <<'__STUDIO_EOF_a441a135aa76__'
+# Audiobook Studio
+
+**v0.1 - prerelease** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -522,7 +655,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_331accb4ff90__
+__STUDIO_EOF_a441a135aa76__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -538,12 +671,17 @@ pytest>=8.0
 huggingface_hub>=0.23
 __STUDIO_EOF_ebe6560fce3c__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_dc040ea28e62__'
-"""Audiobook Studio (Claude build) - local, autonomous audiobook production on Apple Silicon."""
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_535329dd4810__'
+"""Audiobook Studio - local, autonomous audiobook production on Apple Silicon."""
 
-__version__ = "1.0.0"
+__version__ = "0.1"
+RELEASE_STAGE = "prerelease"
+VERSION_LABEL = f"v{__version__} - {RELEASE_STAGE}"
 APP_NAME = "Audiobook Studio"
-__STUDIO_EOF_dc040ea28e62__
+DEVELOPER = "Scott Albretsen"
+COMPANY = "TSAL Solutions LLC"
+COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
+__STUDIO_EOF_535329dd4810__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -1561,7 +1699,7 @@ def build_segments(blocks, min_chars: int, max_chars: int, merge_short: bool = T
         segs[-1].pause_kind = "chapter_end"
     return segs
 __STUDIO_EOF_9f5f1545af60__
-cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_5e366d17be7a__'
+cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_d2cd7aa2a7c7__'
 """Command line interface. The web UI is the primary interface; the CLI exists for automation,
 diagnostics and headless use."""
 from __future__ import annotations
@@ -1603,10 +1741,13 @@ def cmd_serve(a):
     s = ctx.settings()
     host = a.host or s.server.host
     port = a.port or s.server.port
-    if not is_loopback(host) and not (s.server.allow_remote and a.allow_remote):
-        sys.exit("Refusing to bind to a non-loopback address. This studio has no authentication. "
-                 "If you really need it, set server.allow_remote=true in Settings AND pass --allow-remote.")
+    if not is_loopback(host) and not (s.server.allow_remote or a.allow_remote):
+        sys.exit("Refusing to bind to a non-loopback address. Set server.allow_remote=true (installer --lan does this).")
     from .web.app import create_app
+    from .web.auth import AuthStore
+
+    if not is_loopback(host) and not AuthStore(ctx.config_dir / "auth.json").enabled():
+        sys.exit("Refusing to bind to a network address without any user account. Create one: ./studio auth add-user NAME --role admin --generate")
 
     app = create_app(ctx)
     app.state.port = port
@@ -1626,6 +1767,41 @@ def cmd_worker(a):
     ctx = Context()
     setup_logging(ctx, "worker")
     main(ctx)
+
+
+def cmd_auth(a):
+    import getpass
+
+    from .web.auth import AuthStore, generate_password
+
+    ctx = _ctx()
+    store = AuthStore(ctx.config_dir / "auth.json")
+    if a.action == "list":
+        for u in store.list_users():
+            print(f"{u['name']:<20} {u['role']}")
+        return
+    if not a.name:
+        sys.exit("NAME is required")
+    if a.action == "remove-user":
+        try:
+            store.remove_user(a.name)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(f"User '{a.name}' removed (their sessions stop working immediately).")
+        return
+    pw = a.password or os.environ.get("STUDIO_NEW_PASSWORD")
+    generated = False
+    if not pw and a.generate:
+        pw, generated = generate_password(), True
+    if not pw:
+        pw = getpass.getpass("Password (min 10 chars): ")
+        if getpass.getpass("Type it again: ") != pw:
+            sys.exit("The two passwords do not match. Nothing was changed.")
+    try:
+        store.set_user(a.name, pw, a.role)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else ""))
 
 
 def cmd_migrate(a):
@@ -1813,6 +1989,13 @@ def main(argv=None):
     sp.set_defaults(func=cmd_serve)
     sub.add_parser("worker", help="run the GPU worker in the foreground").set_defaults(func=cmd_worker)
     sub.add_parser("migrate", help="apply database migrations").set_defaults(func=cmd_migrate)
+    sp = sub.add_parser("auth", help="manage web UI users")
+    sp.add_argument("action", choices=["add-user", "set-password", "remove-user", "list"])
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--role", choices=["admin", "operator"], default="operator")
+    sp.add_argument("--password")
+    sp.add_argument("--generate", action="store_true", help="generate and print a random password")
+    sp.set_defaults(func=cmd_auth)
     sp = sub.add_parser("doctor", help="check the environment")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_doctor)
@@ -1864,8 +2047,8 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-__STUDIO_EOF_5e366d17be7a__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_547c46104943__'
+__STUDIO_EOF_d2cd7aa2a7c7__
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_99e76bf19150__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -2064,6 +2247,7 @@ class ServerSettings(_M):
     host: str = "127.0.0.1"
     port: int = Field(7861, ge=1024, le=65535)
     allow_remote: bool = False
+    allowed_hosts: list[str] = Field(default_factory=list, description="extra Host header names accepted")
     max_manuscript_mb: int = Field(100, ge=1, le=2000)
     max_reference_mb: int = Field(25, ge=1, le=200)
 
@@ -2154,7 +2338,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_547c46104943__
+__STUDIO_EOF_99e76bf19150__
 cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_fb2d7cc67992__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
@@ -4320,7 +4504,7 @@ def _epub_toc_labels(zf: zipfile.ZipFile, manifest: dict, toc_id: str | None) ->
             pass
     return labels
 __STUDIO_EOF_1b54c58a2a23__
-cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_92f773d5125d__'
+cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_ee3d75cb5bf2__'
 """Per-segment attempt lifecycle: synthesize -> transcribe -> QA -> score -> retry/flag.
 
 Budget rules (crash-safe):
@@ -4604,7 +4788,10 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             ev = evaluate(text, asr_out["text"], asr_out.get("words"), acoustic["metrics"].get("duration_s"),
                           qa.get("max_dropped_words", 2), qa.get("max_inserted_words", 2))
             issues.extend(ev["issues"])
-            if ev["wer"] > qa.get("wer_threshold", 0.12):
+            # A percentage is meaningless on very short segments (one word in a 5-word heading is
+            # 20%): below 10 words require at least two real word errors before flagging on WER.
+            errors = ev["counts"]["sub"] + ev["counts"]["del"] + ev["counts"]["ins"]
+            if ev["wer"] > qa.get("wer_threshold", 0.12) and (ev["ref_tokens"] >= 10 or errors >= 2):
                 issues.append({"severity": "error", "kind": "wer", "message": f"Word error rate {ev['wer'] * 100:.1f}% exceeds {qa.get('wer_threshold', 0.12) * 100:.0f}%", "at_s": None, "source": "asr"})
         else:
             issues.append({"severity": "info", "kind": "asr_disabled", "message": "ASR verification disabled for this book - listen manually.", "at_s": None, "source": "settings"})
@@ -4673,7 +4860,7 @@ def recover_interrupted(conn) -> dict:
 
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
-__STUDIO_EOF_92f773d5125d__
+__STUDIO_EOF_ee3d75cb5bf2__
 cat > "$DEST/studio/reports.py" <<'__STUDIO_EOF_5c7f622586db__'
 """Review summary reports (JSON + self-contained, escaped HTML)."""
 from __future__ import annotations
@@ -6016,7 +6203,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
 __STUDIO_EOF_2b3656d89e18__
-cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_16a93e75b08e__'
+cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
 It exercises real Qwen3-TTS inference (CustomVoice, Base cloning, VoiceDesign), real
@@ -6247,13 +6434,13 @@ def run_smoke(args) -> int:
         key = ", ".join(f"{k}={d[k]}" for k in ("rtf", "mean_rtf", "wer", "peak_mem_gb", "audio_s", "segment_status", "chapters", "codec") if k in d)
         md.append(f"| {st['name']} | {'yes' if st['ok'] else 'NO'} | {st['seconds']} | {key or st.get('error', '')} |")
     md += ["", "## Defects", *(f"- {d}" for d in rep["defects"] or ["none"]), "",
-           "## Still manual", "- Open http://127.0.0.1:7861, listen to an output segment in Review, approve it, and record release signoff.",
+           "## Still manual", "- Open the studio URL (see ./studio-service status), sign in, listen to an output segment in Review, approve it, and record release signoff.",
            "- Listen to the exported chapter M4B in Apple Books / QuickTime and check chapter markers."]
     (out_dir / "smoke_report.md").write_text("\n".join(md) + "\n", "utf-8")
     print(f"\nSmoke test {rep['result']}. Report: {out_dir / 'smoke_report.md'}")
     return 0 if ok else 1
-__STUDIO_EOF_16a93e75b08e__
-cat > "$DEST/studio/storage.py" <<'__STUDIO_EOF_a66188958587__'
+__STUDIO_EOF_ef48976df99c__
+cat > "$DEST/studio/storage.py" <<'__STUDIO_EOF_9800c9e0fcfa__'
 """Storage location validation, disk usage and project relocation.
 
 Behaviour chosen for path changes: **per-project path registry**. Every book records the
@@ -6449,6 +6636,104 @@ def storage_overview(ctx) -> dict:
     }
 
 
+MAX_BROWSE_ENTRIES = 400
+_FOLDER_NAME = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,79}$")
+
+
+def browse(path: str | None, show_hidden: bool = False) -> dict:
+    """List the sub-folders of a directory on THIS machine so an administrator using the web UI
+    from anywhere on the network can find and pick a storage location. Directories only; files
+    are never listed or readable through this call."""
+    raw = (path or "").strip() or "~"
+    if "\x00" in raw:
+        raise PathRejected("Path contains a NUL byte.")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        raise PathRejected("Use an absolute path such as /Volumes/AudiobooksSSD or ~/Documents.")
+    vol = volume_of(p)
+    if vol is not None and not os.path.ismount(vol):
+        raise PathRejected(f"{vol} is not mounted. Connect the drive, then browse again.")
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathRejected(f"{p} does not exist on this computer.")
+    if not rp.is_dir():
+        raise PathRejected(f"{rp} is not a folder.")
+    entries, truncated = [], False
+    try:
+        children = sorted(os.scandir(rp), key=lambda e: e.name.lower())
+    except PermissionError:
+        raise PathRejected(f"macOS denied access to {rp}. Grant the studio's Python Full Disk Access (System Settings > Privacy & Security) or choose another folder.")
+    except OSError as exc:
+        raise PathRejected(f"Cannot read {rp}: {exc}")
+    for e in children:
+        if not show_hidden and e.name.startswith("."):
+            continue
+        try:
+            if not e.is_dir(follow_symlinks=True):
+                continue
+        except OSError:
+            continue
+        if len(entries) >= MAX_BROWSE_ENTRIES:
+            truncated = True
+            break
+        full = rp / e.name
+        entries.append({"name": e.name, "path": str(full), "writable": os.access(full, os.W_OK), "symlink": e.is_symlink(),
+                        "mount": os.path.ismount(full)})
+    shortcuts = [{"label": "Home", "path": str(Path.home())}]
+    for extra in ("Documents", "Desktop", "Music", "Movies"):
+        d = Path.home() / extra
+        if d.is_dir():
+            shortcuts.append({"label": extra, "path": str(d)})
+    volumes = []
+    vroot = Path("/Volumes")
+    if vroot.is_dir():
+        for v in sorted(vroot.iterdir(), key=lambda x: x.name.lower()):
+            try:
+                if v.is_dir() and not v.is_symlink():
+                    free = shutil.disk_usage(v).free
+                    volumes.append({"label": v.name, "path": str(v), "free_bytes": free, "mounted": os.path.ismount(v)})
+            except OSError:
+                continue
+    try:
+        du = shutil.disk_usage(rp)
+        free, total = du.free, du.total
+    except OSError:
+        free = total = None
+    return {"path": str(rp), "parent": str(rp.parent) if rp.parent != rp else None, "entries": entries, "truncated": truncated,
+            "writable": os.access(rp, os.W_OK), "free_bytes": free, "total_bytes": total, "shortcuts": shortcuts, "volumes": volumes,
+            "hostname": __import__("socket").gethostname()}
+
+
+def make_folder(parent: str, name: str) -> str:
+    name = (name or "").strip()
+    if not _FOLDER_NAME.match(name) or name.endswith("."):
+        raise PathRejected("Folder names may use letters, digits, space and . _ ( ) - (up to 80 characters).")
+    p = Path(parent).expanduser()
+    if not p.is_absolute():
+        raise PathRejected("Parent must be an absolute path.")
+    vol = volume_of(p)
+    if vol is not None and not os.path.ismount(vol):
+        raise PathRejected(f"{vol} is not mounted.")
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise PathRejected("The parent folder does not exist.")
+    if not rp.is_dir() or not os.access(rp, os.W_OK):
+        raise PathRejected(f"{rp} is not a writable folder.")
+    for pref in SYSTEM_PREFIXES:
+        if str(rp) == pref or str(rp).startswith(pref + "/"):
+            raise PathRejected(f"Creating folders inside the system location {pref} is not allowed.")
+    target = rp / name
+    if target.exists():
+        raise PathRejected(f"'{name}' already exists here.")
+    try:
+        target.mkdir()
+    except OSError as exc:
+        raise PathRejected(f"Could not create the folder: {exc}")
+    return str(target)
+
+
 def choose_folder_native(prompt: str = "Choose a folder for audiobook data") -> str | None:
     """Open the real macOS folder chooser (only meaningful when the server runs on the same Mac)."""
     if sys.platform != "darwin":
@@ -6534,7 +6819,7 @@ def move_book(ctx, book_id: int, new_root: str, progress=None) -> dict:
         ctx.audit(conn, "book", book_id, "moved", {"from": {k: str(v_) for k, v_ in old.items()}, "to": {k: str(v_) for k, v_ in new.items()}, "files": len(copied)})
         ctx.event(conn, "storage", f"Moved '{book['title']}' to {dest_root} ({len(copied)} files verified). The old copy was kept.", book_id)
     return {"files": len(copied), "old": {k: str(v_) for k, v_ in old.items()}, "new": {k: str(v_) for k, v_ in new.items()}}
-__STUDIO_EOF_a66188958587__
+__STUDIO_EOF_9800c9e0fcfa__
 cat > "$DEST/studio/util.py" <<'__STUDIO_EOF_34b312dc445b__'
 """Small shared helpers: hashing, atomic writes, JSON, filenames."""
 from __future__ import annotations
@@ -6688,7 +6973,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_e8a69b73dffe__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_d7d16e5994cb__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -6711,15 +6996,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import __version__, services as S
+from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, RELEASE_STAGE, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
 from ..doctor import MODEL_LICENSES, run_checks
 from ..pipeline import book_dirs, resolve_take
 from ..reports import QA_LIMITATIONS, write_report
-from ..storage import PathRejected, choose_folder_native, move_book, storage_overview, validate_dir
+from ..storage import PathRejected, browse, choose_folder_native, make_folder, move_book, storage_overview, validate_dir
 from ..util import dumps, loads, title_filename
 from . import security
+from .auth import COOKIE, ROLES, SESSION_TTL
 from .media import ensure_inside, file_response
 
 log = logging.getLogger("studio.web")
@@ -6847,8 +7133,31 @@ class PathReq(_Req):
     path: str = Field(max_length=4096)
 
 
+class MkdirReq(_Req):
+    parent: str = Field(max_length=4096)
+    name: str = Field(max_length=120)
+
+
 class MoveBookReq(_Req):
     new_root: str = Field(max_length=4096)
+
+
+class LoginReq(_Req):
+    username: str = Field(max_length=80)
+    password: str = Field(max_length=200)
+
+
+class PasswordReq(_Req):
+    current: str = Field(max_length=200)
+    new: str = Field(min_length=10, max_length=200)
+    confirm: str = Field(max_length=200)
+
+
+class UserReq(_Req):
+    username: str = Field(max_length=40)
+    password: str = Field(min_length=10, max_length=200)
+    confirm: str = Field(max_length=200)
+    role: str = "operator"
 
 
 class ArchiveReq(_Req):
@@ -6995,6 +7304,79 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 raise S.ServiceError(f"Upload exceeds the {limit // (1024 * 1024)} MB limit.", 413)
             chunks.append(data)
         return b"".join(chunks)
+
+    # ------------------------------------------------------------------- auth
+    def _client_key(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
+    def _session(resp, user):
+        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
+        return resp
+
+    @app.get("/api/auth/status")
+    def api_auth_status(request: Request):
+        return {"auth_required": app.state.auth.enabled(), "user": request.state.user, "engine": ctx.engine_mode,
+                "version": __version__, "version_label": VERSION_LABEL}
+
+    @app.post("/api/auth/login")
+    def api_login(req: LoginReq, request: Request):
+        a, lim = app.state.auth, app.state.limiter
+        key = _client_key(request)
+        wait = lim.blocked(key)
+        if wait:
+            return JSONResponse({"error": f"Too many failed sign-ins. Try again in {wait // 60 + 1} min."}, status_code=429)
+        user = a.verify(req.username.strip(), req.password)
+        if not user:
+            lim.fail(key)
+            with ctx.db.tx() as conn:
+                ctx.audit(conn, "auth", req.username.strip()[:40], "login_failed", {"ip": key}, "anonymous")
+            return JSONResponse({"error": "Wrong user name or password."}, status_code=401)
+        lim.ok(key)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", user["name"], "login", {"ip": key}, user["name"])
+        return _session(JSONResponse({"ok": True, "user": user}), user)
+
+    @app.post("/api/auth/logout")
+    def api_logout():
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(COOKIE, path="/")
+        return resp
+
+    @app.post("/api/auth/password")
+    def api_password(req: PasswordReq, request: Request):
+        u = request.state.user
+        if not u:
+            raise S.ServiceError("Sign in required.", 401)
+        if req.new != req.confirm:
+            raise S.ServiceError("The new password and its confirmation do not match. Nothing was changed.", 422)
+        a = app.state.auth
+        if not a.verify(u["name"], req.current):
+            raise S.ServiceError("Current password is wrong.", 403)
+        try:
+            a.set_user(u["name"], req.new, u["role"])
+        except ValueError as exc:
+            raise S.ServiceError(str(exc), 422)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", u["name"], "password_changed", {}, u["name"])
+        return _session(JSONResponse({"ok": True}), u)
+
+    @app.get("/api/auth/users")
+    def api_users():
+        return {"users": app.state.auth.list_users()}
+
+    @app.post("/api/auth/users")
+    def api_user_add(req: UserReq, request: Request):
+        if req.role not in ROLES:
+            raise S.ServiceError("role must be admin or operator", 422)
+        if req.password != req.confirm:
+            raise S.ServiceError("The password and its confirmation do not match.", 422)
+        try:
+            app.state.auth.set_user(req.username, req.password, req.role)
+        except ValueError as exc:
+            raise S.ServiceError(str(exc), 422)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name", "operator"))
+        return {"users": app.state.auth.list_users()}
 
     # ------------------------------------------------------------------ pages
     @app.get("/", include_in_schema=False)
@@ -7336,11 +7718,24 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_storage_validate(req: PathReq):
         return validate_dir(req.path, ctx.home, create=False, measure=True)
 
+    @app.get("/api/storage/browse")
+    def api_storage_browse(path: Optional[str] = Query(None, max_length=4096), hidden: bool = False):
+        """Server-side folder browser (admin only): lists folders on the hosting Mac."""
+        return browse(path, hidden)
+
+    @app.post("/api/storage/mkdir")
+    def api_storage_mkdir(req: MkdirReq, request: Request):
+        created = make_folder(req.parent, req.name)
+        with ctx.db.tx() as conn:
+            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name", "operator"))
+        return {"path": created}
+
     @app.post("/api/storage/choose-folder")
-    def api_choose_folder():
+    def api_choose_folder(request: Request):
         from ..config import is_loopback
-        if not is_loopback(ctx.settings().server.host):
-            raise S.ServiceError("The native chooser is disabled when the studio is reachable from other machines.", 403)
+        client = request.client.host if request.client else ""
+        if not is_loopback(client):
+            raise S.ServiceError("The Finder picker opens on the Mac's own screen, so it only works from the Mac itself. Use Browse instead.", 403)
         path = choose_folder_native()
         return {"path": path, "cancelled": path is None}
 
@@ -7351,11 +7746,200 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
 
     @app.get("/api/about")
     def api_about():
-        return {"version": __version__, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES, "qa_limitations": QA_LIMITATIONS,
-                "home": str(ctx.home), "python": sys.version.split()[0]}
+        from ..engines import package_version
+        build = ""
+        try:
+            build = (ctx.app_dir / "BUILD").read_text("utf-8").strip()
+        except OSError:
+            pass
+        return {"name": APP_NAME, "version": __version__, "version_label": VERSION_LABEL, "stage": RELEASE_STAGE, "developer": DEVELOPER,
+                "company": COMPANY, "copyright": COPYRIGHT, "build": build, "engine_mode": ctx.engine_mode, "licenses": MODEL_LICENSES,
+                "qa_limitations": QA_LIMITATIONS, "home": str(ctx.home), "python": sys.version.split()[0],
+                "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_e8a69b73dffe__
+__STUDIO_EOF_d7d16e5994cb__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5068e44bfe07__'
+"""Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
+roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import threading
+import time
+from pathlib import Path
+
+ITERATIONS = 240_000
+SESSION_TTL = 12 * 3600
+COOKIE = "studio_session"
+ROLES = ("admin", "operator")
+USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
+
+# Paths only an administrator may use (settings, storage, process control, user management).
+ADMIN_RULES = [
+    ("PUT", re.compile(r"^/api/settings$")),
+    ("GET", re.compile(r"^/api/storage$")),
+    ("GET", re.compile(r"^/api/storage/browse$")),
+    ("POST", re.compile(r"^/api/storage/")),
+    ("POST", re.compile(r"^/api/books/\d+/(move|archive)$")),
+    ("POST", re.compile(r"^/api/worker/restart$")),
+    ("POST", re.compile(r"^/api/voices/\d+/archive$")),
+    ("GET", re.compile(r"^/api/auth/users$")),
+    ("POST", re.compile(r"^/api/auth/users$")),
+    ("GET", re.compile(r"^/api/doctor$")),
+]
+
+
+def is_admin_only(method: str, path: str) -> bool:
+    return any(m == method and rx.match(path) for m, rx in ADMIN_RULES)
+
+
+class AuthStore:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._cache: tuple[float, dict] | None = None
+
+    def _load(self) -> dict:
+        try:
+            mtime = self.path.stat().st_mtime
+        except FileNotFoundError:
+            return {"secret": "", "users": {}}
+        if self._cache and self._cache[0] == mtime:
+            return self._cache[1]
+        data = json.loads(self.path.read_text("utf-8") or "{}")
+        data.setdefault("users", {})
+        data.setdefault("secret", "")
+        self._cache = (mtime, data)
+        return data
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data, indent=2))
+        os.replace(tmp, self.path)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+        self._cache = None
+
+    @staticmethod
+    def _hash(password: str, salt: bytes, iters: int = ITERATIONS) -> str:
+        return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters).hex()
+
+    def enabled(self) -> bool:
+        return bool(self._load()["users"])
+
+    def list_users(self) -> list[dict]:
+        return [{"name": n, "role": u["role"], "created_at": u.get("created_at")} for n, u in sorted(self._load()["users"].items())]
+
+    def set_user(self, name: str, password: str, role: str = "operator") -> None:
+        if not USER_RE.match(name or ""):
+            raise ValueError("User names are 2-40 characters: letters, digits, . _ -")
+        if role not in ROLES:
+            raise ValueError("Role must be admin or operator")
+        if len(password or "") < 10:
+            raise ValueError("Password must be at least 10 characters")
+        with self._lock:
+            data = dict(self._load())
+            data["users"] = dict(data["users"])
+            if not data["secret"]:
+                data["secret"] = secrets.token_hex(32)
+            salt = secrets.token_bytes(16)
+            existing = data["users"].get(name, {})
+            if existing.get("role") == "admin" and role != "admin" and sum(1 for u in data["users"].values() if u["role"] == "admin") == 1:
+                raise ValueError("Cannot demote the only administrator")
+            data["users"][name] = {"salt": salt.hex(), "hash": self._hash(password, salt), "iters": ITERATIONS, "role": role,
+                                   "created_at": existing.get("created_at") or time.time()}
+            self._save(data)
+
+    def remove_user(self, name: str) -> None:
+        with self._lock:
+            data = dict(self._load())
+            users = dict(data["users"])
+            if name not in users:
+                raise ValueError(f"No such user '{name}'")
+            if users[name]["role"] == "admin" and sum(1 for u in users.values() if u["role"] == "admin") == 1:
+                raise ValueError("Cannot remove the only administrator")
+            del users[name]
+            data["users"] = users
+            self._save(data)
+
+    def verify(self, name: str, password: str) -> dict | None:
+        u = self._load()["users"].get(name or "")
+        salt = bytes.fromhex(u["salt"]) if u else b"\0" * 16
+        got = self._hash(password or "", salt, u["iters"] if u else ITERATIONS)  # constant work for unknown users
+        if u and hmac.compare_digest(got, u["hash"]):
+            return {"name": name, "role": u["role"]}
+        return None
+
+    # ---------------------------------------------------------------- sessions
+    def make_token(self, user: dict, ttl: int = SESSION_TTL) -> str:
+        data = self._load()
+        u = data["users"][user["name"]]
+        payload = {"u": user["name"], "r": user["role"], "e": int(time.time()) + ttl, "v": u["hash"][:12]}
+        body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+        sig = hmac.new(bytes.fromhex(data["secret"]), body.encode(), hashlib.sha256).hexdigest()
+        return f"{body}.{sig}"
+
+    def parse_token(self, token: str | None) -> dict | None:
+        if not token or "." not in token:
+            return None
+        data = self._load()
+        if not data["secret"]:
+            return None
+        body, sig = token.rsplit(".", 1)
+        want = hmac.new(bytes.fromhex(data["secret"]), body.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, want):
+            return None
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        except (ValueError, json.JSONDecodeError):
+            return None
+        u = data["users"].get(payload.get("u"))
+        # a password change (new hash) or removed user invalidates old sessions
+        if not u or payload.get("e", 0) < time.time() or payload.get("v") != u["hash"][:12]:
+            return None
+        return {"name": payload["u"], "role": u["role"]}
+
+
+class LoginLimiter:
+    """At most 6 failed logins per client address per 5 minutes."""
+
+    def __init__(self, limit: int = 6, window: int = 300):
+        self.limit, self.window = limit, window
+        self.fails: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def blocked(self, key: str) -> int:
+        with self._lock:
+            t = time.time()
+            recent = [x for x in self.fails.get(key, []) if t - x < self.window]
+            self.fails[key] = recent
+            return int(self.window - (t - recent[0])) if len(recent) >= self.limit else 0
+
+    def fail(self, key: str) -> None:
+        with self._lock:
+            self.fails.setdefault(key, []).append(time.time())
+
+    def ok(self, key: str) -> None:
+        with self._lock:
+            self.fails.pop(key, None)
+
+
+def generate_password() -> str:
+    alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
+__STUDIO_EOF_5068e44bfe07__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -7465,58 +8049,118 @@ def ensure_inside(path: Path, roots: list[Path]) -> Path:
             return rp
     raise PermissionError("path outside registered storage")
 __STUDIO_EOF_5578c285b43a__
-cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_a864d7e45bf3__'
+cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_6d1b484c18f1__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
-mutating requests (CSRF), and strict response headers."""
+mutating requests (CSRF), session authentication with admin-only routes, strict headers.
+
+No CORS headers are sent: the UI is served by the same origin as the API, so cross-origin
+access is never needed and is blocked by the browser's same-origin policy."""
 from __future__ import annotations
 
+import socket
+import subprocess
+import sys
 from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..config import is_loopback
+from .auth import COOKIE, AuthStore, LoginLimiter, is_admin_only
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+PUBLIC_PREFIXES = ("/static/",)
+PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico"}
 
 
-def _loopback_hosts(port: int) -> set[str]:
-    return {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+def local_names() -> set[str]:
+    """Host names/addresses this machine legitimately answers to."""
+    names = {"127.0.0.1", "localhost", "[::1]", "::1"}
+    try:
+        names.add(socket.gethostname().lower())
+        names.add(socket.getfqdn().lower())
+        names.add(socket.gethostname().lower().split(".")[0])
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            names.add(info[4][0])
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["/sbin/ifconfig"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "inet":
+                    names.add(parts[1])
+        except Exception:
+            pass
+    return {n for n in names if n}
 
 
 def install(app, ctx) -> None:
+    auth = AuthStore(ctx.config_dir / "auth.json")
+    limiter = LoginLimiter()
+    app.state.auth = auth
+    app.state.limiter = limiter
+    cached = {"names": None}
+
+    def allowed_hosts() -> set[str]:
+        if cached["names"] is None:
+            cached["names"] = local_names()
+        extra = {h.lower() for h in ctx.settings().server.allowed_hosts}
+        return cached["names"] | extra
+
+    def host_ok(host: str, port: int) -> bool:
+        if host.startswith("["):  # [::1]:port
+            name, _, rest = host.partition("]")
+            name, p = name + "]", rest.lstrip(":")
+        else:
+            name, _, p = host.partition(":")
+        if p and p != str(port):
+            return False
+        return name in allowed_hosts()
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         s = ctx.settings().server
         port = getattr(app.state, "port", None) or s.port
         host = (request.headers.get("host") or "").lower()
-        if not s.allow_remote or is_loopback(s.host):
-            if host not in _loopback_hosts(port):
-                return JSONResponse({"error": "Invalid Host header (this studio only answers on 127.0.0.1)."}, status_code=421)
+        if not host_ok(host, port):
+            return JSONResponse({"error": "Invalid Host header. Add this name to server.allowed_hosts in settings.json if it is legitimate."}, status_code=421)
+        path = request.url.path
         if request.method in MUTATING:
             origin = request.headers.get("origin")
-            if origin:
-                if urlsplit(origin).netloc.lower() != host:
-                    return JSONResponse({"error": "Cross-origin request blocked."}, status_code=403)
+            if origin and urlsplit(origin).netloc.lower() != host:
+                return JSONResponse({"error": "Cross-origin request blocked."}, status_code=403)
             sfs = request.headers.get("sec-fetch-site")
             if sfs and sfs not in ("same-origin", "none"):
                 return JSONResponse({"error": "Cross-site request blocked."}, status_code=403)
             if request.headers.get("x-studio-request") != "1":
                 return JSONResponse({"error": "Missing X-Studio-Request header (use the studio UI or CLI)."}, status_code=403)
+        request.state.user = None
+        if auth.enabled():
+            request.state.user = auth.parse_token(request.cookies.get(COOKIE))
+            public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+            if not request.state.user and not public:
+                return JSONResponse({"error": "Sign in required.", "auth": "required"}, status_code=401)
+            if request.state.user and request.state.user["role"] != "admin" and is_admin_only(request.method, path):
+                return JSONResponse({"error": "This action needs an administrator account."}, status_code=403)
+        elif not is_loopback(s.host):
+            return JSONResponse({"error": "Refusing to serve: network binding without any user account."}, status_code=503)
         response = await call_next(request)
         response.headers.setdefault("Content-Security-Policy", CSP)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if path.startswith("/api/") or path.startswith("/media/"):
+            response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response
-__STUDIO_EOF_a864d7e45bf3__
+__STUDIO_EOF_6d1b484c18f1__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_e74911fe8c9e__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_88cc0578bd84__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -7809,8 +8453,41 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
   .badge, .btn, .card { border: 1px solid CanvasText; }
   .progress-fill { background: Highlight; }
 }
-__STUDIO_EOF_e74911fe8c9e__
-cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_7adf315a0473__'
+
+/* ---------------------------------------------------------------- about */
+.ver-link { color: var(--muted); font-weight: 600; text-decoration: none; }
+.ver-link:hover { text-decoration: underline; }
+.about-hero { display: grid; grid-template-columns: auto 1fr; gap: 1.2rem; align-items: center; }
+.about-logo { width: 84px; height: 84px; border-radius: 20px; background: var(--accent); display: grid; place-items: center; box-shadow: var(--shadow); }
+.about-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; margin: 0 0 .2rem; }
+.about-title h1 { font-size: 1.9rem; }
+.stage { font-weight: 700; border-radius: 999px; padding: .1rem .7rem; font-size: .85rem; background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+.about-credit { margin: .2rem 0; }
+.about-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .8rem; margin-top: 1rem; }
+.about-facts div { background: var(--surface-2); border-radius: 8px; padding: .6rem .8rem; }
+.about-facts dt { font-size: .78rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.about-facts dd { margin: .1rem 0 0; font-weight: 600; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .about-hero { grid-template-columns: 1fr; } }
+/* ---------------------------------------------------------------- folder browser */
+dialog.modal.browse { max-width: min(720px, calc(100vw - 2rem)); }
+.br-go { display: flex; gap: .4rem; margin: .4rem 0; }
+.br-go input { margin-top: 0; font-family: var(--mono); font-size: .88rem; }
+.br-short { display: flex; flex-wrap: wrap; gap: .3rem; margin: .4rem 0; }
+.br-status { font-size: .84rem; padding: .4rem .6rem; border-radius: 6px; background: var(--surface-2); border-left: 3px solid var(--border); overflow-wrap: anywhere; margin: .4rem 0; }
+.br-status.ok { border-left-color: var(--good); } .br-status.bad { border-left-color: var(--bad); }
+.br-list { list-style: none; margin: .4rem 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.br-item { display: block; width: 100%; text-align: left; padding: .4rem .7rem; background: none; border: 0; border-bottom: 1px solid var(--border); font: inherit; color: var(--text); cursor: pointer; }
+.br-item:hover, .br-item:focus-visible { background: var(--accent-soft); }
+.br-empty { padding: .6rem .7rem; }
+/* ---------------------------------------------------------------- sign-in / user box */
+.user-box { display: flex; align-items: center; gap: .4rem; font-size: .85rem; color: var(--muted); }
+.login-card { max-width: 380px; margin: 8vh auto; }
+body.signed-out .sidenav, body.signed-out .nav-toggle { display: none; }
+body.signed-out .shell { grid-template-columns: 1fr; }
+@media (max-width: 700px) { .user-box .uname { display: none; } }
+.center { text-align: center; }
+__STUDIO_EOF_88cc0578bd84__
+cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 <!doctype html>
 <html lang="en">
 <head>
@@ -7833,6 +8510,9 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_7adf315a0473__'
         <span>Audiobook Studio</span></a>
       <div class="topbar-status" id="worker-pill" role="status" aria-live="polite"><span class="dot"></span><span class="label">Connecting…</span></div>
       <span class="engine-badge" id="engine-badge" hidden></span>
+      <div class="user-box" id="user-box" hidden><span class="uname"></span>
+        <button class="btn small ghost" type="button" id="chpw">Password</button>
+        <button class="btn small ghost" type="button" id="signout">Sign out</button></div>
     </header>
     <nav class="sidenav" id="sidenav" aria-label="Main">
       <ul>
@@ -7842,9 +8522,9 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_7adf315a0473__'
         <li><a href="#/voices" data-nav="voices"><span aria-hidden="true">♪</span> Narrator Studio</a></li>
         <li><a href="#/review" data-nav="review"><span aria-hidden="true">✓</span> Review &amp; QA</a></li>
         <li><a href="#/settings" data-nav="settings"><span aria-hidden="true">⚙</span> Settings &amp; Storage</a></li>
-        <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> System &amp; Licenses</a></li>
+        <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> About &amp; System</a></li>
       </ul>
-      <p class="nav-foot">Local-only · 127.0.0.1<br>No uploads to third parties</p>
+      <p class="nav-foot"><a href="#/about" id="ver" class="ver-link">Audiobook Studio</a><br>TSAL Solutions LLC<br>Private network only<br>No uploads to third parties</p>
     </nav>
     <main id="main" tabindex="-1">
       <div class="banner" id="conn-banner" role="status" hidden></div>
@@ -7855,11 +8535,11 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_7adf315a0473__'
   <noscript><p class="noscript">Audiobook Studio needs JavaScript enabled.</p></noscript>
 </body>
 </html>
-__STUDIO_EOF_7adf315a0473__
+__STUDIO_EOF_393bc3f275fb__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_96d36d82830b__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_e0da28d55f1c__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
-import { get, parseHash, setHTML, html, toastError } from "./ui.js";
+import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
 import * as library from "./views/library.js";
 import * as queue from "./views/queue.js";
@@ -7965,21 +8645,89 @@ function closeNav() {
   document.body.classList.remove("nav-open");
   document.getElementById("nav-toggle").setAttribute("aria-expanded", "false");
 }
+let authUser = null;
+
+function stopStream() { if (es) { es.close(); es = null; } stopPolling(); }
+
+function showLogin(message) {
+  stopStream();
+  if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
+  document.body.classList.add("signed-out");
+  document.getElementById("user-box").hidden = true;
+  document.getElementById("worker-pill").hidden = true;
+  const view = document.getElementById("view");
+  setHTML(view, html`<div class="login-card card"><h1>Sign in</h1>
+    <p class="muted">Audiobook Studio on this network requires an account.</p>
+    ${message ? html`<div class="callout warn" role="alert">${message}</div>` : ""}
+    <form id="login-form" class="form">
+      <label>User name <input name="username" autocomplete="username" required autofocus></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form></div>`);
+  document.getElementById("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await busy(e.submitter, () => post("/api/auth/login", { username: fd.get("username"), password: fd.get("password") }));
+      await start();
+    } catch (err) { /* toast shown */ }
+  });
+}
+
+function showUser() {
+  const box = document.getElementById("user-box");
+  if (!authUser) { box.hidden = true; return; }
+  box.hidden = false;
+  box.querySelector(".uname").textContent = `${authUser.name} (${authUser.role})`;
+}
+
+function showVersion(st) {
+  const el = document.getElementById("ver");
+  if (el && st.version_label) { el.textContent = `Audiobook Studio ${st.version_label}`; el.title = "About Audiobook Studio"; }
+}
+
+async function start() {
+  const st = await get("/api/auth/status");
+  showVersion(st);
+  if (st.auth_required && !st.user) { showLogin(); return; }
+  authUser = st.user;
+  document.body.classList.remove("signed-out");
+  document.getElementById("worker-pill").hidden = false;
+  showUser();
+  try { updateWorkerPill(await get("/api/worker")); } catch (e) { /* shown by banner */ }
+  connectSSE();
+  route();
+}
+
+window.addEventListener("studio:unauth", () => showLogin("Your session ended. Please sign in again."));
+
 document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("signout").addEventListener("click", async () => {
+    await post("/api/auth/logout").catch(() => {});
+    authUser = null; showLogin();
+  });
+  document.getElementById("chpw").addEventListener("click", async () => {
+    const res = await dialog({ title: "Change password", form: true, buttons: [{ label: "Change", value: "ok", kind: "primary" }],
+      body: html`<label>Current password <input name="current" type="password" autocomplete="current-password" required></label>
+        <label>New password (10+ characters) <input name="new" type="password" autocomplete="new-password" minlength="10" required></label>
+        <label>Type the new password again <input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label>` });
+    if (!res) return;
+    if (res.data.new !== res.data.confirm) { toast("The two new passwords do not match. Nothing was changed.", "error", 9000); return; }
+    try { await post("/api/auth/password", { current: res.data.current, new: res.data.new, confirm: res.data.confirm }); toast("Password changed", "success"); }
+    catch (e) { toastError(e); }
+  });
   document.getElementById("nav-toggle").addEventListener("click", (e) => {
     const open = !document.body.classList.contains("nav-open");
     document.body.classList.toggle("nav-open", open);
     e.currentTarget.setAttribute("aria-expanded", String(open));
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeNav(); });
-  window.addEventListener("hashchange", route);
+  window.addEventListener("hashchange", () => { if (authUser !== null || !document.body.classList.contains("signed-out")) route(); });
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
-  get("/api/worker").then((w) => updateWorkerPill(w)).catch(toastError);
-  connectSSE();
-  route();
+  start().catch(toastError);
 });
-__STUDIO_EOF_96d36d82830b__
-cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_87516d3b550f__'
+__STUDIO_EOF_e0da28d55f1c__
+cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_49a8615fbfc8__'
 // Shared UI helpers: auto-escaping templates, API client, formatting, toasts, dialogs.
 
 export class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
@@ -8034,6 +8782,7 @@ export async function api(method, path, body, opts = {}) {
   let data = null;
   const text = await res.text();
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  if (res.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new Event("studio:unauth"));
   if (!res.ok) throw new ApiError((data && (data.error || data.detail)) || `${res.status} ${res.statusText}`, res.status, data && data.details);
   return data;
 }
@@ -8190,34 +8939,66 @@ export function onState(fn, minInterval = 1500) {
 export function player(src, label, extraClass = "") {
   return html`<audio class="player ${extraClass}" controls preload="none" src="${src}" aria-label="${label}"></audio>`;
 }
-__STUDIO_EOF_87516d3b550f__
+__STUDIO_EOF_49a8615fbfc8__
   mkdir -p "$DEST/studio/web/static/js/views"
-cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_e7051083d480__'
-// System health, worker control, QA limitations and model licences.
+cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_f5f5d9813172__'
+// About page (version, credits, what this is), plus system health, worker control, QA limits and licences.
 import { get, post, html, setHTML, busy } from "../ui.js";
 
 export async function render(view) {
-  const [about, doctor, worker] = await Promise.all([get("/api/about"), get("/api/doctor"), get("/api/worker")]);
-  setHTML(view, html`<div class="page-head"><h1>System &amp; Licenses</h1></div>
+  const [about, worker] = await Promise.all([get("/api/about"), get("/api/worker")]);
+  // the environment check is administrator-only; operators still see the rest of the page
+  const doctor = await get("/api/doctor").catch(() => null);
+  const comp = about.components || {};
+  setHTML(view, html`<div class="page-head"><h1 class="sr-only">About Audiobook Studio</h1></div>
+    <section class="card about-hero" aria-labelledby="about-h">
+      <div class="about-logo" aria-hidden="true"><svg viewBox="0 0 32 32" width="52" height="52"><path d="M9 20v-4a7 7 0 0 1 14 0v4" stroke="#fff" stroke-width="2.2" fill="none"/><rect x="7" y="18" width="5" height="8" rx="2" fill="#fff"/><rect x="20" y="18" width="5" height="8" rx="2" fill="#fff"/></svg></div>
+      <div>
+        <div class="about-title"><h2 id="about-h" class="about-name">${about.name}</h2><span class="stage">${about.version_label}</span></div>
+        <p class="about-credit"><strong>Developed by ${about.developer}</strong>, ${about.company}</p>
+        <p class="muted small">${about.copyright}</p>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="what-h"><h2 id="what-h">What it is</h2>
+      <p>A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete manuscripts, choose a narrator, queue them,
+        and the Mac narrates them with Qwen3-TTS, checks every passage with an independent Whisper transcription, lets you review and correct
+        anything flagged, and produces chapter-marked audiobook files for your own release process.</p>
+      <p>Everything runs on this Mac. Manuscripts and voice recordings never leave it, and there is no telemetry.</p>
+      <div class="callout warn small"><strong>Prerelease software (${about.version_label}).</strong> Expect rough edges and changes between versions.
+        Keep backups of your library. Automatic QA is not a substitute for listening, and nothing is uploaded to Audible, ACX or any other
+        distributor: this studio produces local publication candidates only.</div>
+      <dl class="about-facts">
+        <div><dt>Version</dt><dd>${about.version_label}</dd></div>
+        <div><dt>Build</dt><dd>${about.build || "development"}</dd></div>
+        <div><dt>Developer</dt><dd>${about.developer}</dd></div>
+        <div><dt>Company</dt><dd>${about.company}</dd></div>
+        <div><dt>Narration engine</dt><dd>${about.engine_mode === "mlx" ? "MLX (real local inference)" : "Mock (test tones, not narration)"}</dd></div>
+        <div><dt>Python</dt><dd>${about.python}</dd></div>
+        ${Object.entries(comp).filter(([, v]) => v).map(([k, v]) => html`<div><dt>${k}</dt><dd>${v}</dd></div>`)}
+      </dl>
+    </section>
     <section class="card" aria-labelledby="w-h"><h2 id="w-h">GPU worker</h2>
       <p>${worker.online ? html`<span class="good-text">Online</span> – ${worker.state}${worker.message ? html`: ${worker.message}` : ""} (pid ${worker.pid})`
         : html`<span class="err">Offline</span> – no heartbeat.`} ${worker.supervisor && worker.supervisor.managed ? html` · restarts: ${worker.supervisor.restarts}` : ""}</p>
       <p class="small muted">One worker owns the GPU; inference never runs inside web requests. A crashed worker is restarted automatically and resumes where it stopped.</p>
-      <button class="btn" data-act="restart">Restart worker</button>
+      <button class="btn" data-act="restart">Restart worker</button> <span class="small muted">(administrators only)</span>
     </section>
     <section class="card" aria-labelledby="d-h"><h2 id="d-h">Environment check</h2>
-      <table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
+      ${doctor ? html`<table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
       <tbody>${doctor.checks.map((c) => html`<tr><td>${c.name}</td><td><span class="badge tone-${c.status === "ok" ? "good" : c.status === "warn" ? "warn" : "bad"}">${c.status}</span></td><td class="small">${c.detail}</td></tr>`)}</tbody></table>
-      <p class="small muted">Studio ${about.version} · Python ${about.python} · engine <strong>${about.engine_mode}</strong> · home <code>${about.home}</code></p>
+      <p class="small muted">Home <code>${about.home}</code></p>`
+        : html`<p class="muted">The environment check is available to administrators.</p>`}
     </section>
     <section class="card" aria-labelledby="q-h"><h2 id="q-h">Limits of automatic QA</h2><ul>${about.qa_limitations.map((x) => html`<li>${x}</li>`)}</ul></section>
     <section class="card" aria-labelledby="l-h"><h2 id="l-h">Models, licences and your responsibilities</h2>
+      <p class="small muted">Audiobook Studio is built on the following open components. It does not bundle their weights; they are downloaded from their public sources.</p>
       <table class="table compact"><thead><tr><th scope="col">Component</th><th scope="col">Source</th><th scope="col">Licence</th></tr></thead>
       <tbody>${about.licenses.map((l) => html`<tr><td>${l.component}</td><td class="small">${l.source}<br><code>${l.url}</code></td><td class="small">${l.license}</td></tr>`)}</tbody></table>
       <p class="small">Verify current model licences and commercial-use terms on the model cards, confirm you own the rights to each manuscript and every cloned voice,
-        and check your distributor's technical and AI-narration policies. This studio does not upload anything: it produces local publication candidates.</p>
+        and check your distributor's technical and AI-narration policies.</p>
       <p class="small muted">Privacy: inference, transcription and storage are local. After model weights are downloaded you can disable downloads in Settings; Hugging Face telemetry is disabled by the launchers.</p>
-    </section>`);
+    </section>
+    <p class="small muted center">${about.name} ${about.version_label} · ${about.copyright}</p>`);
   const onClick = async (e) => {
     const b = e.target.closest("[data-act=restart]"); if (!b) return;
     await busy(b, () => post("/api/worker/restart"), "Worker restarting (it finishes or abandons the current segment safely)");
@@ -8225,7 +9006,7 @@ export async function render(view) {
   view.addEventListener("click", onClick);
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_e7051083d480__
+__STUDIO_EOF_f5f5d9813172__
 cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_ccb124670dd0__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
@@ -9075,9 +9856,78 @@ export async function render(view, parts, query) {
 }
 export { navigate };
 __STUDIO_EOF_f6b03f8b7455__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_f333c14e6f3a__'
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_0d4f60a5e35f__'
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
-import { get, post, put, html, setHTML, fmtBytes, toast, busy } from "../ui.js";
+import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+
+/** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
+function browseFolder(startPath) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "modal browse";
+    dlg.setAttribute("aria-labelledby", "br-title");
+    document.body.appendChild(dlg);
+    let cur = null, result = null;
+    const close = () => { dlg.close(); };
+    dlg.addEventListener("close", () => { dlg.remove(); resolve(result); });
+    dlg.addEventListener("cancel", () => { result = null; });
+
+    async function go(path) {
+      let d;
+      try { d = await get("/api/storage/browse" + (path ? `?path=${encodeURIComponent(path)}` : "")); }
+      catch (e) { toast(e.message, "error", 9000); if (!cur) close(); return; }
+      cur = d;
+      let check = null;
+      try { check = await post("/api/storage/validate", { path: d.path }); } catch (e) { /* shown in list header */ }
+      setHTML(dlg, html`<div class="modal-inner">
+        <h2 id="br-title">Choose a folder on ${d.hostname}</h2>
+        <p class="small muted">You are browsing the Mac that hosts the studio, not this computer. Only folders are shown.</p>
+        <form id="br-go" class="br-go"><label class="sr-only" for="br-path">Folder path</label>
+          <input id="br-path" value="${d.path}" spellcheck="false"><button class="btn small" type="submit">Go</button></form>
+        <div class="br-short" role="group" aria-label="Shortcuts">
+          ${d.shortcuts.map((s) => html`<button type="button" class="btn small ghost" data-go="${s.path}">${s.label}</button>`)}
+          <button type="button" class="btn small ghost" data-go="/">Macintosh HD (/)</button>
+          ${d.volumes.map((v) => html`<button type="button" class="btn small ghost" data-go="${v.path}" title="${fmtBytes(v.free_bytes)} free">⏏ ${v.label}</button>`)}
+        </div>
+        <div class="br-status ${check && check.ok ? "ok" : "bad"}" role="status">
+          <strong>${d.path}</strong> · ${d.writable ? "writable" : "NOT writable"}${d.free_bytes !== null ? html` · ${fmtBytes(d.free_bytes)} free of ${fmtBytes(d.total_bytes)}` : ""}
+          ${check ? check.errors.map((e) => html`<div class="err">${e}</div>`) : ""}${check ? check.warnings.map((w) => html`<div class="warn-text">${w}</div>`) : ""}
+        </div>
+        <ul class="br-list" aria-label="Folders in ${d.path}">
+          ${d.parent ? html`<li><button type="button" class="br-item" data-go="${d.parent}">↰ Up to ${d.parent}</button></li>` : ""}
+          ${d.entries.map((e) => html`<li><button type="button" class="br-item" data-go="${e.path}">📁 ${e.name}${e.mount ? " (volume)" : ""}${e.writable ? "" : " 🔒"}</button></li>`)}
+          ${!d.entries.length ? html`<li class="muted small br-empty">No sub-folders here.</li>` : ""}
+        </ul>
+        ${d.truncated ? html`<p class="small warn-text">Only the first ${d.entries.length} folders are shown. Type a path above to go deeper.</p>` : ""}
+        <form id="br-new" class="br-go"><label class="sr-only" for="br-name">New folder name</label>
+          <input id="br-name" placeholder="New folder name" maxlength="80"><button class="btn small" type="submit" ${d.writable ? "" : html`disabled`}>Create folder here</button></form>
+        <div class="modal-actions">
+          <button type="button" class="btn primary" data-use ${check && check.ok ? "" : html`disabled`}>Use this folder</button>
+          <button type="button" class="btn ghost" data-cancel>Cancel</button></div></div>`);
+      const inp = dlg.querySelector("#br-path"); if (inp && !dlg.dataset.focused) { dlg.dataset.focused = "1"; }
+    }
+
+    dlg.addEventListener("click", async (e) => {
+      const g = e.target.closest("[data-go]");
+      if (g) { go(g.dataset.go); return; }
+      if (e.target.closest("[data-use]")) { result = cur.path; close(); return; }
+      if (e.target.closest("[data-cancel]")) { result = null; close(); }
+    });
+    dlg.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (e.target.id === "br-go") go(dlg.querySelector("#br-path").value.trim());
+      else if (e.target.id === "br-new") {
+        const name = dlg.querySelector("#br-name").value.trim();
+        if (!name) return;
+        try { const r = await post("/api/storage/mkdir", { parent: cur.path, name }); toast(`Created ${r.path}`, "success"); go(r.path); }
+        catch (err) { toastError(err); }
+      }
+    });
+    dlg.showModal();
+    go(startPath || "");
+  });
+}
+
 
 const SECTIONS = [
   ["chunking", "Segmentation", [
@@ -9159,6 +10009,7 @@ function pathStatus(v) {
 }
 
 export async function render(view) {
+  const localPage = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
   let s = await get("/api/settings");
   let storage = await get("/api/storage");
   const checks = {};
@@ -9171,16 +10022,19 @@ export async function render(view) {
     <section class="card" aria-labelledby="stor-h"><h2 id="stor-h">Storage locations</h2>
       <p class="small">A web page cannot hand the server access to arbitrary folders, so locations are typed as paths on this Mac
         (e.g. <code>~/AudiobookLibrary</code> or <code>/Volumes/AudiobooksSSD/Library</code>) and validated by the server.
-        ${storage.native_chooser ? html`On macOS you can also use <strong>Choose…</strong>, which opens the real Finder folder picker on this Mac.` : ""}</p>
+        <strong>Browse…</strong> opens a folder browser that lists the real folders on <em>this Mac</em> (including external drives under /Volumes) from any computer on the network; you can create a new folder there too.
+        ${localPage ? html`On the Mac itself, <strong>Finder…</strong> opens the native Finder picker.` : ""}</p>
       <p class="callout info small"><strong>How changes apply:</strong> ${storage.policy}</p>
       <div class="path-row"><label>Library root <input name="storage.library_root" value="${st.library_root}" placeholder="${s.library_root}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="validate" data-field="storage.library_root">Check</button>
-        ${storage.native_chooser ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.library_root">Choose…</button>` : ""}</div>
+        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.library_root">Browse…</button>
+        <button type="button" class="btn small" data-act="validate" data-field="storage.library_root">Check</button>
+        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.library_root">Finder…</button>` : ""}</div>
         ${pathStatus(checks["storage.library_root"] || storage.library_root)}</div>
       <details><summary>Per-category locations (optional overrides)</summary>
       ${Object.entries(s.categories).map(([cat, label]) => html`<div class="path-row"><label>${label} <input name="storage.${cat}_dir" value="${st[cat + "_dir"]}" placeholder="${s.effective_paths[cat]}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="validate" data-field="storage.${cat}_dir">Check</button>
-        ${storage.native_chooser ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.${cat}_dir">Choose…</button>` : ""}</div>
+        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.${cat}_dir">Browse…</button>
+        <button type="button" class="btn small" data-act="validate" data-field="storage.${cat}_dir">Check</button>
+        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.${cat}_dir">Finder…</button>` : ""}</div>
         ${pathStatus(checks[`storage.${cat}_dir`] || catByName[cat])}</div>`)}
       </details>
       <h3>Where existing books live</h3>
@@ -9227,7 +10081,10 @@ export async function render(view) {
   async function onClick(e) {
     const b = e.target.closest("button[data-act]"); if (!b) return;
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
-    if (b.dataset.act === "validate") {
+    if (b.dataset.act === "browse") {
+      const picked = await browseFolder(input.value.trim() || input.placeholder || "");
+      if (picked) { input.value = picked; toast("Folder selected. Press Save settings to apply it.", "success", 7000); }
+    } else if (b.dataset.act === "validate") {
       const path = input.value.trim() || input.placeholder;
       checks[b.dataset.field] = await busy(b, () => post("/api/storage/validate", { path }));
       const row = b.closest(".path-row"); const old = row.querySelector(".path-status");
@@ -9243,7 +10100,7 @@ export async function render(view) {
   paint();
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_f333c14e6f3a__
+__STUDIO_EOF_0d4f60a5e35f__
 cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_e704af1336b1__'
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player } from "../ui.js";
@@ -10153,7 +11010,193 @@ def test_settings_validation():
     s = Settings.model_validate({"qa": {"max_attempts": 5}, "unknown_key": 1})
     assert s.qa.max_attempts == 5 and s.chunking.max_chars == 400
 __STUDIO_EOF_78e55b160cf0__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_7a46a38af613__'
+cat > "$DEST/tests/test_auth.py" <<'__STUDIO_EOF_ff52f7477a45__'
+"""Authentication, roles, LAN host handling and login rate limiting."""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from studio.web.app import create_app
+from studio.web.auth import AuthStore, is_admin_only
+
+PW = "correct-horse-battery"
+
+
+@pytest.fixture
+def secured(ctx):
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", PW, "admin")
+    store.set_user("clerk", PW + "2", "operator")
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        yield c
+
+
+def login(c, user="boss", pw=PW):
+    return c.post("/api/auth/login", json={"username": user, "password": pw})
+
+
+def test_unauthenticated_requests_blocked_but_shell_public(secured):
+    assert secured.get("/").status_code == 200 and secured.get("/static/app.css").status_code == 200
+    st = secured.get("/api/auth/status").json()
+    assert st["auth_required"] is True and st["user"] is None
+    for path in ("/api/overview", "/api/books", "/api/settings", "/api/events?once=1", "/media/attempt/1", "/api/queue"):
+        assert secured.get(path).status_code == 401, path
+    assert secured.post("/api/queue", json={"book_id": 1}).status_code == 401
+    assert secured.put("/api/settings", json={}).status_code == 401
+
+
+def test_login_session_cookie_and_logout(secured):
+    assert login(secured, pw="wrong-password-here").status_code == 401
+    assert login(secured, user="nobody").status_code == 401
+    r = login(secured)
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=strict" in cookie
+    assert secured.get("/api/overview").status_code == 200
+    assert secured.get("/api/auth/status").json()["user"] == {"name": "boss", "role": "admin"}
+    secured.post("/api/auth/logout")
+    secured.cookies.clear()
+    assert secured.get("/api/overview").status_code == 401
+
+
+def test_forged_and_tampered_tokens_rejected(secured):
+    login(secured)
+    good = secured.cookies.get("studio_session")
+    secured.cookies.clear()
+    for bad in (good[:-3] + "abc", "x." + good.split(".")[1], "garbage", good.split(".")[0] + "."):
+        secured.cookies.set("studio_session", bad)
+        assert secured.get("/api/overview").status_code == 401
+
+
+def test_operator_cannot_use_admin_actions(secured):
+    login(secured, "clerk", PW + "2")
+    assert secured.get("/api/overview").status_code == 200
+    assert secured.put("/api/settings", json={"qa": {"max_attempts": 2}}).status_code == 403
+    assert secured.get("/api/storage").status_code == 403
+    assert secured.post("/api/storage/validate", json={"path": "/tmp"}).status_code == 403
+    assert secured.post("/api/storage/choose-folder").status_code == 403
+    assert secured.post("/api/worker/restart").status_code == 403
+    assert secured.post("/api/books/1/move", json={"new_root": "/tmp/x"}).status_code == 403
+    assert secured.post("/api/auth/users", json={"username": "evil", "password": "x" * 12, "confirm": "x" * 12, "role": "admin"}).status_code == 403
+    secured.cookies.clear()
+    login(secured)
+    assert secured.put("/api/settings", json={"qa": {"max_attempts": 2}}).status_code == 200
+    assert secured.get("/api/storage").status_code == 200
+    assert secured.post("/api/auth/users", json={"username": "newbie", "password": "twelve-chars-ok", "confirm": "twelve-chars-ok", "role": "operator"}).status_code == 200
+    assert secured.post("/api/auth/users", json={"username": "typo", "password": "twelve-chars-ok", "confirm": "twelve-chars-ko", "role": "operator"}).status_code == 422
+
+
+def test_password_change_invalidates_old_sessions(secured, ctx):
+    login(secured)
+    old = secured.cookies.get("studio_session")
+    r = secured.post("/api/auth/password", json={"current": PW, "new": "a-brand-new-password", "confirm": "a-brand-new-passw0rd"})
+    assert r.status_code == 422 and "do not match" in r.json()["error"]
+    assert login(secured).status_code == 200  # a mistyped confirmation changed nothing: the old password still works
+    secured.cookies.set("studio_session", old)
+    r = secured.post("/api/auth/password", json={"current": PW, "new": "a-brand-new-password", "confirm": "a-brand-new-password"})
+    assert r.status_code == 200
+    secured.cookies.clear()
+    secured.cookies.set("studio_session", old)
+    assert secured.get("/api/overview").status_code == 401
+    assert login(secured, pw="a-brand-new-password").status_code == 200
+    assert secured.post("/api/auth/password", json={"current": "nope", "new": "another-long-password", "confirm": "another-long-password"}).status_code == 403
+
+
+def test_login_rate_limit(secured):
+    codes = [login(secured, pw=f"bad-password-{i}").status_code for i in range(8)]
+    assert codes[:6] == [401] * 6 and codes[6] == 429
+    assert login(secured).status_code == 429  # even the right password waits out the lockout
+
+
+def test_host_header_allowlist_and_lan_names(secured, ctx):
+    login(secured)
+    assert secured.get("/api/overview", headers={"Host": "evil.example:7861"}).status_code == 421
+    assert secured.get("/api/overview", headers={"Host": "127.0.0.1:9999"}).status_code == 421  # wrong port
+    assert secured.get("/api/overview", headers={"Host": "localhost:7861"}).status_code == 200
+    s = ctx.settings().model_copy(deep=True)
+    s.server.allowed_hosts = ["studio.example.lan"]
+    ctx.save_settings(s)
+    assert secured.get("/api/overview", headers={"Host": "studio.example.lan:7861"}).status_code == 200
+
+
+def test_csrf_still_enforced_when_authenticated(secured):
+    login(secured)
+    assert secured.post("/api/queue", json={"book_id": 1}, headers={"Origin": "http://evil.example"}).status_code == 403
+    assert secured.post("/api/queue", json={"book_id": 1}, headers={"X-Studio-Request": ""}).status_code == 403
+    assert "access-control-allow-origin" not in secured.get("/api/overview", headers={"Origin": "http://evil.example"}).headers
+
+
+def test_network_bind_requires_a_user_account(ctx):
+    s = ctx.settings().model_copy(deep=True)
+    s.server.allow_remote = True
+    s.server.host = "0.0.0.0"
+    ctx.save_settings(s)
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.get("/api/overview").status_code == 503  # no users: refuse to serve on a network bind
+        AuthStore(ctx.config_dir / "auth.json").set_user("boss", PW, "admin")
+        assert c.get("/api/overview").status_code == 401
+
+
+def test_auth_store_rules(ctx):
+    st = AuthStore(ctx.config_dir / "auth.json")
+    with pytest.raises(ValueError):
+        st.set_user("a", PW, "admin")
+    with pytest.raises(ValueError):
+        st.set_user("ok-name", "short", "admin")
+    st.set_user("only", PW, "admin")
+    with pytest.raises(ValueError):
+        st.set_user("only", PW, "operator")  # cannot demote the last admin
+    st.set_user("second", PW, "admin")
+    tok = st.make_token({"name": "second", "role": "admin"})
+    st.remove_user("second")
+    assert st.parse_token(tok) is None  # removing a user ends their sessions
+    with pytest.raises(ValueError):
+        st.remove_user("only")  # last administrator
+    with pytest.raises(ValueError):
+        st.remove_user("ghost")
+    assert (ctx.config_dir / "auth.json").exists()
+    assert is_admin_only("PUT", "/api/settings") and not is_admin_only("GET", "/api/settings")
+
+
+def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_path):
+    (tmp_path / "Library").mkdir()
+    (tmp_path / "Library" / "inner").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "file.txt").write_text("x")
+    # operators cannot browse the host's filesystem
+    login(secured, "clerk", PW + "2")
+    assert secured.get("/api/storage/browse", params={"path": str(tmp_path)}).status_code == 403
+    assert secured.post("/api/storage/mkdir", json={"parent": str(tmp_path), "name": "nope"}).status_code == 403
+    secured.cookies.clear()
+    assert secured.get("/api/storage/browse").status_code == 401
+    login(secured)
+    d = secured.get("/api/storage/browse", params={"path": str(tmp_path)}).json()
+    names = [e["name"] for e in d["entries"]]
+    assert [n for n in names if n != "studio-home"] == ["Library"]  # folders only: no files, no hidden entries
+    assert d["writable"] and d["free_bytes"] > 0 and d["parent"]
+    sub = secured.get("/api/storage/browse", params={"path": str(tmp_path / "Library")}).json()
+    assert [e["name"] for e in sub["entries"]] == ["inner"]
+    assert any(e["name"] == ".hidden" for e in secured.get("/api/storage/browse", params={"path": str(tmp_path), "hidden": "true"}).json()["entries"])
+    # errors are clear, not 500s
+    assert secured.get("/api/storage/browse", params={"path": "relative/dir"}).status_code == 422
+    assert secured.get("/api/storage/browse", params={"path": str(tmp_path / "missing")}).status_code == 422
+    assert secured.get("/api/storage/browse", params={"path": str(tmp_path / "file.txt")}).status_code == 422
+    assert secured.get("/api/storage/browse", params={"path": "/Volumes/NotMountedXYZ"}).status_code == 422
+    # create a folder, then use it as the library root over the "network" session
+    r = secured.post("/api/storage/mkdir", json={"parent": str(tmp_path), "name": "New Library"})
+    assert r.status_code == 200 and (tmp_path / "New Library").is_dir()
+    assert secured.post("/api/storage/mkdir", json={"parent": str(tmp_path), "name": "New Library"}).status_code == 422  # exists
+    for bad in ("../escape", "a/b", ".hidden", "x" * 90, ""):
+        assert secured.post("/api/storage/mkdir", json={"parent": str(tmp_path), "name": bad}).status_code == 422, bad
+    r = secured.put("/api/settings", json={"storage": {"library_root": r.json()["path"]}})
+    assert r.status_code == 200 and r.json()["library_root"].endswith("New Library")
+    # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
+    assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
+__STUDIO_EOF_ff52f7477a45__
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_32db07a4965b__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -10534,8 +11577,18 @@ def test_ui_shell_and_static_assets(client):
         assert client.get(p).status_code == 200
     assert client.get("/api/doctor").json()["checks"]
     assert client.get("/api/about").json()["engine_mode"] == "mock"
-__STUDIO_EOF_7a46a38af613__
-cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_0089b954c8f2__'
+
+
+def test_about_page_data_and_version(client):
+    st = client.get("/api/auth/status").json()
+    assert st["version"] == "0.1" and st["version_label"] == "v0.1 - prerelease"
+    a = client.get("/api/about").json()
+    assert a["version_label"] == "v0.1 - prerelease" and a["stage"] == "prerelease"
+    assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
+    assert a["licenses"] and a["qa_limitations"] and "python" in a
+    assert 'id="ver"' in client.get("/").text
+__STUDIO_EOF_32db07a4965b__
+cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
 
@@ -10735,60 +11788,103 @@ def test_alignment_locates_issue_with_word_times():
     ev = evaluate("one two three four five six seven eight", "one two three seven eight", words)
     drop = next(i for i in ev["issues"] if i["kind"] == "dropped")
     assert drop["at_s"] == 1.0
-__STUDIO_EOF_0089b954c8f2__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_d01658e14581__'
-d4e4cee745d59eb6f7d093c6f3f6937d47e817bcd90b252f9af6b6768b5a172d  bin/_env.sh
+
+
+def test_short_segment_single_error_is_not_a_wer_flag(ctx):
+    """One misheard word in a 5-word heading is 20% WER; it must not flag on WER alone,
+    while two errors still do."""
+    from studio import services as S
+    from studio.db import row
+    from studio.engines import MockASR, MockEngine
+    from studio.worker import Worker
+
+    class Mishear(MockASR):
+        def __init__(self, heard):
+            super().__init__()
+            self.heard = heard
+
+        def transcribe(self, wav_path, language="en"):
+            out = super().transcribe(wav_path, language)
+            if "second light" in out["text"].lower():
+                out["text"] = self.heard
+            return out
+
+    v = S.list_voices(ctx)[0]
+    results = {}
+    for heard in ("Chapter Two: The Second Life", "Chapter Too: The Second Life"):
+        text = "Chapter One\n\nChapter Two: The Second Light\n\n" + "A long enough body paragraph to read aloud here. " * 6
+        prev = S.create_import(ctx, "b.txt", text.encode())
+        b = S.confirm_import(ctx, prev["token"], {"title": "T" + heard[-9:], "voice_id": v["id"], "queue": True})
+        w = Worker(ctx, tts=MockEngine(), asr=Mishear(heard))
+        with ctx.db.tx() as conn:
+            conn.execute("UPDATE worker_state SET heartbeat_at=0 WHERE id=1")
+        assert w.acquire_lease()
+        w.run_until_idle()
+        with ctx.db.session() as conn:
+            results[heard] = row(conn, "SELECT status FROM segments WHERE book_id=? AND original_text LIKE '%Second Light%'", (b["id"],))["status"]
+    assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
+    assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
+__STUDIO_EOF_5a07baaa7291__
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_a5bd7cfa25a7__'
+20261028220955-ea0494f9
+__STUDIO_EOF_a5bd7cfa25a7__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_c85d07adba61__'
+45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 39a3966fcd35d41ab88375809ba46214365ee14b1e07a7f7eff14799f02dfe73  bin/start-studio
-fae3f16b8d58c4652df0dd570d32049e690f8f775d73eb9c2f13e6662b9ed8e0  bin/stop-studio
+db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
+f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-331accb4ff905df6653c8785bb425b7687d9aad981ee07a583d312ab57a4ddf4  README.md
+a441a135aa76df89a91b66623edd4c8ef008553dae60908add7894850805cd93  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 ebe6560fce3cccf4a3d4ef85d41e5c0d1d20182e43f988a8b142449fd68795dd  requirements.txt
-dc040ea28e629bf13e1436ac8060f5f74e14939bd7f3a92ecfa74a5b18ebee44  studio/__init__.py
+535329dd4810ac963005223819028bcf0246fe9ea453906997e07e4686e39d70  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
 3dc24d2ac0648f3071a5fa7e516c9b7dbbedcacad95f3e3bff8e27a4567c13ca  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
-5e366d17be7acc8828f9b4417412d9c869115691c19805ccbc679f4ab7c39477  studio/cli.py
-547c4610494327ae10b229a16b10627a82d3d5256fd75f0a3ad5a93631bfef20  studio/config.py
+d2cd7aa2a7c730c9166ba7cecc748bbd3c4866e4c014e2839c7d9fdb772ed135  studio/cli.py
+99e76bf191508efd8abe9e56f362e0523a009d876e55480234b777880352be6c  studio/config.py
 fb2d7cc679920f354415e6c7f1dd0b9bfc844fe9a8960acae3c9453876319528  studio/context.py
 0fbb1a612ba5e66974ab4318bd7f1d7797036abcbb869089ef2cb56e137a2b37  studio/db.py
 df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
 9df2a6804c7244f4b4ee0b71da0c7f0d1e8080cd70ab16059dba315d325331d3  studio/engines.py
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
-92f773d5125d15522d05f6eacf27b57045e423bf203be0457bba6b2b369cc02b  studio/pipeline.py
+ee3d75cb5bf27d0cf1641192a62eb6783ffb54bdfddd6586e71f68b1495af0bf  studio/pipeline.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
 2b3656d89e186ed5436cd12fadb6f3078e6a7758ec98a8bd8c01d99137aeee40  studio/services.py
-16a93e75b08e7a86148c6aa630e5aa2c092278b16007306ecc0dbc75bba81b13  studio/smoke.py
-a66188958587fb780bdbc0e13894e92b7c2cce23c87df864ecbff83aed5c412f  studio/storage.py
+ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
+9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-e8a69b73dffe3269244f9e7ba0358e53fc58caa2170bb41134a7eefc73c1b4fe  studio/web/app.py
+d7d16e5994cbf0deb1c8d00a8c2c8f38bf4507e6f2f45beb5377ec38024d9da0  studio/web/app.py
+5068e44bfe079a802aeb959b2361f7bc0b0dd2e6e442a4525221b6d9c6ba78b8  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
-a864d7e45bf3ccbcc599136266e12bcd5fd772d16910d451e2fc0df1dcb86e44  studio/web/security.py
-e74911fe8c9e9b168301770e07c7da076b7346889c5e1d393ba76498224c04e1  studio/web/static/app.css
-7adf315a0473260105154f57fba9c45dfe187311f51c05eeb0bf0c2a909827f9  studio/web/static/index.html
-96d36d82830bb70cf9ef97950d650db6a4a382fcc80da5671492a29bdc2c104a  studio/web/static/js/app.js
-87516d3b550f99e08f13cc82ac740892ff958356aacdf33f2370f806be6d05ca  studio/web/static/js/ui.js
-e7051083d48082bf03dcdac060da7425c7dba897a867a5017605ecec529bf971  studio/web/static/js/views/about.js
+6d1b484c18f1aeffdac768016c9fdeb902d0d8e1555fc26d22cce3879e739e22  studio/web/security.py
+88cc0578bd84713309607542fb09eaed610125391730ed7eed888d9c33937024  studio/web/static/app.css
+393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
+e0da28d55f1c1c93fbc84974f9d697b196349d1dcbfa327d1e630de86c69f5da  studio/web/static/js/app.js
+49a8615fbfc8e557a49958ad32ed704d6cf5fac0c8e1005e475c9e9e2b6c545f  studio/web/static/js/ui.js
+f5f5d981317248e6ff2620d6c9932cd829d8c84fec4eb9e04e36d0d6140191b9  studio/web/static/js/views/about.js
 ccb124670dd0da4c4331e3972b64bc8b4a252e1ee87470f7712f79793cfcd66d  studio/web/static/js/views/book.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
 9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
 2ff497a0e6065d689f925e9f6a840c1935b5abd4c68cd285c4e849421ae76daf  studio/web/static/js/views/queue.js
 f6b03f8b7455e68e28db1cf5c85626106c1522a4f647291fd03641b7cabe0be7  studio/web/static/js/views/review.js
-f333c14e6f3a98eaf8e1856145ca8f33833c6effb5be65c19711e6a785b60f8d  studio/web/static/js/views/settings.js
+0d4f60a5e35fa819053dd23665361cd449cc1dfd75188c615b78a97de8dc5927  studio/web/static/js/views/settings.js
 e704af1336b142d2612932d224387430d69089d5056244d815527ed21699e0b7  studio/web/static/js/views/voices.js
 56376683d564ca74d0ad85111770130e8939ce772a4d301d18528ac667830b3b  studio/worker.py
 9ff89789613444228f26b7bd6158c040b93a59db88fa5d356aba7a35799bd348  tests/conftest.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
-7a46a38af613e600c6e1f6bfbb24ada9a7b360b221fe2d22fd16afc52cb4f9bc  tests/test_integration.py
-0089b954c8f2f14635467b6a6e4d0275214263d873964802b03b1ac78eee211d  tests/test_text.py
-__STUDIO_EOF_d01658e14581__
+ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
+32db07a4965bda4c6654f1b79c916b9cb63ffe0973226a7616c25562a813ef9b  tests/test_integration.py
+5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
+a5bd7cfa25a7ee4acb18c9a10a2ec5d152b983edaeb00b4cc4e8da7739249cc9  BUILD
+__STUDIO_EOF_c85d07adba61__
 }
 
 verify_manifest() {
@@ -10846,11 +11942,17 @@ find_brew() {
 
 ensure_tools() {
   if [ "$IS_MAC_ARM" = 1 ]; then
-    local BREW
-    BREW="$(find_brew)" || die "Homebrew is required (https://brew.sh). Install it with:
+    local BREW=""
+    export PATH="$APP_HOME/tools/bin:$PATH"
+    if BREW="$(find_brew)"; then
+      eval "$("$BREW" shellenv)"
+    elif [ -n "${STUDIO_PYTHON:-}" ] && command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+      info "Homebrew not found; using STUDIO_PYTHON and the ffmpeg already on PATH."
+    else
+      die "Homebrew is required (https://brew.sh) - or provide STUDIO_PYTHON (a Python 3.12) plus ffmpeg/ffprobe on PATH. Install Homebrew with:
     /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
 then run this installer again."
-    eval "$("$BREW" shellenv)"
+    fi
     if [ -z "${STUDIO_PYTHON:-}" ]; then
       if ! "$BREW" list --versions python@3.12 >/dev/null 2>&1; then
         say "Installing Python 3.12 with Homebrew"
@@ -10858,7 +11960,7 @@ then run this installer again."
       fi
       STUDIO_PYTHON="$("$BREW" --prefix python@3.12)/bin/python3.12"
     fi
-    if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+    if { ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; } && [ -n "$BREW" ]; then
       say "Installing FFmpeg with Homebrew"
       "$BREW" install ffmpeg
     fi
@@ -10921,7 +12023,7 @@ on_error() {
 
 install_launchers() {
   local f
-  for f in start-studio stop-studio studio run-tests smoke-test; do
+  for f in start-studio stop-studio studio studio-service run-tests smoke-test; do
     cp "$APP_HOME/app/bin/$f" "$APP_HOME/$f"
     chmod 755 "$APP_HOME/$f"
   done
@@ -10931,17 +12033,44 @@ install_launchers() {
   cp "$APP_HOME/app/MODEL_LICENSES.md" "$APP_HOME/MODEL_LICENSES.md"
 }
 
-set_setting_port() {
-  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" <<'PY'
+set_server_settings() {
+  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" <<'PY'
 import json, os, sys
-path, port = sys.argv[1], int(sys.argv[2])
+path, host, port, remote = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 data = json.load(open(path)) if os.path.exists(path) else {}
-data.setdefault("server", {})["port"] = port
+srv = data.setdefault("server", {})
+if host:
+    srv["host"] = host
+    srv["allow_remote"] = remote
+if port:
+    srv["port"] = int(port)
 tmp = path + ".tmp"
 with open(tmp, "w") as fh:
     fh.write(json.dumps(data, indent=2) + "\n")
 os.replace(tmp, path)
 PY
+}
+
+ensure_admin() {
+  local users
+  users="$(cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio auth list 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$users" = "0" ]; then
+    local out pwfile="$APP_HOME/config/initial-admin-password.txt"
+    out="$(cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio auth add-user "$ADMIN_USER" --role admin --generate)"
+    GENERATED_PW="${out##*Generated password: }"
+    ( umask 077; printf 'user: %s\npassword: %s\n(delete this file after you have stored the password; change it in the UI via Password)\n' "$ADMIN_USER" "$GENERATED_PW" > "$pwfile" )
+    info "Created administrator '$ADMIN_USER' (initial password saved to $pwfile)"
+  else
+    info "Existing user accounts kept ($users)."
+  fi
+}
+
+lan_addresses() {
+  if [ "$OS" = "Darwin" ]; then
+    ifconfig 2>/dev/null | awk '/^[a-z0-9]+:/{i=$1} /inet /&&$2!="127.0.0.1"{print $2}'
+  else
+    hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true
+  fi
 }
 
 prefetch_models() {
@@ -11036,7 +12165,17 @@ main() {
 
   say "Database and settings"
   (cd "$APP_HOME/app" && AUDIOBOOK_STUDIO_HOME="$APP_HOME" "$VENV/bin/python" -m studio migrate) | sed 's/^/    /'
-  if [ -n "$PORT" ]; then set_setting_port "$PORT"; info "Port set to $PORT"; fi
+  if [ "$LAN" = 1 ]; then
+    [ -n "$HOST" ] || HOST="0.0.0.0"
+    [ -n "$PORT" ] || PORT="8080"
+  fi
+  if [ -n "$HOST" ] || [ -n "$PORT" ]; then
+    case "$HOST" in ""|127.0.0.1|localhost) REMOTE=0 ;; *) REMOTE=1 ;; esac
+    set_server_settings "$HOST" "$PORT" "$REMOTE"
+    info "Server: host=${HOST:-unchanged} port=${PORT:-unchanged}"
+  fi
+  GENERATED_PW=""
+  if [ "$LAN" = 1 ] || [ -n "$HOST" ]; then ensure_admin; fi
   SWAPPED=0  # from here on the new code is committed
   # keep the five most recent code backups
   # shellcheck disable=SC2012
@@ -11057,12 +12196,20 @@ main() {
 
   if [ "$IS_MAC_ARM" = 1 ] && [ "$NO_MODELS" = 0 ]; then prefetch_models; fi
 
-  local port
+  local port host
   port="$("$VENV/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("server",{}).get("port",7861))' "$APP_HOME/config/settings.json")"
+  host="$("$VENV/bin/python" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("server",{}).get("host","127.0.0.1"))' "$APP_HOME/config/settings.json")"
+  if [ "$INSTALL_SERVICE" = 1 ]; then
+    say "Installing the background service"
+    "$APP_HOME/studio-service" install
+  fi
   printf '\n%sAudiobook Studio %s is installed.%s\n\n' "$G" "$STUDIO_VERSION" "$N"
   cat <<EOF
   Start the studio:      cd "$APP_HOME" && ./start-studio
-  Then open:             http://127.0.0.1:$port   (local only; nothing is exposed to your network)
+  Then open:             http://127.0.0.1:$port   (this Mac)
+$(if [ "$host" != "127.0.0.1" ]; then for ip in $(lan_addresses); do echo "  On your network:       http://$ip:$port   (sign-in required)"; done; echo "  By name:               http://$(hostname):$port"; fi)
+$(if [ -n "$GENERATED_PW" ]; then echo "  First sign-in:         user '$ADMIN_USER'  password '$GENERATED_PW'   (also in config/initial-admin-password.txt)"; fi)
+  Background service:   ./studio-service install | start | stop | restart | status | logs
   Stop:                  ./stop-studio
   Command line:          ./studio doctor | list | import | run | issues | approve | report | export
   Automated tests:       ./run-tests          (mock engine)

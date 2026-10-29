@@ -9,6 +9,7 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
 # shellcheck disable=SC2034  # used by the scripts that source this file
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$AUDIOBOOK_STUDIO_HOME/tools/bin:$PATH"
 STUDIO_PY="$STUDIO_ROOT/venv/bin/python"
 # shellcheck disable=SC2034
 STUDIO_APP="$STUDIO_ROOT/app"

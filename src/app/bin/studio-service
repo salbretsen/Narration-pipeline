@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Run Audiobook Studio as a background macOS service (no terminal needed).
+#
+#   ./studio-service install      create + load the LaunchAgent (starts at login, restarts on crash)
+#   ./studio-service start|stop|restart|status|logs
+#   ./studio-service uninstall    unload and remove the LaunchAgent
+#   ./studio-service daemon-plist print a LaunchDaemon (starts at BOOT, before login) and the sudo
+#                                 commands to install it. Needs an administrator password.
+#
+# A LaunchAgent only runs while this user is logged in (graphical login, or a session kept by
+# auto-login). For unattended operation after a reboot, enable automatic login for this user in
+# System Settings > Users & Groups, or use the LaunchDaemon from `daemon-plist`.
+set -euo pipefail
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_env.sh"
+
+LABEL="com.audiobookstudio.claude"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UIDN="$(id -u)"
+OUT="$AUDIOBOOK_STUDIO_HOME/logs/launchd.out.log"
+
+make_plist() {
+  local who="${1:-}" path="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$AUDIOBOOK_STUDIO_HOME/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>$STUDIO_PY</string><string>-m</string><string>studio</string><string>serve</string></array>
+  <key>WorkingDirectory</key><string>$STUDIO_APP</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUDIOBOOK_STUDIO_HOME</key><string>$AUDIOBOOK_STUDIO_HOME</string>
+    <key>HF_HOME</key><string>$HF_HOME</string>
+    <key>HF_HUB_DISABLE_TELEMETRY</key><string>1</string>
+    <key>DO_NOT_TRACK</key><string>1</string>
+    <key>TOKENIZERS_PARALLELISM</key><string>false</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+    <key>HOME</key><string>$HOME</string>
+    <key>PATH</key><string>$path</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>45</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>$OUT</string>
+  <key>StandardErrorPath</key><string>$OUT</string>
+${who:+  <key>UserName</key><string>$who</string>}
+</dict>
+</plist>
+EOF
+}
+
+domain() {
+  if launchctl print "gui/$UIDN" >/dev/null 2>&1; then echo "gui/$UIDN"; else echo "user/$UIDN"; fi
+}
+loaded() { launchctl print "$(domain)/$LABEL" >/dev/null 2>&1; }
+
+case "${1:-status}" in
+  install)
+    mkdir -p "$HOME/Library/LaunchAgents" "$AUDIOBOOK_STUDIO_HOME/logs"
+    make_plist | grep -v '^$' > "$PLIST"
+    plutil -lint "$PLIST" >/dev/null
+    if loaded; then launchctl bootout "$(domain)/$LABEL" 2>/dev/null || true; sleep 1; fi
+    launchctl bootstrap "$(domain)" "$PLIST"
+    launchctl enable "$(domain)/$LABEL" 2>/dev/null || true
+    echo "Installed $PLIST (domain $(domain)). Logs: $OUT"
+    ;;
+  uninstall)
+    if loaded; then launchctl bootout "$(domain)/$LABEL" || true; fi
+    rm -f "$PLIST"
+    echo "Service removed."
+    ;;
+  start)
+    if ! loaded; then launchctl bootstrap "$(domain)" "$PLIST"; fi
+    launchctl kickstart "$(domain)/$LABEL"
+    echo "Started."
+    ;;
+  stop)
+    # bootout stops the process and prevents KeepAlive from restarting it until `start`
+    if loaded; then launchctl bootout "$(domain)/$LABEL"; echo "Stopped (the GPU worker finishes or abandons its current segment safely)."; else echo "Not running."; fi
+    ;;
+  restart)
+    if loaded; then launchctl kickstart -k "$(domain)/$LABEL"; else launchctl bootstrap "$(domain)" "$PLIST"; fi
+    echo "Restarted."
+    ;;
+  status)
+    if loaded; then launchctl print "$(domain)/$LABEL" | grep -E "state =|pid =|last exit|runs =" | sed 's/^[ \t]*/  /'; else echo "  service not loaded"; fi
+    ;;
+  logs)
+    tail -n "${2:-80}" "$OUT" "$AUDIOBOOK_STUDIO_HOME/logs/server.log" 2>/dev/null
+    ;;
+  daemon-plist)
+    D="/Library/LaunchDaemons/$LABEL.plist"
+    TMPF="$AUDIOBOOK_STUDIO_HOME/run/$LABEL.daemon.plist"
+    mkdir -p "$AUDIOBOOK_STUDIO_HOME/run"
+    make_plist "$(id -un)" | grep -v '^$' > "$TMPF"
+    echo "Wrote $TMPF. To run at boot (before login) an administrator must run:"
+    echo "  ./studio-service uninstall"
+    echo "  sudo cp '$TMPF' '$D' && sudo chown root:wheel '$D' && sudo chmod 644 '$D'"
+    echo "  sudo launchctl bootstrap system '$D'"
+    ;;
+  *) echo "usage: $0 install|uninstall|start|stop|restart|status|logs|daemon-plist" >&2; exit 2 ;;
+esac

@@ -1,5 +1,5 @@
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
-import { get, parseHash, setHTML, html, toastError } from "./ui.js";
+import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
 import * as library from "./views/library.js";
 import * as queue from "./views/queue.js";
@@ -105,16 +105,84 @@ function closeNav() {
   document.body.classList.remove("nav-open");
   document.getElementById("nav-toggle").setAttribute("aria-expanded", "false");
 }
+let authUser = null;
+
+function stopStream() { if (es) { es.close(); es = null; } stopPolling(); }
+
+function showLogin(message) {
+  stopStream();
+  if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
+  document.body.classList.add("signed-out");
+  document.getElementById("user-box").hidden = true;
+  document.getElementById("worker-pill").hidden = true;
+  const view = document.getElementById("view");
+  setHTML(view, html`<div class="login-card card"><h1>Sign in</h1>
+    <p class="muted">Audiobook Studio on this network requires an account.</p>
+    ${message ? html`<div class="callout warn" role="alert">${message}</div>` : ""}
+    <form id="login-form" class="form">
+      <label>User name <input name="username" autocomplete="username" required autofocus></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form></div>`);
+  document.getElementById("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await busy(e.submitter, () => post("/api/auth/login", { username: fd.get("username"), password: fd.get("password") }));
+      await start();
+    } catch (err) { /* toast shown */ }
+  });
+}
+
+function showUser() {
+  const box = document.getElementById("user-box");
+  if (!authUser) { box.hidden = true; return; }
+  box.hidden = false;
+  box.querySelector(".uname").textContent = `${authUser.name} (${authUser.role})`;
+}
+
+function showVersion(st) {
+  const el = document.getElementById("ver");
+  if (el && st.version_label) { el.textContent = `Audiobook Studio ${st.version_label}`; el.title = "About Audiobook Studio"; }
+}
+
+async function start() {
+  const st = await get("/api/auth/status");
+  showVersion(st);
+  if (st.auth_required && !st.user) { showLogin(); return; }
+  authUser = st.user;
+  document.body.classList.remove("signed-out");
+  document.getElementById("worker-pill").hidden = false;
+  showUser();
+  try { updateWorkerPill(await get("/api/worker")); } catch (e) { /* shown by banner */ }
+  connectSSE();
+  route();
+}
+
+window.addEventListener("studio:unauth", () => showLogin("Your session ended. Please sign in again."));
+
 document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("signout").addEventListener("click", async () => {
+    await post("/api/auth/logout").catch(() => {});
+    authUser = null; showLogin();
+  });
+  document.getElementById("chpw").addEventListener("click", async () => {
+    const res = await dialog({ title: "Change password", form: true, buttons: [{ label: "Change", value: "ok", kind: "primary" }],
+      body: html`<label>Current password <input name="current" type="password" autocomplete="current-password" required></label>
+        <label>New password (10+ characters) <input name="new" type="password" autocomplete="new-password" minlength="10" required></label>
+        <label>Type the new password again <input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label>` });
+    if (!res) return;
+    if (res.data.new !== res.data.confirm) { toast("The two new passwords do not match. Nothing was changed.", "error", 9000); return; }
+    try { await post("/api/auth/password", { current: res.data.current, new: res.data.new, confirm: res.data.confirm }); toast("Password changed", "success"); }
+    catch (e) { toastError(e); }
+  });
   document.getElementById("nav-toggle").addEventListener("click", (e) => {
     const open = !document.body.classList.contains("nav-open");
     document.body.classList.toggle("nav-open", open);
     e.currentTarget.setAttribute("aria-expanded", String(open));
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeNav(); });
-  window.addEventListener("hashchange", route);
+  window.addEventListener("hashchange", () => { if (authUser !== null || !document.body.classList.contains("signed-out")) route(); });
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
-  get("/api/worker").then((w) => updateWorkerPill(w)).catch(toastError);
-  connectSSE();
-  route();
+  start().catch(toastError);
 });

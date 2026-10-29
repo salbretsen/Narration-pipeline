@@ -281,7 +281,10 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             ev = evaluate(text, asr_out["text"], asr_out.get("words"), acoustic["metrics"].get("duration_s"),
                           qa.get("max_dropped_words", 2), qa.get("max_inserted_words", 2))
             issues.extend(ev["issues"])
-            if ev["wer"] > qa.get("wer_threshold", 0.12):
+            # A percentage is meaningless on very short segments (one word in a 5-word heading is
+            # 20%): below 10 words require at least two real word errors before flagging on WER.
+            errors = ev["counts"]["sub"] + ev["counts"]["del"] + ev["counts"]["ins"]
+            if ev["wer"] > qa.get("wer_threshold", 0.12) and (ev["ref_tokens"] >= 10 or errors >= 2):
                 issues.append({"severity": "error", "kind": "wer", "message": f"Word error rate {ev['wer'] * 100:.1f}% exceeds {qa.get('wer_threshold', 0.12) * 100:.0f}%", "at_s": None, "source": "asr"})
         else:
             issues.append({"severity": "info", "kind": "asr_disabled", "message": "ASR verification disabled for this book - listen manually.", "at_s": None, "source": "settings"})
