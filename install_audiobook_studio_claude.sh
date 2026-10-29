@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.1 - prerelease (build 20261028220955-ea0494f9)
+#  Version v0.1 - prerelease (build 20261028224123-b62dd50f)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -21,7 +21,7 @@ set -Eeuo pipefail
 umask 022
 
 STUDIO_VERSION="v0.1 - prerelease"
-BUILD_ID="20261028220955-ea0494f9"
+BUILD_ID="20261028224123-b62dd50f"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -30,6 +30,7 @@ STOP_RUNNING=0
 EXTRACT_ONLY=""
 PORT=""
 LAN=0
+NO_HTTPS=0
 HOST=""
 ADMIN_USER="admin"
 INSTALL_SERVICE=0
@@ -44,7 +45,9 @@ Options:
   --skip-tests       Do not run the automated test suite after installing.
   --port N           Web UI port (default 7861; applied to settings).
   --stop-running     Stop a running studio before upgrading it.
-  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required.
+  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required,
+                     plus HTTPS (self-signed) on port 8443 - required for microphone recording from other computers.
+  --no-https         With --lan: do not enable the HTTPS listener.
   --host ADDR        Bind address (default 127.0.0.1; --lan sets 0.0.0.0).
   --admin-user NAME  Administrator account created on first install (default: admin). A random
                      password is generated, printed once and saved to config/initial-admin-password.txt.
@@ -69,6 +72,7 @@ while [ $# -gt 0 ]; do
     --skip-tests) SKIP_TESTS=1 ;;
     --stop-running) STOP_RUNNING=1 ;;
     --lan) LAN=1 ;;
+    --no-https) NO_HTTPS=1 ;;
     --install-service) INSTALL_SERVICE=1 ;;
     --host) [ $# -ge 2 ] || { echo "--host needs a value" >&2; exit 2; }; HOST="$2"; shift ;;
     --admin-user) [ $# -ge 2 ] || { echo "--admin-user needs a value" >&2; exit 2; }; ADMIN_USER="$2"; shift ;;
@@ -402,7 +406,7 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_a441a135aa76__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_9ac232ed3bfe__'
 # Audiobook Studio
 
 **v0.1 - prerelease** · Developed by Scott Albretsen, TSAL Solutions LLC
@@ -482,6 +486,39 @@ everything else alone:
    * Export a chapter-marked M4B, a single chapter as M4B, or a ZIP of chapter MP3s.
    * Write the QA report as HTML and JSON.
    * Record release signoff.
+
+### Reference voice lab (record a cloned narrator in the browser)
+
+**Narrator Studio → Reference voice lab** walks a new user from a blank page to a cloned narrator
+without uploading anything:
+
+1. **Set up.** Read the room, microphone and delivery checklist, pick a microphone, and watch the
+   live level meter. The studio records raw audio and switches echo cancellation, noise suppression
+   and auto-gain off on purpose.
+2. **Room check.** Four seconds of silence measure your room's background noise, with advice.
+3. **Record.** Pick a sample script and read it from the teleprompter. There are six neutral core
+   scripts of 10–18 seconds each (calm narration, a long sentence, hard consonants, dates and names,
+   dialogue, non-fiction), plus four optional emotional ones. You can also read a page from your own
+   book. The studio saves a 16-bit WAV and shows its waveform.
+4. **Review & audition.** Each saved take gets an objective quality report (length, clipping, level,
+   background noise, signal-to-noise, pauses) with a verdict from excellent to poor. You can also:
+   * check the transcript with Whisper, because the clone learns the words you typed next to your
+     voice, so they must match exactly;
+   * audition the take, which synthesizes the same passage with the Base model so you can compare
+     takes by ear.
+5. **Create narrator.** Confirm that the voice is yours or that you have permission. The take then
+   becomes a cloned narrator, and a take rated poor cannot.
+
+**Microphone access needs a secure page.** Browsers disable the microphone on plain `http://` network
+addresses. With `--lan` the installer therefore also serves **HTTPS on port 8443** with a self-signed
+certificate generated on the Mac for its own host name and addresses. Open
+`https://<mac-name>:8443`, accept the one-time browser warning (or install the certificate from the
+lab's notice), and recording works from any computer. On the Mac itself, `http://localhost:<port>` also
+works. Without HTTPS the lab explains this and you can still upload a recording you made elsewhere.
+
+**Several takes?** One narrator uses **one reference clip**. Record 2–4 neutral takes and audition them
+to keep the best. Keep the emotional register neutral-to-warm and consistent: a clone inherits the delivery
+of its reference. For a different mood, create a separate narrator from an emotional take.
 
 ### Drafts and release
 
@@ -655,12 +692,12 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_a441a135aa76__
+__STUDIO_EOF_9ac232ed3bfe__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
 __STUDIO_EOF_b50c02630f9f__
-cat > "$DEST/requirements.txt" <<'__STUDIO_EOF_ebe6560fce3c__'
+cat > "$DEST/requirements.txt" <<'__STUDIO_EOF_0150442fc879__'
 fastapi>=0.110,<1
 uvicorn>=0.29
 python-multipart>=0.0.9
@@ -669,7 +706,8 @@ numpy>=1.26
 httpx>=0.27
 pytest>=8.0
 huggingface_hub>=0.23
-__STUDIO_EOF_ebe6560fce3c__
+cryptography>=42
+__STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
 cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_535329dd4810__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon."""
@@ -1189,7 +1227,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
         ctx.event(conn, "export", f"{label}{' (draft)' if draft else ''} exported for '{book['title']}'", book_id)
     return {"export_id": cur.lastrowid, "path": str(out), "draft": draft, "size_bytes": size, "probe": info}
 __STUDIO_EOF_6cc996855af9__
-cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_3dc24d2ac064__'
+cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_49663622a316__'
 """Audio I/O, acoustic QA and FFmpeg/ffprobe helpers.
 
 All intermediate takes are 16-bit PCM mono WAV written atomically. Reading uses the stdlib
@@ -1356,6 +1394,14 @@ def analyze(a: np.ndarray, sr: int, expected_s: float | None, qa: dict) -> dict:
     speech_rms = float(np.sqrt(np.mean((a[: fr.size * max(1, int(sr * 0.02))].reshape(fr.size, -1)[voiced_mask] ** 2)))) if voiced_mask.any() else rms
     metrics["rms_dbfs"] = round(db(speech_rms), 2)
     metrics["silence_threshold_db"] = round(thr, 1)
+    # noise floor: the quietest 100 ms windows (power-averaged), robust to a take with few pauses
+    pw = 10 ** (fr / 10.0)
+    win = 5
+    if pw.size >= win:
+        sm = np.convolve(pw, np.ones(win) / win, mode="valid")
+    else:
+        sm = pw
+    metrics["noise_floor_dbfs"] = round(max(-90.0, float(10 * np.log10(max(float(np.percentile(sm, 5)), 1e-9)))), 1)
     frame_s = 0.02
     if voiced_mask.any():
         idx = np.where(voiced_mask)[0]
@@ -1529,7 +1575,7 @@ def convert_reference(src: Path, dst: Path, sr: int = 24000, min_s: float = 3.0,
     if info.get("sample_rate") and info["sample_rate"] < 16000:
         warnings.append(f"Source sample rate is only {info['sample_rate']} Hz; cloning quality may suffer.")
     return {"duration_s": round(dur, 2), "source": info, "sample_rate": rate, "warnings": warnings}
-__STUDIO_EOF_3dc24d2ac064__
+__STUDIO_EOF_49663622a316__
 cat > "$DEST/studio/chunker.py" <<'__STUDIO_EOF_9f5f1545af60__'
 """Split chapter text into natural narration segments (default 150-400 characters).
 
@@ -1699,7 +1745,7 @@ def build_segments(blocks, min_chars: int, max_chars: int, merge_short: bool = T
         segs[-1].pause_kind = "chapter_end"
     return segs
 __STUDIO_EOF_9f5f1545af60__
-cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_d2cd7aa2a7c7__'
+cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_3e5409673965__'
 """Command line interface. The web UI is the primary interface; the CLI exists for automation,
 diagnostics and headless use."""
 from __future__ import annotations
@@ -1756,8 +1802,29 @@ def cmd_serve(a):
     import atexit
 
     atexit.register(lambda: pidfile.unlink(missing_ok=True) if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()) else None)
+    https_server = None
+    if s.server.https_enabled:
+        try:
+            import threading
+
+            from .tls import ensure_certificate
+
+            cert, key = ensure_certificate(ctx)
+            app.state.https_port = s.server.https_port
+            app.state.https_active = True
+            https_server = uvicorn.Server(uvicorn.Config(app, host=host, port=s.server.https_port, ssl_certfile=str(cert), ssl_keyfile=str(key),
+                                                         log_level="info", access_log=False, lifespan="off"))
+            threading.Thread(target=https_server.run, daemon=True, name="https").start()
+            print(f"HTTPS (self-signed) on port {s.server.https_port}: certificate {cert}", flush=True)
+        except Exception as exc:  # never let a TLS problem take the studio down
+            app.state.https_active = False
+            print(f"WARNING: HTTPS could not start ({type(exc).__name__}: {exc}); serving HTTP only.", flush=True)
     print(f"Audiobook Studio {__version__} on http://{'127.0.0.1' if host == '127.0.0.1' else host}:{port}  (engine: {ctx.engine_mode})", flush=True)
-    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False, timeout_graceful_shutdown=30)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info", access_log=False, timeout_graceful_shutdown=30)
+    finally:
+        if https_server is not None:
+            https_server.should_exit = True
 
 
 def cmd_worker(a):
@@ -2047,8 +2114,8 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-__STUDIO_EOF_d2cd7aa2a7c7__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_99e76bf19150__'
+__STUDIO_EOF_3e5409673965__
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_6fb3508ffe70__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -2247,9 +2314,17 @@ class ServerSettings(_M):
     host: str = "127.0.0.1"
     port: int = Field(7861, ge=1024, le=65535)
     allow_remote: bool = False
+    https_enabled: bool = False
+    https_port: int = Field(8443, ge=1024, le=65535)
     allowed_hosts: list[str] = Field(default_factory=list, description="extra Host header names accepted")
     max_manuscript_mb: int = Field(100, ge=1, le=2000)
     max_reference_mb: int = Field(25, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def check_https(self):
+        if self.https_enabled and self.https_port == self.port:
+            raise ValueError("https_port must differ from port")
+        return self
 
     @model_validator(mode="after")
     def check_bind(self):
@@ -2338,7 +2413,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_99e76bf19150__
+__STUDIO_EOF_6fb3508ffe70__
 cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_fb2d7cc67992__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
@@ -4861,6 +4936,163 @@ def recover_interrupted(conn) -> dict:
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
 __STUDIO_EOF_ee3d75cb5bf2__
+cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_0c3b6d21e950__'
+"""Reference-voice lab: sample scripts to read aloud and an objective quality report for a recording.
+
+The scripts are original texts chosen for phonetic variety (plosives, sibilants, long vowels),
+sentence-length variety (a long, comma-rich sentence for breath control), numbers and hard
+names, dialogue with questions, and - separately, for optional variants only - emotional range.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+from . import audio as A
+
+SCRIPTS: list[dict] = [
+    {"id": "core-harbour", "tier": "core", "category": "Neutral narration", "title": "Harbour at dawn",
+     "purpose": "Calm, even narration - the best all-round primary reference.",
+     "text": "The morning fog lay thick over the harbour, and the fishing boats rocked quietly at their moorings. Thomas walked along the quay, counting the masts as he had done every day since he was a boy. Seventeen, he thought. One fewer than last spring."},
+    {"id": "core-suitcase", "tier": "core", "category": "Neutral narration", "title": "The long sentence",
+     "purpose": "One long, comma-rich sentence: shows how you breathe and pace a flowing line.",
+     "text": "She packed the blue suitcase with care, folding each shirt twice, tucking the letters between the pages of a worn atlas, and wondering, as the train whistle sounded somewhere beyond the hills, whether the house she was leaving would ever feel like hers again."},
+    {"id": "core-sounds", "tier": "core", "category": "Sounds and rhythm", "title": "Sharp sounds",
+     "purpose": "Covers S, SH, TH, B, P, T, K and long vowels so the clone learns your hard consonants.",
+     "text": "Sixty-six sharp swallows swooped past the stone bridge at dusk, while quick brown foxes slipped through the thick, wet grass. Ben thought the thunder sounded like distant drums, then laughed at himself for being so jumpy."},
+    {"id": "core-numbers", "tier": "core", "category": "Names and numbers", "title": "Dates, numbers and names",
+     "purpose": "Spoken numbers, titles and an unusual name (Siobhan) - things books are full of.",
+     "text": "On the fourteenth of March, nineteen eighty-seven, Doctor Siobhan Maguire recorded a temperature of thirty-eight point five degrees. By half past four, the clinic on Wexford Street had seen two hundred and twelve patients, and Mr. Okonkwo, the pharmacist, had run out of everything except aspirin."},
+    {"id": "core-dialogue", "tier": "core", "category": "Dialogue", "title": "Questions and quiet dialogue",
+     "purpose": "Rising question intonation and short replies, read as a narrator rather than acted.",
+     "text": "\"Where were you last night?\" she asked. \"Out,\" he said. \"Out where?\" \"Does it matter?\" She set the cup down very gently. \"It does to me.\" Rain tapped at the window, and neither of them looked away."},
+    {"id": "core-authority", "tier": "core", "category": "Non-fiction", "title": "Clear, authoritative explanation",
+     "purpose": "Measured, formal delivery for non-fiction, with a list structure.",
+     "text": "The committee concluded that the proposal, while ambitious, lacked sufficient evidence. Three recommendations follow. First, extend the trial. Second, publish the full data. Third, reconsider the budget before any further commitments are made."},
+    {"id": "range-warm", "tier": "range", "emotion": "warm", "category": "Optional range", "title": "Warm and intimate",
+     "purpose": "Soft, close and affectionate. Use only to build a separate warm variant.",
+     "text": "You did it. I always knew you would, even when you didn't. Come here, sit down, and let me tell you how proud I am. Truly, properly proud."},
+    {"id": "range-tense", "tier": "range", "emotion": "tense", "category": "Optional range", "title": "Tense and urgent",
+     "purpose": "Held breath and pressure. A separate suspense variant only.",
+     "text": "Don't move. Don't even breathe. The footsteps had stopped outside the door, and the handle began to turn, slowly, a quarter of an inch at a time."},
+    {"id": "range-joy", "tier": "range", "emotion": "joyful", "category": "Optional range", "title": "Joyful and lively",
+     "purpose": "Bright and energetic. A separate upbeat variant only.",
+     "text": "We won! Can you believe it? After all those years, all that rain, all those terrible Saturdays, we actually won! Somebody find me a trumpet."},
+    {"id": "range-sad", "tier": "range", "emotion": "sad", "category": "Optional range", "title": "Quiet and sorrowful",
+     "purpose": "Slow, low and reflective. A separate sombre variant only.",
+     "text": "The house was quiet now. She sat on the stairs where he used to sit, and listened to the clock, and tried to remember the sound of his laugh."},
+]
+
+AUDITION_TEXT = ("The lighthouse at Gull Point had stood empty for eleven years before Margaret Hale climbed its stairs. "
+                 "\"Is anyone there?\" she called. Nothing answered but the wind, patient and cold, off the grey water.")
+
+
+def script_by_id(sid: str) -> dict | None:
+    return next((s for s in SCRIPTS if s["id"] == sid), None)
+
+
+def word_count(text: str) -> int:
+    return len(text.split())
+
+
+def estimated_seconds(text: str, wpm: float = 155.0) -> float:
+    return round(word_count(text) * 60.0 / wpm, 1)
+
+
+def public_scripts() -> list[dict]:
+    return [{**s, "words": word_count(s["text"]), "est_seconds": estimated_seconds(s["text"])} for s in SCRIPTS]
+
+
+def analyze_recording(path) -> dict:
+    """Objective analysis of the raw recording (before the studio trims or normalises it)."""
+    tmp = A.temp_sibling(__import__("pathlib").Path(path), ".wav")
+    try:
+        A.run_ffmpeg(["-i", str(path), "-vn", "-ac", "1", "-ar", "24000", "-sample_fmt", "s16", "-f", "wav", str(tmp)], timeout=120)
+        a, sr = A.read_wav(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    result = A.analyze(a, sr, None, {"clip_ratio_limit": 0.0005, "min_rms_dbfs": -50, "max_rms_dbfs": -3, "dead_air_seconds": 1.5})
+    return {"metrics": result["metrics"], "issues": result["issues"]}
+
+
+def quality_report(metrics: dict) -> dict:
+    """Plain-language checks with a verdict: excellent / good / usable / poor."""
+    checks: list[dict] = []
+
+    def add(name, status, detail, tip=""):
+        checks.append({"name": name, "status": status, "detail": detail, "tip": tip})
+
+    dur = metrics.get("duration_s", 0.0)
+    if dur < 3:
+        add("Length", "fail", f"{dur:.1f}s is too short.", "Record at least 5 seconds; 8-15 seconds is ideal.")
+    elif dur < 5:
+        add("Length", "warn", f"{dur:.1f}s is short.", "Aim for 8-15 seconds of continuous speech.")
+    elif dur <= 20:
+        add("Length", "pass", f"{dur:.1f}s" + (" - ideal." if 8 <= dur <= 15 else "."), "")
+    elif dur <= 30:
+        add("Length", "warn", f"{dur:.1f}s is long.", "Very long references slow generation and can make the voice drift. Trim to 8-15 seconds.")
+    else:
+        add("Length", "fail", f"{dur:.1f}s is too long.", "Keep references under 30 seconds.")
+
+    peak, clip = metrics.get("peak_dbfs", -90), metrics.get("clip_ratio", 0.0)
+    if clip > 0.0005 or peak >= -0.5:
+        add("Clipping", "fail", f"Peaks hit full scale (peak {peak:.1f} dBFS).", "Move back from the microphone or lower its input gain, then re-record.")
+    elif peak > -3:
+        add("Clipping", "warn", f"Peak {peak:.1f} dBFS is very hot.", "Lower the input gain a little for safety margin.")
+    elif peak < -30:
+        add("Clipping", "warn", f"Peak {peak:.1f} dBFS is very low.", "Raise the input gain or move closer.")
+    else:
+        add("Clipping", "pass", f"Peak {peak:.1f} dBFS - healthy headroom.", "")
+
+    rms = metrics.get("rms_dbfs", -90)
+    if rms < -42:
+        add("Speech level", "fail", f"Speech averages {rms:.1f} dBFS - far too quiet.", "Move closer (a hand-span, about 15-20 cm) or raise the input gain.")
+    elif rms < -32:
+        add("Speech level", "warn", f"Speech averages {rms:.1f} dBFS - quiet.", "Move a little closer or raise the input gain. Aim for about -26 to -16 dBFS.")
+    elif rms > -10:
+        add("Speech level", "warn", f"Speech averages {rms:.1f} dBFS - very loud.", "Lower the gain.")
+    else:
+        add("Speech level", "pass", f"Speech averages {rms:.1f} dBFS.", "")
+
+    floor = metrics.get("noise_floor_dbfs", -90)
+    snr = rms - floor
+    if snr < 12:
+        add("Background noise", "warn", "No quiet moment found, so the background noise cannot be measured.",
+            "Leave about half a second of silence before and after you speak. The Room check in step 2 measures your room directly.")
+    elif floor <= -55:
+        add("Background noise", "pass", f"Noise floor {floor:.0f} dBFS - very quiet room.", "")
+    elif floor <= -50:
+        add("Background noise", "pass", f"Noise floor {floor:.0f} dBFS - good.", "")
+    elif floor <= -42:
+        add("Background noise", "warn", f"Noise floor {floor:.0f} dBFS - audible background.", "Switch off fans, air conditioning and appliances, close windows, and try a smaller, softer room.")
+    else:
+        add("Background noise", "fail", f"Noise floor {floor:.0f} dBFS - too noisy for cloning.", "The clone will reproduce this noise. Find a quieter room or time of day.")
+    if snr < 12:
+        pass
+    elif snr < 25:
+        add("Signal-to-noise", "fail", f"Only {snr:.0f} dB between voice and noise.", "Get closer to the microphone and reduce background noise.")
+    elif snr < 35:
+        add("Signal-to-noise", "warn", f"{snr:.0f} dB between voice and noise.", "Good enough to try; closer to the mic would be better.")
+    else:
+        add("Signal-to-noise", "pass", f"{snr:.0f} dB between voice and noise.", "")
+
+    pause = metrics.get("longest_internal_silence_s", 0.0)
+    if pause > 1.5:
+        add("Pauses", "warn", f"A {pause:.1f}s pause inside the take.", "Long gaps teach the clone to hesitate. Re-record with a steady flow.")
+    else:
+        add("Pauses", "pass", "Even pacing.", "")
+    lead = metrics.get("lead_silence_s", 0.0)
+    if lead > 2.0:
+        add("Lead-in", "warn", f"{lead:.1f}s of silence before you start.", "Start speaking about half a second after pressing record.")
+
+    fails = sum(1 for c in checks if c["status"] == "fail")
+    warns = sum(1 for c in checks if c["status"] == "warn")
+    verdict = "poor" if fails else ("usable" if warns >= 2 else ("good" if warns == 1 else "excellent"))
+    summary = {"poor": "Not suitable - fix the red items and record again.",
+               "usable": "Usable, but a cleaner take will give a better clone.",
+               "good": "Good. One small improvement is possible.",
+               "excellent": "Excellent reference quality."}[verdict]
+    return {"verdict": verdict, "summary": summary, "checks": checks}
+__STUDIO_EOF_0c3b6d21e950__
 cat > "$DEST/studio/reports.py" <<'__STUDIO_EOF_5c7f622586db__'
 """Review summary reports (JSON + self-contained, escaped HTML)."""
 from __future__ import annotations
@@ -5032,7 +5264,7 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_5c7f622586db__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_2b3656d89e18__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_be92893f7637__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -5307,6 +5539,137 @@ def promote_preview_to_clone(ctx, job_id: int, name: str) -> dict:
                              {"owner_attest": True, "rights_holder": f"Synthetic voice designed in this studio ('{v['name']}')",
                               "statement": f"Reference generated locally by Qwen3-TTS VoiceDesign (preview job {job_id}); no human voice involved."})
     return out
+
+
+# ============================================================= reference-voice lab
+
+
+def recordings_dir(ctx) -> Path:
+    d = ctx.data_dir / "recordings"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _rec_meta_path(ctx, rid: str) -> Path:
+    if not re.fullmatch(r"rec_[0-9a-f]{8}", rid or ""):
+        raise ServiceError("Recording not found", 404)
+    return recordings_dir(ctx) / rid / "meta.json"
+
+
+def get_recording(ctx, rid: str) -> dict:
+    p = _rec_meta_path(ctx, rid)
+    if not p.exists():
+        raise ServiceError("Recording not found", 404)
+    return loads(p.read_text("utf-8"), {})
+
+
+def list_recordings(ctx) -> list[dict]:
+    import shutil as _sh
+
+    out, cutoff = [], now() - 14 * 86400
+    for d in recordings_dir(ctx).iterdir():
+        m = d / "meta.json"
+        if not m.exists():
+            continue
+        meta = loads(m.read_text("utf-8"), {})
+        if meta.get("created_at", now()) < cutoff:  # drafts expire after 14 days; created narrators keep their own copy
+            _sh.rmtree(d, ignore_errors=True)
+            continue
+        out.append(meta)
+    return sorted(out, key=lambda r: r.get("created_at", 0), reverse=True)
+
+
+def create_recording(ctx, filename: str, data: bytes, script_id: str, ref_text: str, label: str = "") -> dict:
+    """Store a studio recording as a draft reference: validate, analyse, convert. Nothing becomes a narrator yet."""
+    from . import reference as R
+
+    s = ctx.settings()
+    ext = os.path.splitext((filename or "").lower())[1]
+    if ext not in A.AUDIO_UPLOAD_EXTS:
+        raise ServiceError("Recording must be WAV, MP3, M4A or FLAC audio.", 422)
+    if len(data) > s.server.max_reference_mb * 1024 * 1024:
+        raise ServiceError(f"Recording is larger than {s.server.max_reference_mb} MB.", 413)
+    if not A.sniff_audio(data, ext):
+        raise ServiceError(f"The data is not a valid {ext} audio file.", 422)
+    ref_text = " ".join((ref_text or "").split())
+    if not 5 <= len(ref_text) <= 1000:
+        raise ServiceError("The transcript must be the exact words spoken (5-1000 characters).", 422)
+    rid = new_uid("rec").replace("rec_", "rec_")
+    d = recordings_dir(ctx) / rid
+    d.mkdir(parents=True)
+    try:
+        orig = d / ("original" + ext)
+        atomic_write_bytes(orig, data)
+        try:
+            analysis = R.analyze_recording(orig)
+        except A.AudioToolError as exc:
+            raise ServiceError(f"That audio could not be decoded: {exc}", 422)
+        quality = R.quality_report(analysis["metrics"])
+        try:
+            conv = A.convert_reference(orig, d / "reference-24k.wav")
+        except A.AudioValidationError as exc:
+            raise ServiceError(str(exc), 422, {"analysis": analysis["metrics"], "quality": quality})
+        script = R.script_by_id(script_id)
+        meta = {"id": rid, "created_at": now(), "script_id": script_id if script else None, "script_title": script["title"] if script else "Own text",
+                "ref_text": ref_text, "label": (label or "").strip()[:80], "duration_s": conv["duration_s"], "metrics": analysis["metrics"],
+                "issues": analysis["issues"], "quality": quality, "sha256": sha256_bytes(data), "filename": "original" + ext,
+                "convert_warnings": conv["warnings"]}
+        atomic_write_bytes(d / "meta.json", dumps(meta).encode())
+    except BaseException:
+        import shutil as _sh
+
+        _sh.rmtree(d, ignore_errors=True)
+        raise
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "recording", rid, "created", {"script": script_id, "duration_s": conv["duration_s"], "verdict": quality["verdict"]})
+    return meta
+
+
+def delete_recording(ctx, rid: str) -> None:
+    import shutil as _sh
+
+    get_recording(ctx, rid)
+    _sh.rmtree(recordings_dir(ctx) / rid, ignore_errors=True)
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "recording", rid, "deleted")
+
+
+def update_recording_text(ctx, rid: str, ref_text: str) -> dict:
+    meta = get_recording(ctx, rid)
+    ref_text = " ".join((ref_text or "").split())
+    if not 5 <= len(ref_text) <= 1000:
+        raise ServiceError("The transcript must be 5-1000 characters.", 422)
+    meta["ref_text"] = ref_text
+    atomic_write_bytes(_rec_meta_path(ctx, rid), dumps(meta).encode())
+    return meta
+
+
+def enqueue_recording_job(ctx, rid: str, mode: str, text: str | None = None) -> dict:
+    """mode 'check': transcribe the take with Whisper and compare with its transcript.
+    mode 'audition': synthesize a test passage with the Base model using this take as the reference."""
+    from . import reference as R
+
+    get_recording(ctx, rid)
+    if mode not in ("check", "audition"):
+        raise ServiceError("mode must be check or audition", 422)
+    text = " ".join((text or R.AUDITION_TEXT).split())
+    if mode == "audition" and not 3 <= len(text) <= 600:
+        raise ServiceError("Audition text must be 3-600 characters.", 422)
+    with ctx.db.tx() as conn:
+        jid = conn.execute("INSERT INTO jobs(kind, payload_json, status, position, created_at, updated_at) VALUES ('preview',?, 'queued', 0, ?, ?)",
+                           (dumps({"recording_id": rid, "mode": mode, "text": text}), now(), now())).lastrowid
+    return get_job(ctx, jid)
+
+
+def create_voice_from_recording(ctx, rid: str, name: str, consent: dict) -> dict:
+    meta = get_recording(ctx, rid)
+    if meta["quality"]["verdict"] == "poor":
+        raise ServiceError("This take was rated poor quality. Re-record it before creating a narrator.", 422, {"quality": meta["quality"]})
+    d = recordings_dir(ctx) / rid
+    data = (d / meta["filename"]).read_bytes()
+    statement = (consent.get("statement") or "").strip()
+    consent = {**consent, "statement": (statement + " " if statement else "") + f"Recorded in the studio reference lab ({meta['script_title']}, recording {rid})."}
+    return create_clone_voice(ctx, name, meta["filename"], data, meta["ref_text"], consent)
 
 
 # ====================================================================== imports
@@ -6202,7 +6565,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_2b3656d89e18__
+__STUDIO_EOF_be92893f7637__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -6820,6 +7183,101 @@ def move_book(ctx, book_id: int, new_root: str, progress=None) -> dict:
         ctx.event(conn, "storage", f"Moved '{book['title']}' to {dest_root} ({len(copied)} files verified). The old copy was kept.", book_id)
     return {"files": len(copied), "old": {k: str(v_) for k, v_ in old.items()}, "new": {k: str(v_) for k, v_ in new.items()}}
 __STUDIO_EOF_9800c9e0fcfa__
+cat > "$DEST/studio/tls.py" <<'__STUDIO_EOF_2956fddddc1f__'
+"""Self-signed HTTPS certificate for the studio's LAN address.
+
+Browsers only allow microphone access on secure pages (https:// or localhost). A certificate
+generated here, for this Mac's own host names and addresses, lets the recorder work from other
+computers. It is self-signed: the browser shows a one-time warning until the certificate is
+trusted on that computer (the studio offers the certificate for download with instructions).
+The private key never leaves config/tls (mode 0600).
+"""
+from __future__ import annotations
+
+import datetime as dt
+import ipaddress
+import os
+from pathlib import Path
+
+from .util import atomic_write_bytes
+
+VALID_DAYS = 825
+
+
+def _names(ctx) -> tuple[list[str], list[str]]:
+    from .web.security import local_names
+
+    raw = set(local_names()) | {h.lower() for h in ctx.settings().server.allowed_hosts}
+    dns, ips = set(), set()
+    for n in raw:
+        n = n.strip("[]")
+        if not n or n in ("0.0.0.0",):
+            continue
+        try:
+            ips.add(str(ipaddress.ip_address(n)))
+        except ValueError:
+            if "." in n or n == "localhost" or n.replace("-", "").isalnum():
+                dns.add(n)
+    ips |= {"127.0.0.1"}
+    return sorted(dns), sorted(ips)
+
+
+def tls_dir(ctx) -> Path:
+    d = ctx.config_dir / "tls"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def ensure_certificate(ctx) -> tuple[Path, Path]:
+    """Return (cert, key), (re)generating when missing, expiring soon, or missing a current host name/IP."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    d = tls_dir(ctx)
+    cert_p, key_p = d / "studio-certificate.pem", d / "studio-key.pem"
+    dns, ips = _names(ctx)
+    if cert_p.exists() and key_p.exists():
+        try:
+            cert = x509.load_pem_x509_certificate(cert_p.read_bytes())
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+            have_dns = set(san.get_values_for_type(x509.DNSName))
+            have_ip = {str(i) for i in san.get_values_for_type(x509.IPAddress)}
+            remaining = cert.not_valid_after_utc - dt.datetime.now(dt.timezone.utc)
+            if set(dns) <= have_dns and set(ips) <= have_ip and remaining > dt.timedelta(days=30):
+                return cert_p, key_p
+        except Exception:
+            pass
+    key = ec.generate_private_key(ec.SECP256R1())
+    host = dns[0] if dns else "audiobook-studio"
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host), x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Audiobook Studio (self-signed)")])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - dt.timedelta(days=1)).not_valid_after(now + dt.timedelta(days=VALID_DAYS))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in dns] + [x509.IPAddress(ipaddress.ip_address(i)) for i in ips]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=False, content_commitment=False, data_encipherment=False, key_agreement=True,
+                                         key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .sign(key, hashes.SHA256()))
+    atomic_write_bytes(key_p, key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    try:
+        os.chmod(key_p, 0o600)
+    except OSError:
+        pass
+    atomic_write_bytes(cert_p, cert.public_bytes(serialization.Encoding.PEM))
+    return cert_p, key_p
+
+
+def fingerprint_sha256(cert_path: Path) -> str:
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+
+    cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+    h = cert.fingerprint(hashes.SHA256()).hex().upper()
+    return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
+__STUDIO_EOF_2956fddddc1f__
 cat > "$DEST/studio/util.py" <<'__STUDIO_EOF_34b312dc445b__'
 """Small shared helpers: hashing, atomic writes, JSON, filenames."""
 from __future__ import annotations
@@ -6973,7 +7431,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_d7d16e5994cb__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_127e8bc8ec6d__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -7160,6 +7618,23 @@ class UserReq(_Req):
     role: str = "operator"
 
 
+class RecordingTextReq(_Req):
+    ref_text: str = Field(min_length=5, max_length=1000)
+
+
+class RecordingJobReq(_Req):
+    mode: Literal["check", "audition"]
+    text: Optional[str] = Field(None, max_length=600)
+
+
+class FromRecordingReq(_Req):
+    recording_id: str = Field(max_length=40)
+    name: str = Field(min_length=1, max_length=80)
+    rights_holder: str = Field(max_length=120)
+    owner_attest: bool = False
+    statement: str = Field("", max_length=1000)
+
+
 class ArchiveReq(_Req):
     archived: bool = True
 
@@ -7309,14 +7784,33 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def _client_key(request: Request) -> str:
         return request.client.host if request.client else "unknown"
 
-    def _session(resp, user):
-        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
+    def _session(resp, user, request):
+        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/",
+                        secure=request.url.scheme == "https")
         return resp
+
+    def _cert_fp():
+        if not getattr(app.state, "https_active", False):
+            return None
+        try:
+            from ..tls import fingerprint_sha256
+            return fingerprint_sha256(ctx.config_dir / "tls" / "studio-certificate.pem")
+        except Exception:
+            return None
+
+    @app.get("/tls/studio-certificate.pem", include_in_schema=False)
+    def tls_certificate():
+        p = ctx.config_dir / "tls" / "studio-certificate.pem"
+        if not p.exists():
+            raise S.ServiceError("HTTPS is not enabled on this studio.", 404)
+        return FileResponse(p, media_type="application/x-pem-file", filename="audiobook-studio-certificate.pem")
 
     @app.get("/api/auth/status")
     def api_auth_status(request: Request):
         return {"auth_required": app.state.auth.enabled(), "user": request.state.user, "engine": ctx.engine_mode,
-                "version": __version__, "version_label": VERSION_LABEL}
+                "version": __version__, "version_label": VERSION_LABEL,
+                "https_port": app.state.https_port if getattr(app.state, "https_active", False) else None,
+                "secure": request.url.scheme == "https", "cert_sha256": _cert_fp()}
 
     @app.post("/api/auth/login")
     def api_login(req: LoginReq, request: Request):
@@ -7334,7 +7828,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
         lim.ok(key)
         with ctx.db.tx() as conn:
             ctx.audit(conn, "auth", user["name"], "login", {"ip": key}, user["name"])
-        return _session(JSONResponse({"ok": True, "user": user}), user)
+        return _session(JSONResponse({"ok": True, "user": user}), user, request)
 
     @app.post("/api/auth/logout")
     def api_logout():
@@ -7358,7 +7852,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:
             ctx.audit(conn, "auth", u["name"], "password_changed", {}, u["name"])
-        return _session(JSONResponse({"ok": True}), u)
+        return _session(JSONResponse({"ok": True}), u, request)
 
     @app.get("/api/auth/users")
     def api_users():
@@ -7581,6 +8075,46 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_voice_preview(voice_id: int, req: PreviewReq):
         return S.enqueue_preview(ctx, voice_id, req.text, req.instruct, req.verify, req.seed)
 
+    # ------------------------------------------------- reference-voice lab (recording)
+    @app.get("/api/reference-scripts")
+    def api_reference_scripts():
+        from .. import reference as R
+        return {"scripts": R.public_scripts(), "audition_text": R.AUDITION_TEXT}
+
+    @app.post("/api/recordings")
+    async def api_recording_create(file: UploadFile = File(...), script_id: str = Form("", max_length=60), ref_text: str = Form(..., max_length=1000),
+                                   label: str = Form("", max_length=80)):
+        data = await read_upload(file, ctx.settings().server.max_reference_mb * 1024 * 1024)
+        return await run_in_threadpool(S.create_recording, ctx, file.filename or "recording.wav", data, script_id, ref_text, label)
+
+    @app.get("/api/recordings")
+    def api_recordings():
+        return {"recordings": S.list_recordings(ctx)}
+
+    @app.patch("/api/recordings/{rid}")
+    def api_recording_text(rid: str, req: RecordingTextReq):
+        return S.update_recording_text(ctx, rid, req.ref_text)
+
+    @app.delete("/api/recordings/{rid}")
+    def api_recording_delete(rid: str):
+        S.delete_recording(ctx, rid)
+        return {"ok": True}
+
+    @app.post("/api/recordings/{rid}/job")
+    def api_recording_job(rid: str, req: RecordingJobReq):
+        return S.enqueue_recording_job(ctx, rid, req.mode, req.text)
+
+    @app.post("/api/voices/from-recording")
+    def api_voice_from_recording(req: FromRecordingReq):
+        return S.create_voice_from_recording(ctx, req.recording_id, req.name,
+                                             {"owner_attest": req.owner_attest, "rights_holder": req.rights_holder, "statement": req.statement})
+
+    @app.api_route("/media/recording/{rid}", methods=["GET", "HEAD"])
+    def media_recording(rid: str, request: Request):
+        S.get_recording(ctx, rid)
+        d = S.recordings_dir(ctx) / rid
+        return _serve(d / "reference-24k.wav", [d], request, None)
+
     @app.post("/api/voices/promote")
     def api_voice_promote(req: PromoteReq):
         return S.promote_preview_to_clone(ctx, req.job_id, req.name)
@@ -7758,7 +8292,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_d7d16e5994cb__
+__STUDIO_EOF_127e8bc8ec6d__
 cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5068e44bfe07__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
@@ -8049,7 +8583,7 @@ def ensure_inside(path: Path, roots: list[Path]) -> Path:
             return rp
     raise PermissionError("path outside registered storage")
 __STUDIO_EOF_5578c285b43a__
-cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_6d1b484c18f1__'
+cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_234b5211d211__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
 mutating requests (CSRF), session authentication with admin-only routes, strict headers.
 
@@ -8072,7 +8606,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 PUBLIC_PREFIXES = ("/static/",)
-PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico"}
+PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/tls/studio-certificate.pem"}
 
 
 def local_names() -> set[str]:
@@ -8124,9 +8658,11 @@ def install(app, ctx) -> None:
     @app.middleware("http")
     async def guard(request: Request, call_next):
         s = ctx.settings().server
-        port = getattr(app.state, "port", None) or s.port
+        ports = {getattr(app.state, "port", None) or s.port}
+        if getattr(app.state, "https_active", False):
+            ports.add(getattr(app.state, "https_port", s.https_port))
         host = (request.headers.get("host") or "").lower()
-        if not host_ok(host, port):
+        if not any(host_ok(host, pt) for pt in ports):
             return JSONResponse({"error": "Invalid Host header. Add this name to server.allowed_hosts in settings.json if it is legitimate."}, status_code=421)
         path = request.url.path
         if request.method in MUTATING:
@@ -8154,13 +8690,13 @@ def install(app, ctx) -> None:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
         if path.startswith("/api/") or path.startswith("/media/"):
             response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response
-__STUDIO_EOF_6d1b484c18f1__
+__STUDIO_EOF_234b5211d211__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_88cc0578bd84__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_ab89b7f5b0b1__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -8454,6 +8990,45 @@ dialog.modal::backdrop { background: rgba(10, 14, 22, .55); }
   .progress-fill { background: Highlight; }
 }
 
+/* ---------------------------------------------------------------- reference voice lab */
+.lab { border-top: 4px solid var(--accent); }
+.steps { list-style: none; display: flex; flex-wrap: wrap; gap: .35rem; padding: 0; margin: .8rem 0 1rem; }
+.step { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: .3rem .85rem; font: inherit; font-weight: 600; font-size: .86rem; color: var(--muted); cursor: pointer; }
+.step.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.lab-panel { margin-top: .6rem; }
+.lab-row { display: flex; flex-wrap: wrap; gap: .8rem; align-items: flex-end; }
+.lab-row label { flex: 1 1 260px; margin-bottom: 0; }
+.guide { margin: .5rem 0 1rem; background: var(--surface-2); border-radius: 8px; padding: .5rem .9rem; }
+.guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .4rem 1.2rem; }
+.guide h4 { margin: .7rem 0 .2rem; font-size: .92rem; }
+.guide ul { margin: 0; padding-left: 1.1rem; font-size: .88rem; }
+.guide li { margin-bottom: .3rem; }
+.meter-wrap { margin: .6rem 0; max-width: 560px; }
+.meter { position: relative; height: 16px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border);
+  background: linear-gradient(90deg, var(--surface-2) 0 50%, color-mix(in srgb, var(--good) 22%, var(--surface-2)) 50% 80%, color-mix(in srgb, var(--warn) 25%, var(--surface-2)) 80% 95%, color-mix(in srgb, var(--bad) 30%, var(--surface-2)) 95% 100%); }
+.meter-fill { height: 100%; width: 0; background: var(--muted); transition: width .06s linear; }
+.meter-fill[data-zone=good] { background: var(--good); } .meter-fill[data-zone=hot] { background: var(--warn); } .meter-fill[data-zone=clip] { background: var(--bad); }
+.meter-scale { display: flex; justify-content: space-between; }
+.prompter { position: relative; background: var(--surface-2); border: 2px solid var(--border); border-radius: 12px; padding: 1.2rem 1.4rem; margin: .8rem 0; }
+.prompter.live { border-color: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 25%, transparent); }
+.prompt-text { font: 1.35rem/1.7 Georgia, "Iowan Old Style", serif; margin: 0; }
+.count { position: absolute; right: 1rem; top: .4rem; font-size: 3rem; font-weight: 800; color: var(--accent); }
+.rec-controls { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; margin: .6rem 0; }
+.rec-btn { min-width: 130px; font-size: 1rem; }
+.rec-timer { font: 700 1.3rem var(--mono); } .rec-timer[data-state=ok] { color: var(--good); } .rec-timer[data-state=short] { color: var(--muted); } .rec-timer[data-state=long] { color: var(--warn); }
+.take-preview { background: var(--surface-2); border-radius: 10px; padding: .8rem 1rem; margin: .6rem 0; }
+#wave { width: 100%; max-width: 800px; height: 90px; background: var(--surface); border-radius: 6px; border: 1px solid var(--border); display: block; margin-bottom: .4rem; }
+.quality { border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; margin: .5rem 0; background: var(--surface); }
+.q-head { font-weight: 600; margin-bottom: .3rem; }
+.q-list { list-style: none; padding: 0; margin: 0; font-size: .88rem; }
+.q-list li { padding: .25rem 0; border-top: 1px dashed var(--border); display: flex; flex-wrap: wrap; gap: .3rem .5rem; }
+.qi { display: inline-grid; place-items: center; width: 1.3em; height: 1.3em; border-radius: 50%; font-weight: 800; font-size: .8rem; }
+.qc-pass .qi { background: var(--good-bg); color: var(--good); } .qc-warn .qi { background: var(--warn-bg); color: var(--warn); } .qc-fail .qi { background: var(--bad-bg); color: var(--bad); }
+.tip { width: 100%; color: var(--muted); }
+.takes { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1rem; margin-top: .6rem; }
+.take { border: 1px solid var(--border); border-radius: 10px; padding: .8rem 1rem; background: var(--surface); min-width: 0; }
+.take.chosen { border-color: var(--accent); }
+.take-head { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; } .take-head h4 { margin: 0; }
 /* ---------------------------------------------------------------- about */
 .ver-link { color: var(--muted); font-weight: 600; text-decoration: none; }
 .ver-link:hover { text-decoration: underline; }
@@ -8486,7 +9061,13 @@ body.signed-out .sidenav, body.signed-out .nav-toggle { display: none; }
 body.signed-out .shell { grid-template-columns: 1fr; }
 @media (max-width: 700px) { .user-box .uname { display: none; } }
 .center { text-align: center; }
-__STUDIO_EOF_88cc0578bd84__
+.user-box[hidden], .topbar-status[hidden], .engine-badge[hidden] { display: none; }
+@media (max-width: 600px) {
+  .topbar { gap: .5rem; padding: 0 .6rem; }
+  #chpw { display: none; }
+  .topbar-status { max-width: 34vw; }
+}
+__STUDIO_EOF_ab89b7f5b0b1__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 <!doctype html>
 <html lang="en">
@@ -8727,6 +9308,138 @@ document.addEventListener("DOMContentLoaded", () => {
   start().catch(toastError);
 });
 __STUDIO_EOF_e0da28d55f1c__
+cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
+// AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
+class CaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch && ch.length) this.port.postMessage(ch.slice(0));
+    return true;
+  }
+}
+registerProcessor("capture", CaptureProcessor);
+__STUDIO_EOF_48f833f8fc07__
+cat > "$DEST/studio/web/static/js/recorder.js" <<'__STUDIO_EOF_7fa1aaef3b74__'
+// Microphone capture for the reference-voice lab.
+// Records raw, unprocessed mono audio (echo cancellation, noise suppression and auto-gain are OFF
+// on purpose: a voice clone should learn your real voice, not a processed one) and encodes 16-bit WAV.
+
+export function micSupport() {
+  const secure = window.isSecureContext === true;
+  const api = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof AudioWorkletNode !== "undefined";
+  return { secure, api, ok: secure && api };
+}
+
+export async function listMics() {
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  return devs.filter((d) => d.kind === "audioinput").map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1}` }));
+}
+
+export const dbfs = (x) => 20 * Math.log10(Math.max(x, 1e-9));
+export const BLUETOOTH_RE = /bluetooth|airpods|hands-?free|headset|buds/i;
+
+export class Mic {
+  constructor() {
+    this.ctx = null; this.stream = null; this.node = null; this.gain = null;
+    this.chunks = []; this.recording = false; this.peak = 0; this.rms = 0; this.sampleRate = 0; this.label = ""; this.frames = 0;
+  }
+
+  async open(deviceId) {
+    await this.close();
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
+    this.label = (this.stream.getAudioTracks()[0] || {}).label || "";
+    this.ctx = new AudioContext({ latencyHint: "interactive" });
+    await this.ctx.audioWorklet.addModule("/static/js/recorder-worklet.js");
+    const src = this.ctx.createMediaStreamSource(this.stream);
+    this.node = new AudioWorkletNode(this.ctx, "capture", { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+    this.node.port.onmessage = (e) => this._frame(e.data);
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = 0; // keep the graph running without playing the microphone back
+    src.connect(this.node); this.node.connect(this.gain); this.gain.connect(this.ctx.destination);
+    if (this.ctx.state === "suspended") await this.ctx.resume();
+    this.sampleRate = this.ctx.sampleRate;
+    return this.label;
+  }
+
+  _frame(f) {
+    let pk = 0, sum = 0;
+    for (let i = 0; i < f.length; i++) { const a = Math.abs(f[i]); if (a > pk) pk = a; sum += f[i] * f[i]; }
+    this.peak = Math.max(pk, this.peak * 0.92);  // decaying peak for the meter
+    this.rms = Math.sqrt(sum / f.length);
+    this.frames++;
+    if (this.recording) this.chunks.push(f);
+  }
+
+  get isOpen() { return !!(this.ctx && this.stream && this.stream.active); }
+
+  start() { this.chunks = []; this.recording = true; this.t0 = performance.now(); }
+  get elapsed() { return this.recording ? (performance.now() - this.t0) / 1000 : 0; }
+
+  stop() {
+    this.recording = false;
+    const n = this.chunks.reduce((a, c) => a + c.length, 0);
+    const out = new Float32Array(n);
+    let o = 0;
+    for (const c of this.chunks) { out.set(c, o); o += c.length; }
+    this.chunks = [];
+    return { samples: out, sampleRate: this.sampleRate };
+  }
+
+  async close() {
+    this.recording = false;
+    try { if (this.node) this.node.port.onmessage = null; } catch { /* ignore */ }
+    if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+    if (this.ctx && this.ctx.state !== "closed") { try { await this.ctx.close(); } catch { /* ignore */ } }
+    this.ctx = this.stream = this.node = this.gain = null;
+    this.peak = 0; this.rms = 0;
+  }
+}
+
+export function encodeWav(samples, sampleRate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for (let i = 0; i < samples.length; i++, o += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+/** Noise floor (10th percentile of 20 ms frame levels) and peak of a recording, in dBFS. */
+export function roomMetrics(samples, sampleRate) {
+  const n = Math.max(1, Math.round(sampleRate * 0.02));
+  const levels = [];
+  let peak = 0;
+  for (let i = 0; i + n <= samples.length; i += n) {
+    let sum = 0;
+    for (let j = i; j < i + n; j++) { const a = samples[j]; sum += a * a; const b = Math.abs(a); if (b > peak) peak = b; }
+    levels.push(dbfs(Math.sqrt(sum / n)));
+  }
+  levels.sort((a, b) => a - b);
+  const floor = levels.length ? levels[Math.floor(levels.length * 0.1)] : -90;
+  return { noiseFloor: Math.max(-90, floor), peak: dbfs(peak), seconds: samples.length / sampleRate };
+}
+
+/** Down-sampled peak envelope for drawing a waveform. */
+export function envelope(samples, buckets = 400) {
+  const out = new Float32Array(buckets);
+  const step = Math.max(1, Math.floor(samples.length / buckets));
+  for (let b = 0; b < buckets; b++) {
+    let pk = 0;
+    for (let i = b * step; i < Math.min(samples.length, (b + 1) * step); i++) pk = Math.max(pk, Math.abs(samples[i]));
+    out[b] = pk;
+  }
+  return out;
+}
+__STUDIO_EOF_7fa1aaef3b74__
 cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_49a8615fbfc8__'
 // Shared UI helpers: auto-escaping templates, API client, formatting, toasts, dialogs.
 
@@ -8941,7 +9654,7 @@ export function player(src, label, extraClass = "") {
 }
 __STUDIO_EOF_49a8615fbfc8__
   mkdir -p "$DEST/studio/web/static/js/views"
-cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_f5f5d9813172__'
+cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_9d3217f50703__'
 // About page (version, credits, what this is), plus system health, worker control, QA limits and licences.
 import { get, post, html, setHTML, busy } from "../ui.js";
 
@@ -8984,16 +9697,16 @@ export async function render(view) {
       <button class="btn" data-act="restart">Restart worker</button> <span class="small muted">(administrators only)</span>
     </section>
     <section class="card" aria-labelledby="d-h"><h2 id="d-h">Environment check</h2>
-      ${doctor ? html`<table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
-      <tbody>${doctor.checks.map((c) => html`<tr><td>${c.name}</td><td><span class="badge tone-${c.status === "ok" ? "good" : c.status === "warn" ? "warn" : "bad"}">${c.status}</span></td><td class="small">${c.detail}</td></tr>`)}</tbody></table>
+      ${doctor ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
+      <tbody>${doctor.checks.map((c) => html`<tr><td>${c.name}</td><td><span class="badge tone-${c.status === "ok" ? "good" : c.status === "warn" ? "warn" : "bad"}">${c.status}</span></td><td class="small">${c.detail}</td></tr>`)}</tbody></table></div>
       <p class="small muted">Home <code>${about.home}</code></p>`
         : html`<p class="muted">The environment check is available to administrators.</p>`}
     </section>
     <section class="card" aria-labelledby="q-h"><h2 id="q-h">Limits of automatic QA</h2><ul>${about.qa_limitations.map((x) => html`<li>${x}</li>`)}</ul></section>
     <section class="card" aria-labelledby="l-h"><h2 id="l-h">Models, licences and your responsibilities</h2>
       <p class="small muted">Audiobook Studio is built on the following open components. It does not bundle their weights; they are downloaded from their public sources.</p>
-      <table class="table compact"><thead><tr><th scope="col">Component</th><th scope="col">Source</th><th scope="col">Licence</th></tr></thead>
-      <tbody>${about.licenses.map((l) => html`<tr><td>${l.component}</td><td class="small">${l.source}<br><code>${l.url}</code></td><td class="small">${l.license}</td></tr>`)}</tbody></table>
+      <div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Component</th><th scope="col">Source</th><th scope="col">Licence</th></tr></thead>
+      <tbody>${about.licenses.map((l) => html`<tr><td>${l.component}</td><td class="small">${l.source}<br><code>${l.url}</code></td><td class="small">${l.license}</td></tr>`)}</tbody></table></div>
       <p class="small">Verify current model licences and commercial-use terms on the model cards, confirm you own the rights to each manuscript and every cloned voice,
         and check your distributor's technical and AI-narration policies.</p>
       <p class="small muted">Privacy: inference, transcription and storage are local. After model weights are downloaded you can disable downloads in Settings; Hugging Face telemetry is disabled by the launchers.</p>
@@ -9006,7 +9719,7 @@ export async function render(view) {
   view.addEventListener("click", onClick);
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_f5f5d9813172__
+__STUDIO_EOF_9d3217f50703__
 cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_ccb124670dd0__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
@@ -10101,9 +10814,450 @@ export async function render(view) {
   return () => view.removeEventListener("click", onClick);
 }
 __STUDIO_EOF_0d4f60a5e35f__
-cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_e704af1336b1__'
+cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_16284f75d102__'
+// Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
+import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
+import { Mic, micSupport, listMics, encodeWav, roomMetrics, envelope, dbfs, BLUETOOTH_RE } from "../recorder.js";
+
+const STEPS = [["setup", "1 · Set up"], ["room", "2 · Room check"], ["record", "3 · Record"], ["review", "4 · Review & audition"], ["create", "5 · Create narrator"]];
+const zoneOf = (db) => (db > -3 ? "clip" : db > -12 ? "hot" : db > -30 ? "good" : "low");
+const ICON = { pass: "✓", warn: "!", fail: "✗" };
+
+function diffView(diff) {
+  if (!diff || !diff.length) return "";
+  return html`${diff.map((o) => o.op === "eq" ? html`<span>${o.ref} </span>` : o.op === "sub" ? html`<span class="d-sub"><del>${o.ref}</del><ins>${o.hyp}</ins></span> `
+    : o.op === "del" ? html`<del class="d-del">${o.ref}</del> ` : html`<ins class="d-ins">${o.hyp}</ins> `)}`;
+}
+
+function qualityBlock(q) {
+  return html`<div class="quality q-${q.verdict}"><div class="q-head"><span class="badge tone-${q.verdict === "poor" ? "bad" : q.verdict === "usable" ? "warn" : "good"}">${q.verdict.toUpperCase()}</span> ${q.summary}</div>
+    <ul class="q-list">${q.checks.map((c) => html`<li class="qc-${c.status}"><span class="qi" aria-hidden="true">${ICON[c.status]}</span><span class="sr-only">${c.status}:</span>
+      <strong>${c.name}</strong> ${c.detail}${c.tip && c.status !== "pass" ? html`<div class="small tip">${c.tip}</div>` : ""}</li>`)}</ul></div>`;
+}
+
+export function createLab({ onVoiceCreated }) {
+  const el = document.createElement("section");
+  el.className = "card lab";
+  el.setAttribute("aria-labelledby", "lab-h");
+  const mic = new Mic();
+  const L = { step: "setup", scripts: [], auditionText: "", takes: [], devices: [], deviceId: "", status: {}, room: null, scriptId: "core-harbour", cur: null, recState: "idle",
+    countdown: 0, count: true, selected: null, jobs: {}, support: micSupport(), openErr: "", saved: null, saveErr: null, roomRun: null, ready: false };
+  let raf = 0, timers = new Set(), destroyed = false;
+
+  const script = () => L.scripts.find((s) => s.id === L.scriptId);
+  const micOn = () => mic.isOpen;
+
+  // ------------------------------------------------------------------ live meter
+  function updateLive() {
+    const on = micOn(), db = dbfs(mic.peak), pct = on ? Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) : 0;
+    el.querySelectorAll(".meter-fill").forEach((f) => { f.style.width = pct + "%"; f.dataset.zone = zoneOf(db); });
+    el.querySelectorAll(".meter-db").forEach((t) => { t.textContent = on ? `${db.toFixed(0)} dBFS` : "mic off"; });
+    if (L.recState === "recording") {
+      const t = mic.elapsed;
+      el.querySelectorAll(".rec-timer").forEach((n) => { n.textContent = t.toFixed(1) + " s"; n.dataset.state = t < 5 ? "short" : t <= 20 ? "ok" : "long"; });
+      if (t >= 30) stopRecording();
+    }
+  }
+  function loop() { raf = 0; if (destroyed || !el.isConnected) return; updateLive(); if (micOn()) raf = requestAnimationFrame(loop); }
+  function ensureLoop() { if (!raf && micOn()) raf = requestAnimationFrame(loop); }
+  const later = (fn, ms) => { const t = setTimeout(() => { timers.delete(t); fn(); }, ms); timers.add(t); return t; };
+
+  // ------------------------------------------------------------------ actions
+  async function init() {
+    try {
+      const [sc, rec, st] = await Promise.all([get("/api/reference-scripts"), get("/api/recordings"), get("/api/auth/status")]);
+      L.scripts = sc.scripts; L.auditionText = sc.audition_text; L.takes = rec.recordings; L.status = st;
+      if (L.takes.length) L.step = "review";
+    } catch (e) { toastError(e); }
+    L.ready = true;
+    paint();
+  }
+
+  async function openMic() {
+    L.openErr = "";
+    try {
+      const label = await mic.open(L.deviceId);
+      L.devices = await listMics();
+      if (!L.deviceId) { const cur = L.devices.find((d) => d.label === label); if (cur) L.deviceId = cur.id; }
+      ensureLoop();
+    } catch (e) {
+      L.openErr = e && e.name === "NotAllowedError" ? "The browser blocked the microphone. Click the lock/camera icon in the address bar, allow the microphone for this site, then try again."
+        : e && e.name === "NotFoundError" ? "No microphone was found. Plug one in and try again." : `Could not open the microphone: ${e.message || e}`;
+    }
+    paint();
+  }
+
+  async function closeMic() { await mic.close(); paint(); }
+
+  async function runRoomCheck() {
+    if (!micOn()) return;
+    L.room = null; L.roomRun = { n: 3 };
+    paint();
+    for (let n = 3; n >= 1; n--) { L.roomRun = { n }; paintRoomRun(); await new Promise((r) => later(r, 1000)); if (destroyed) return; }
+    mic.start();
+    const t0 = performance.now();
+    while (performance.now() - t0 < 4000) { L.roomRun = { rec: ((performance.now() - t0) / 4000) * 100 }; paintRoomRun(); await new Promise((r) => later(r, 100)); if (destroyed) return; }
+    const { samples, sampleRate } = mic.stop();
+    L.room = roomMetrics(samples, sampleRate);
+    L.roomRun = null;
+    paint();
+  }
+  function paintRoomRun() {
+    const n = el.querySelector("#room-run"); if (!n) return;
+    const r = L.roomRun || {};
+    n.textContent = r.n ? `Stay completely silent in ${r.n}…` : `Recording room tone… ${Math.round(r.rec || 0)}%`;
+  }
+
+  async function startRecording() {
+    if (!micOn() || L.recState !== "idle") return;
+    L.saved = null; L.saveErr = null;
+    if (L.count) {
+      L.recState = "countdown";
+      for (let n = 3; n >= 1; n--) { L.countdown = n; paint(); await new Promise((r) => later(r, 1000)); if (destroyed || L.recState !== "countdown") return; }
+    }
+    L.recState = "recording";
+    mic.start();
+    paint();
+    ensureLoop();
+  }
+
+  function stopRecording() {
+    if (L.recState !== "recording") return;
+    const { samples, sampleRate } = mic.stop();
+    const wav = encodeWav(samples, sampleRate);
+    if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url);
+    const text = (el.querySelector("#lab-text") || {}).value || (script() ? script().text : "");
+    L.cur = { blob: wav, url: URL.createObjectURL(wav), seconds: samples.length / sampleRate, env: envelope(samples), local: roomMetrics(samples, sampleRate), text };
+    L.recState = "recorded";
+    paint();
+    drawWave();
+  }
+
+  function discardTake() {
+    if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url);
+    L.cur = null; L.recState = "idle"; L.saveErr = null; paint();
+  }
+
+  async function saveTake(btn) {
+    const text = (el.querySelector("#lab-text") || {}).value.trim();
+    const fd = new FormData();
+    fd.append("file", L.cur.blob, "recording.wav");
+    fd.append("script_id", L.scriptId === "own" ? "" : L.scriptId);
+    fd.append("ref_text", text);
+    try {
+      const meta = await busy(btn, () => api("POST", "/api/recordings", fd));
+      L.takes.unshift(meta); L.saved = meta; L.saveErr = null;
+      if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url);
+      L.cur = null; L.recState = "idle";
+    } catch (e) { L.saveErr = { message: e.message, quality: e.details && e.details.quality }; }
+    paint();
+  }
+
+  async function runJob(rid, mode, btn) {
+    const body = { mode };
+    if (mode === "audition") body.text = (el.querySelector("#audition-text") || {}).value || L.auditionText;
+    const key = `${rid}:${mode}`;
+    try {
+      const j = await busy(btn, () => post(`/api/recordings/${rid}/job`, body));
+      L.jobs[key] = j; paintJob(rid, mode);
+      const t = setInterval(async () => {
+        try {
+          const cur = await get(`/api/jobs/${j.id}`);
+          L.jobs[key] = cur; paintJob(rid, mode);
+          if (["completed", "failed", "cancelled"].includes(cur.status)) { clearInterval(t); timers.delete(t); }
+        } catch (e) { clearInterval(t); timers.delete(t); toastError(e); }
+      }, 1500);
+      timers.add(t);
+    } catch (e) { /* toast shown */ }
+  }
+
+  function jobHtml(rid, mode) {
+    const j = L.jobs[`${rid}:${mode}`];
+    if (!j) return "";
+    if (j.status === "queued" || j.status === "running")
+      return html`<p class="muted small"><span class="spinner" aria-hidden="true"></span> ${j.status === "queued" ? "Waiting for the GPU worker…" : mode === "check" ? "Listening with Whisper…" : "Cloning and synthesizing…"}</p>`;
+    if (j.status === "failed") return html`<p class="err small">Failed: ${j.error}</p>`;
+    const r = j.result || {};
+    if (mode === "check") {
+      return html`<div class="callout ${r.matches ? "good" : "warn"} small"><strong>${r.matches ? "Transcript matches what was said." : "Whisper heard something different."}</strong>
+        <div class="diff">${diffView(r.diff)}</div><div class="muted">Whisper heard: “${r.asr_text}”</div>
+        ${r.matches ? "" : html`<div>The clone learns the words you typed alongside your voice, so a wrong transcript damages the result. Edit the transcript to match exactly what you said, or re-record.</div>`}</div>`;
+    }
+    return html`<div class="callout info small">${player(`/media/preview/${j.id}`, "Audition result")}
+      <div>Whisper agreement with the text: ${(100 - r.wer * 100).toFixed(0)}% · ${r.duration_s}s · ${r.engine}${r.rtf ? ` · RTF ${r.rtf.toFixed(2)}` : ""}</div>
+      ${r.note ? html`<div class="warn-text">${r.note}</div>` : ""}<div>Does it sound like <em>you</em>, at the pace and warmth you want for the whole book? If not, try another take.</div></div>`;
+  }
+  function paintJob(rid, mode) { const n = el.querySelector(`[data-job="${rid}:${mode}"]`); if (n) setHTML(n, jobHtml(rid, mode)); }
+
+  async function createNarrator(form, btn) {
+    const fd = new FormData(form);
+    if (fd.get("owner_attest") !== "on") { toast("Please confirm the permission statement first.", "error"); return; }
+    try {
+      const v = await busy(btn, () => post("/api/voices/from-recording", { recording_id: L.selected, name: fd.get("name"), rights_holder: fd.get("rights_holder"),
+        owner_attest: true, statement: fd.get("statement") || "" }));
+      toast(`Narrator '${v.name}' created from your recording. Preview it below.`, "success", 8000);
+      (v.warnings || []).forEach((w) => toast(w, "warn", 9000));
+      L.step = "review"; L.selected = null;
+      paint();
+      onVoiceCreated(v);
+    } catch (e) { /* toast shown */ }
+  }
+
+  // ------------------------------------------------------------------ rendering
+  function guidance() {
+    return html`<details class="guide" ${L.step === "setup" ? html`open` : ""}><summary>Before you start: how to get a great reference</summary>
+      <div class="guide-grid">
+        <div><h4>The room</h4><ul>
+          <li>Pick the <strong>quietest room</strong> you have. Switch off fans, air conditioning and anything that hums; close windows; silence phones.</li>
+          <li><strong>Soft surfaces beat bare walls.</strong> Curtains, rugs, sofas, or even recording inside a wardrobe of hanging clothes removes the echo a clone would otherwise copy.</li>
+          <li>Record at a quiet time of day (late evening is often best).</li></ul></div>
+        <div><h4>The microphone</h4><ul>
+          <li>A USB microphone is ideal; a laptop's built-in microphone works if the room is quiet.</li>
+          <li><strong>Avoid Bluetooth headsets and AirPods.</strong> They compress the sound to phone quality.</li>
+          <li>Keep your mouth <strong>a hand-span (15-20 cm)</strong> from the mic, slightly off to one side to avoid "p" and "b" pops. Stay at the same distance all session.</li>
+          <li>Set the input level so loud words peak in the <strong>green/amber zone</strong>, never in the red. The studio switches echo cancellation, noise suppression and auto-gain <em>off</em> on purpose.</li></ul></div>
+        <div><h4>Your delivery</h4><ul>
+          <li>Read as if <strong>narrating to one listener</strong>: warm, steady, about the pace you would use for an audiobook. Don't act, whisper or shout.</li>
+          <li>Start speaking half a second after pressing record; leave half a second at the end.</li>
+          <li>If you stumble, stop and <strong>re-take</strong>. Sip water; speak from the same posture each time.</li>
+          <li>The clone copies your pace, pitch, energy and even the room, so <strong>record how you want the whole book to sound</strong>.</li></ul></div>
+        <div><h4>What makes a good reference</h4><ul>
+          <li>One speaker, <strong>8-15 seconds</strong> of continuous speech, no music, no echo, no clipping.</li>
+          <li>The transcript must match your words <strong>exactly</strong>. Use the scripts provided, or read a page from your own book (best match for the real work).</li>
+          <li>Record <strong>2-4 takes</strong> of the core scripts, audition them as a narrator, and keep the best.</li></ul></div>
+      </div></details>`;
+  }
+
+  function secureNotice() {
+    const s = L.support, st = L.status || {};
+    if (s.ok) return "";
+    const port = st.https_port;
+    const httpsUrl = port ? `https://${location.hostname}:${port}/${location.hash}` : null;
+    return html`<div class="callout warn" role="alert"><strong>Your browser has disabled the microphone on this address.</strong>
+      <p>Browsers only allow recording on <em>secure</em> pages (https:// or localhost). This page is plain http:// on the network.</p>
+      <ul>
+        ${httpsUrl ? html`<li><strong>Easiest:</strong> open the secure address <a href="${httpsUrl}">${httpsUrl}</a>. The first time, the browser warns that the certificate is not trusted: that is expected for a self-signed certificate on your own network. Choose <em>Advanced → Continue</em>, or install the certificate (below) to remove the warning.</li>`
+          : html`<li>HTTPS is not enabled on this studio. On the Mac run the installer with <code>--lan</code> (enables HTTPS on port 8443) or set <code>server.https_enabled</code>.</li>`}
+        <li>Or open the studio on the Mac itself at <code>http://localhost:${location.port || 80}</code>, which browsers treat as secure.</li>
+        <li>Or record with Voice Memos / your phone, then use <em>Clone an authorised voice</em> below to upload the file.</li></ul>
+      ${st.cert_sha256 ? html`<details><summary>Trust the studio's certificate (removes the warning)</summary>
+        <p><a href="/tls/studio-certificate.pem" download>Download the certificate</a>. SHA-256 fingerprint: <code>${st.cert_sha256}</code></p>
+        <ul class="small"><li><strong>Windows:</strong> double-click the file → Install Certificate → Current User → Place in <em>Trusted Root Certification Authorities</em>. Restart the browser.</li>
+        <li><strong>Mac:</strong> open it in Keychain Access, then double-click it and set Trust → <em>Always Trust</em>.</li></ul></details>` : ""}</div>`;
+  }
+
+  function stepper() {
+    return html`<ol class="steps" role="tablist" aria-label="Reference voice steps">${STEPS.map(([k, label]) => html`<li><button type="button" role="tab" class="step ${L.step === k ? "active" : ""}"
+      aria-selected="${L.step === k}" data-step="${k}">${label}${k === "review" && L.takes.length ? html` <span class="badge tone-neutral">${L.takes.length}</span>` : ""}</button></li>`)}</ol>`;
+  }
+
+  function meter() {
+    return html`<div class="meter-wrap"><div class="meter" role="img" aria-label="Microphone level"><div class="meter-fill" data-zone="low"></div></div>
+      <div class="meter-scale small muted"><span>quiet</span><span class="meter-db">mic off</span><span>loud</span></div></div>`;
+  }
+
+  function setupPanel() {
+    const label = mic.label;
+    return html`${secureNotice()}${guidance()}
+      <div class="lab-panel"><h3>Choose and test your microphone</h3>
+        ${L.support.ok ? html`
+          <div class="lab-row"><label>Microphone <select id="lab-device" ${micOn() ? "" : html`aria-describedby="lab-hint"`}>
+            <option value="">System default</option>${L.devices.map((d) => html`<option value="${d.id}" ${d.id === L.deviceId ? html`selected` : ""}>${d.label}</option>`)}</select></label>
+            ${micOn() ? html`<button class="btn" data-act="mic-off">Turn off</button>` : html`<button class="btn primary" data-act="mic-on">Turn on microphone</button>`}</div>
+          <p id="lab-hint" class="small muted">The browser will ask for permission. Nothing is recorded or sent until you press Record.</p>`
+          : html`<p class="muted">Microphone recording is unavailable until the page is opened securely (see the notice above).</p>`}
+        ${L.openErr ? html`<div class="callout bad small" role="alert">${L.openErr}</div>` : ""}
+        ${micOn() ? html`${BLUETOOTH_RE.test(label) ? html`<div class="callout warn small">“${label}” looks like a Bluetooth or headset microphone. These sound thin and compressed; a wired or USB microphone gives a far better clone.</div>` : ""}
+          <p class="small">Using: <strong>${label || "default microphone"}</strong> · ${mic.sampleRate} Hz</p>${meter()}
+          <p class="small muted">Say a sentence at your normal narrating volume. The bar should sit in the <strong>green</strong> zone and only brush amber on loud words, never red. If it is too low, move closer or raise the input volume in your system sound settings.</p>` : ""}
+        <div class="form-actions"><button class="btn primary" data-step="room" ${micOn() ? "" : html`disabled`}>Next: check the room →</button></div>
+      </div>`;
+  }
+
+  function roomPanel() {
+    const r = L.room;
+    let verdict = "";
+    if (r) {
+      const f = r.noiseFloor, cls = f <= -50 ? "good" : f <= -42 ? "warn" : "bad";
+      verdict = html`<div class="callout ${cls} small"><strong>Room noise: ${f.toFixed(0)} dBFS (${f <= -55 ? "very quiet" : f <= -50 ? "quiet - good" : f <= -42 ? "audible background" : "too noisy"})</strong>
+        <div>${f <= -50 ? "This room is fine for a reference recording." : f <= -42 ? "Usable, but try switching off fans/air conditioning, closing windows, or moving to a smaller, softer room for a better clone." : "A clone will reproduce this noise. Find a quieter room or time before recording."}</div>
+        <div class="muted">Loudest sound while you were silent: ${r.peak.toFixed(0)} dBFS</div></div>`;
+    }
+    return html`<div class="lab-panel"><h3>Check the room</h3>
+      <p>Record four seconds of <strong>total silence</strong> so the studio can measure your room's background noise. Don't speak, breathe quietly, and keep the room as it will be during recording.</p>
+      ${micOn() ? meter() : html`<div class="callout warn small">Turn on the microphone in step 1 first.</div>`}
+      <div class="form-actions"><button class="btn primary" data-act="room-run" ${micOn() && !L.roomRun ? "" : html`disabled`}>Measure room noise</button>
+        <span id="room-run" class="muted" aria-live="polite">${L.roomRun ? "…" : ""}</span></div>
+      ${verdict}
+      <div class="form-actions"><button class="btn ghost" data-step="setup">← Back</button><button class="btn primary" data-step="record" ${micOn() ? "" : html`disabled`}>Next: record →</button></div></div>`;
+  }
+
+  function recordPanel() {
+    const s = script(), own = L.scriptId === "own";
+    const text = own ? "" : s ? s.text : "";
+    const core = L.scripts.filter((x) => x.tier === "core"), range = L.scripts.filter((x) => x.tier === "range");
+    const rs = L.recState;
+    return html`<div class="lab-panel"><h3>Record a take</h3>
+      ${micOn() ? "" : html`<div class="callout warn small">Turn on the microphone in step 1 first.</div>`}
+      <label>Script <select id="lab-script" ${rs === "idle" ? "" : html`disabled`}>
+        <optgroup label="Recommended - neutral narration (record these first)">${core.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
+        <optgroup label="Optional emotional range (separate variants only - read the note in step 4)">${range.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
+        <optgroup label="Your own text"><option value="own" ${own ? html`selected` : ""}>Read a page from my own book (best match)</option></optgroup></select></label>
+      ${s ? html`<p class="small muted"><strong>${s.category}.</strong> ${s.purpose}</p>` : html`<p class="small muted">Read 40-60 words from the book you will narrate, in the voice you want. Type exactly what you read below after recording.</p>`}
+      <div class="prompter ${rs === "recording" ? "live" : ""}" aria-live="off">${rs === "countdown" ? html`<div class="count">${L.countdown}</div>` : ""}
+        <p class="prompt-text">${own ? "Read your chosen passage naturally. Then type it exactly in the box below." : text}</p></div>
+      ${micOn() ? meter() : ""}
+      <div class="rec-controls">
+        ${rs === "idle" || rs === "countdown" ? html`<button class="btn primary rec-btn" data-act="rec-start" ${micOn() && rs === "idle" ? "" : html`disabled`}>● Record</button>
+          <label class="check"><input type="checkbox" id="lab-count" ${L.count ? html`checked` : ""}> 3-2-1 countdown</label>` : ""}
+        ${rs === "recording" ? html`<button class="btn danger rec-btn" data-act="rec-stop">■ Stop</button><span class="rec-timer" data-state="short" aria-live="off">0.0 s</span><span class="small muted">aim for 8-15 s</span>` : ""}
+        ${rs === "recorded" ? html`<button class="btn" data-act="rec-discard">↺ Re-record</button>` : ""}</div>
+      ${rs === "recorded" && L.cur ? takePreview(own) : ""}
+      ${L.saved ? html`<div class="callout good small"><strong>Take saved.</strong> ${qualityBlock(L.saved.quality)}
+        <div class="form-actions"><button class="btn primary" data-step="review">Review &amp; audition →</button><button class="btn" data-act="rec-another">Record another take</button></div></div>` : ""}
+      ${L.saveErr ? html`<div class="callout bad small" role="alert"><strong>${L.saveErr.message}</strong>${L.saveErr.quality ? qualityBlock(L.saveErr.quality) : ""}</div>` : ""}
+      <div class="form-actions"><button class="btn ghost" data-step="room">← Back</button><button class="btn ghost" data-step="review">Skip to review →</button></div></div>`;
+  }
+
+  function takePreview(own) {
+    const c = L.cur, lo = c.local;
+    const warn = [];
+    if (c.seconds < 5) warn.push("That take is quite short; 8-15 seconds is ideal.");
+    if (c.seconds > 25) warn.push("That take is long; trim to 8-15 seconds if you can.");
+    if (lo.peak > -1) warn.push("It clipped: the loudest peak hit the limit. Lower the input volume or move back.");
+    if (lo.noiseFloor > -42) warn.push("Background noise is high in this take.");
+    return html`<div class="take-preview"><canvas id="wave" width="800" height="90" role="img" aria-label="Waveform of your take"></canvas>
+      <audio class="player" controls src="${c.url}" aria-label="Your take"></audio>
+      <p class="small muted">${c.seconds.toFixed(1)} s · peak ${lo.peak.toFixed(0)} dBFS · noise floor ${lo.noiseFloor.toFixed(0)} dBFS. Listen first: no stumbles, clicks, breaths over words or background sounds?</p>
+      ${warn.map((w) => html`<div class="callout warn small">${w}</div>`)}
+      <label>Exact words you said <textarea id="lab-text" rows="4" maxlength="1000">${own ? c.text : c.text}</textarea></label>
+      <p class="small muted">This must match your recording word for word. If you changed or skipped words, edit it here (or re-record). The studio can double-check it with Whisper after saving.</p>
+      <div class="form-actions"><button class="btn primary" data-act="rec-save">Save this take &amp; analyse</button><button class="btn ghost" data-act="rec-discard">Discard</button></div></div>`;
+  }
+
+  function drawWave() {
+    const cv = el.querySelector("#wave"); if (!cv || !L.cur) return;
+    const g = cv.getContext("2d"), w = cv.width, h = cv.height, e = L.cur.env;
+    g.clearRect(0, 0, w, h);
+    const cs = getComputedStyle(el);
+    g.fillStyle = cs.getPropertyValue("--accent").trim() || "#3559d6";
+    const bw = w / e.length;
+    for (let i = 0; i < e.length; i++) { const bh = Math.max(1, e[i] * h * 0.95); g.fillRect(i * bw, (h - bh) / 2, Math.max(1, bw - 0.5), bh); }
+  }
+
+  function takeCard(t) {
+    const sel = L.selected === t.id;
+    return html`<article class="take ${sel ? "chosen" : ""}" aria-labelledby="t-${t.id}">
+      <header class="take-head"><h4 id="t-${t.id}">${t.script_title}</h4><span class="badge tone-${t.quality.verdict === "poor" ? "bad" : t.quality.verdict === "usable" ? "warn" : "good"}">${t.quality.verdict}</span>
+        <span class="small muted">${t.duration_s}s · ${fmtDate(t.created_at)}</span></header>
+      ${player(`/media/recording/${t.id}`, `Take: ${t.script_title}`)}
+      <details><summary>Quality report</summary>${qualityBlock(t.quality)}</details>
+      <p class="small">Transcript: “${t.ref_text}” <button class="linklike" data-act="edit-text" data-id="${t.id}">edit</button></p>
+      <div class="form-actions">
+        <button class="btn small" data-act="job-check" data-id="${t.id}">Verify words with Whisper</button>
+        <button class="btn small" data-act="job-audition" data-id="${t.id}">Audition as narrator</button>
+        <button class="btn small primary" data-act="use-take" data-id="${t.id}" ${t.quality.verdict === "poor" ? html`disabled title="Rated poor quality"` : ""}>Use for narrator →</button>
+        <button class="btn small ghost danger" data-act="del-take" data-id="${t.id}">Delete</button></div>
+      <div data-job="${t.id}:check" aria-live="polite">${jobHtml(t.id, "check")}</div>
+      <div data-job="${t.id}:audition" aria-live="polite">${jobHtml(t.id, "audition")}</div></article>`;
+  }
+
+  function reviewPanel() {
+    return html`<div class="lab-panel"><h3>Review your takes and audition them</h3>
+      ${L.takes.length ? html`
+        <label>Audition passage (the same text is synthesized from each take so you can compare fairly)
+          <textarea id="audition-text" rows="3" maxlength="600">${L.auditionText}</textarea></label>
+        <div class="takes">${L.takes.map(takeCard)}</div>`
+        : html`<p class="muted">No takes yet. <button class="linklike" data-step="record">Record your first take</button>.</p>`}
+      <details class="guide"><summary>Should I record several takes? Should they differ in emotion?</summary>
+        <ul>
+          <li><strong>Several takes of the same neutral script:</strong> yes, worth it. Small differences in energy, mic distance and breath change the clone noticeably. Audition 2-4 takes with the same test passage and keep the one that sounds most like you at the pace and warmth you want.</li>
+          <li><strong>One narrator uses one reference clip.</strong> The model conditions on a single clip, so extra takes are <em>candidates</em>, not something blended together.</li>
+          <li><strong>Emotional range:</strong> keep the narrator's reference neutral-to-warm and consistent. A clone tends to inherit the <em>delivery</em> of its reference, so an excited or whispered reference makes everything excited or whispered. If a book needs a very different mood, create a separate narrator from an emotional take and choose it for that book.
+            <span class="muted">(Measured on this studio's Base model with synthetic references: the clone's pitch variation matched its reference almost one-to-one, and a joyful reference gave about twice the pitch variation of a neutral one. A single clip that <em>mixed</em> two moods gave an in-between, hard-to-predict result.)</span></li>
+          <li><strong>Why not combine clips?</strong> You can join two short clips into one reference (up to 30 seconds), but the result is a blend you cannot control. Prefer one clean, consistent clip.</li></ul></details>
+      <div class="form-actions"><button class="btn ghost" data-step="record">← Record more</button></div></div>`;
+  }
+
+  function createPanel() {
+    const t = L.takes.find((x) => x.id === L.selected);
+    return html`<div class="lab-panel"><h3>Create the cloned narrator</h3>
+      ${!t ? html`<p class="muted">Choose a take first: in step 4 press <strong>Use for narrator</strong>.</p><button class="btn" data-step="review">← To your takes</button>`
+        : html`<p>Using <strong>${t.script_title}</strong> (${t.duration_s}s, quality <strong>${t.quality.verdict}</strong>)</p>${player(`/media/recording/${t.id}`, "Chosen take")}
+        <form id="create-form" class="form">
+          <div class="form-grid"><label>Narrator name <input name="name" required maxlength="80" placeholder="e.g. My voice - warm"></label>
+            <label>Whose voice is this? <input name="rights_holder" required maxlength="120" placeholder="Full name of the speaker"></label></div>
+          <label>Permission details (optional) <input name="statement" maxlength="1000" placeholder="e.g. My own voice, recorded by me"></label>
+          <label class="check consent"><input type="checkbox" name="owner_attest" required> I confirm this is my own voice, or I have the speaker's explicit permission
+            to create and commercially use a synthetic copy of it. I will not use this tool to impersonate anyone.</label>
+          <div class="form-actions"><button class="btn ghost" type="button" data-step="review">← Back</button><button class="btn primary" type="submit">Create cloned narrator</button></div>
+        </form>`}</div>`;
+  }
+
+  function paint() {
+    if (destroyed) return;
+    const focusId = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : "";
+    const body = { setup: setupPanel, room: roomPanel, record: recordPanel, review: reviewPanel, create: createPanel }[L.step]();
+    setHTML(el, html`<h2 id="lab-h">Reference voice lab <span class="badge tone-info">record in your browser</span></h2>
+      <p class="muted">Develop a reference voice for a cloned narrator by <strong>recording it right here</strong>. The lab walks you through setup, a room check, guided recording with sample scripts,
+        quality analysis, a Whisper transcript check and an audition, before you create the narrator. Recordings stay on this Mac.</p>
+      ${stepper()}${L.ready ? body : html`<p class="muted">Loading…</p>`}`);
+    if (focusId) { const n = el.querySelector("#" + focusId); if (n) n.focus(); }
+    updateLive(); ensureLoop();
+    if (L.recState === "recorded") drawWave();
+  }
+
+  // ------------------------------------------------------------------ events
+  el.addEventListener("click", async (e) => {
+    const st = e.target.closest("[data-step]");
+    if (st && el.contains(st) && !st.disabled) {
+      L.step = st.dataset.step;
+      if (L.step === "room" || L.step === "record") ensureLoop();
+      paint(); const h = el.querySelector(".lab-panel h3"); if (h) { h.setAttribute("tabindex", "-1"); h.focus(); }
+      return;
+    }
+    const b = e.target.closest("[data-act]"); if (!b || !el.contains(b)) return;
+    const act = b.dataset.act, id = b.dataset.id;
+    try {
+      if (act === "mic-on") { const sel = el.querySelector("#lab-device"); L.deviceId = sel ? sel.value : ""; await busy(b, openMic); }
+      else if (act === "mic-off") await closeMic();
+      else if (act === "room-run") await runRoomCheck();
+      else if (act === "rec-start") await startRecording();
+      else if (act === "rec-stop") stopRecording();
+      else if (act === "rec-discard") discardTake();
+      else if (act === "rec-another") { L.saved = null; paint(); }
+      else if (act === "rec-save") await saveTake(b);
+      else if (act === "job-check") await runJob(id, "check", b);
+      else if (act === "job-audition") await runJob(id, "audition", b);
+      else if (act === "use-take") { L.selected = id; L.step = "create"; paint(); }
+      else if (act === "del-take") {
+        if (!(await confirmDialog("Delete this take?", "The recording is removed from this Mac. Narrators already created from it are not affected.", "Delete", true))) return;
+        await api("DELETE", `/api/recordings/${id}`);
+        L.takes = L.takes.filter((t) => t.id !== id); if (L.selected === id) L.selected = null; paint();
+      } else if (act === "edit-text") {
+        const t = L.takes.find((x) => x.id === id);
+        const v = window.prompt("Exactly what is said in this recording:", t.ref_text);
+        if (v && v.trim() && v.trim() !== t.ref_text) { const m = await patch(`/api/recordings/${id}`, { ref_text: v.trim() }); Object.assign(t, m); paint(); toast("Transcript updated. Run the Whisper check again to confirm.", "success"); }
+      }
+    } catch (err) { toastError(err); }
+  });
+  el.addEventListener("change", (e) => {
+    if (e.target.id === "lab-script") { L.scriptId = e.target.value; L.saved = null; paint(); }
+    else if (e.target.id === "lab-count") L.count = e.target.checked;
+    else if (e.target.id === "lab-device" && micOn()) { L.deviceId = e.target.value; openMic(); }
+  });
+  el.addEventListener("submit", (e) => { if (e.target.id === "create-form") { e.preventDefault(); createNarrator(e.target, e.submitter); } });
+
+  return {
+    el, init,
+    destroy() { destroyed = true; timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); if (raf) cancelAnimationFrame(raf); mic.close(); if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url); },
+  };
+}
+__STUDIO_EOF_16284f75d102__
+cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_035b3199cbc7__'
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player } from "../ui.js";
+import { createLab } from "./voicelab.js";
 
 const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, trembling lines on the black water.";
 const previews = {}; // voiceId -> last preview job
@@ -10192,14 +11346,17 @@ function createForms(speakers, english) {
 
 export async function render(view) {
   let data = await get("/api/voices");
+  const lab = createLab({ onVoiceCreated: () => reload() });
   const timers = new Set();
 
   const paint = () => {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
       <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
         books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
+      <div id="lab-host"></div>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
+    view.querySelector("#lab-host").appendChild(lab.el);  // the lab keeps its own state across repaints
     wireForms();
   };
 
@@ -10290,11 +11447,12 @@ export async function render(view) {
 
   view.addEventListener("click", onClick);
   paint();
+  lab.init();
   Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
-  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); };
+  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
-__STUDIO_EOF_e704af1336b1__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_56376683d564__'
+__STUDIO_EOF_035b3199cbc7__
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_afba12b3c069__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -10542,8 +11700,44 @@ class Worker:
                     refresh_book_state(conn, job["book_id"])
             self.ctx.event(conn, "job_failed", f"{job['kind']} job #{job['id']} failed: {message[:300]}", job["book_id"], "error")
 
+    def _run_recording_job(self, job: dict, p: dict) -> None:
+        from . import reference as R
+        from .align import evaluate
+
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
+        rdir = self.ctx.data_dir / "recordings" / p["recording_id"]
+        meta = loads((rdir / "meta.json").read_text("utf-8"), {})
+        ref = rdir / "reference-24k.wav"
+        s = self.ctx.settings()
+        if p["mode"] == "check":
+            self._set(state="verifying", job=job["id"], sid=None, message="Checking a reference recording with Whisper")
+            tr = self.asr.transcribe(ref)
+            ev = evaluate(meta["ref_text"], tr["text"], tr.get("words"), meta.get("duration_s"), 1, 1)
+            errors = [i for i in ev["issues"] if i["severity"] == "error"]
+            result = {"mode": "check", "asr_text": tr["text"], "expected": meta["ref_text"], "wer": ev["wer"], "diff": ev["diff"], "issues": ev["issues"],
+                      "matches": ev["wer"] <= 0.08 and not errors, "engine": tr.get("engine")}
+        else:
+            self._set(state="previewing", job=job["id"], sid=None, message="Audition: cloning from a recording")
+            spec = VoiceSpec(kind="clone", model_id=s.models.base_model, language=s.models.language, ref_audio_path=str(ref), ref_text=meta["ref_text"])
+            text = p["text"]
+            res = self.tts.synthesize(spec, text, SynthParams(seed=1234, max_tokens=max_tokens_for(text)))
+            out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
+            A.write_wav(out, res.audio, res.sample_rate)
+            dur = round(res.audio.size / res.sample_rate, 2)
+            tr = self.asr.transcribe(out)
+            ev = evaluate(text, tr["text"], tr.get("words"), dur)
+            result = {"mode": "audition", "path": str(out), "duration_s": dur, "engine": res.engine, "model_id": res.model_id, "rtf": res.rtf,
+                      "peak_mem_gb": res.peak_mem_gb, "sample_rate": res.sample_rate, "asr_text": tr["text"], "wer": ev["wer"], "issues": ev["issues"]}
+            if res.engine == "mock":
+                result["note"] = "Mock engine: synthetic test tones, not speech."
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
+
     def _run_preview(self, job: dict) -> None:
         p = loads(job["payload_json"], {})
+        if p.get("recording_id"):
+            return self._run_recording_job(job, p)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
             vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (p["voice_version_id"],))
@@ -10721,9 +11915,9 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_56376683d564__
+__STUDIO_EOF_afba12b3c069__
   mkdir -p "$DEST/tests"
-cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_9ff897896134__'
+cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
 FFmpeg-dependent tests are skipped when ffmpeg is not installed."""
 from __future__ import annotations
@@ -10903,7 +12097,29 @@ CHAPTERS = [
     ("The Orchard", [SENTENCES[4] + " " + SENTENCES[5], SENTENCES[6]]),
     ("The Storm", [SENTENCES[7] + " " + SENTENCES[0]]),
 ]
-__STUDIO_EOF_9ff897896134__
+
+
+def make_speechlike_wav(seconds: float = 10.0, sr: int = 24000, amp: float = 0.25, noise_db: float = -66.0, pauses: bool = True) -> bytes:
+    """Voice-like bursts separated by short pauses, half a second of lead-in/tail, and a background noise floor."""
+    rng = np.random.default_rng(7)
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    a = np.zeros(n)
+    voiced = (t > 0.5) & (t < seconds - 0.5)
+    if pauses:
+        voiced &= (np.sin(2 * np.pi * 0.45 * t) > -0.55)
+    env = (0.55 + 0.45 * np.sin(2 * np.pi * 3.2 * t) ** 2) * voiced
+    a += amp * env * (np.sin(2 * np.pi * 150 * t) + 0.4 * np.sin(2 * np.pi * 300 * t) + 0.2 * np.sin(2 * np.pi * 450 * t))
+    a += rng.standard_normal(n) * (10 ** (noise_db / 20))
+    pcm = (np.clip(a, -1, 1) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
+__STUDIO_EOF_c99a7b0d46fa__
 cat > "$DEST/tests/test_audio.py" <<'__STUDIO_EOF_78e55b160cf0__'
 """Unit tests: acoustic QA, WAV I/O, Range parsing, path validation, settings."""
 from __future__ import annotations
@@ -11588,6 +12804,185 @@ def test_about_page_data_and_version(client):
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
 __STUDIO_EOF_32db07a4965b__
+cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
+"""Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
+narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
+from __future__ import annotations
+
+import json
+import ssl
+
+import pytest
+
+from conftest import make_speechlike_wav, make_wav_bytes, needs_ffmpeg
+from studio import reference as R
+from studio.db import row
+
+
+def test_scripts_have_good_reference_length_and_variety():
+    assert len(R.SCRIPTS) >= 8 and len({s["id"] for s in R.SCRIPTS}) == len(R.SCRIPTS)
+    for s in R.SCRIPTS:
+        assert 24 <= R.word_count(s["text"]) <= 62, s["id"]
+        assert 9 <= R.estimated_seconds(s["text"]) <= 20, s["id"]  # fits the 8-15 s ideal (+ slack)
+        assert s["tier"] in ("core", "range") and s["purpose"] and s["title"]
+    core = [s for s in R.SCRIPTS if s["tier"] == "core"]
+    assert len(core) >= 5 and any("?" in s["text"] for s in core)  # dialogue/questions
+    assert any(any(ch.isdigit() for ch in s["text"]) or "nineteen" in s["text"] for s in core)  # numbers
+    assert {s["emotion"] for s in R.SCRIPTS if s["tier"] == "range"} >= {"warm", "tense", "joyful", "sad"}
+    assert R.script_by_id("core-harbour") and not R.script_by_id("nope")
+
+
+def _m(**kw):
+    base = {"duration_s": 11.0, "peak_dbfs": -8.0, "clip_ratio": 0.0, "rms_dbfs": -22.0, "noise_floor_dbfs": -62.0,
+            "longest_internal_silence_s": 0.4, "lead_silence_s": 0.5}
+    base.update(kw)
+    return base
+
+
+def test_quality_report_verdicts_and_tips():
+    assert R.quality_report(_m())["verdict"] == "excellent"
+    assert R.quality_report(_m(duration_s=2.0))["verdict"] == "poor"
+    assert R.quality_report(_m(duration_s=40.0))["verdict"] == "poor"
+    assert R.quality_report(_m(peak_dbfs=0.0, clip_ratio=0.01))["verdict"] == "poor"
+    noisy = R.quality_report(_m(noise_floor_dbfs=-35.0))
+    assert noisy["verdict"] == "poor" and any(c["name"] == "Background noise" and c["status"] == "fail" and c["tip"] for c in noisy["checks"])
+    assert R.quality_report(_m(rms_dbfs=-50.0))["verdict"] == "poor"
+    one = R.quality_report(_m(longest_internal_silence_s=2.5))
+    assert one["verdict"] == "good"
+    two = R.quality_report(_m(longest_internal_silence_s=2.5, duration_s=4.0))
+    assert two["verdict"] == "usable"
+
+
+@needs_ffmpeg
+def test_recording_flow_check_audition_and_create(client, ctx, make_worker):
+    wav = make_speechlike_wav(10.0)
+    text = "The morning fog lay thick over the harbour, and the fishing boats rocked quietly at their moorings."
+    r = client.post("/api/recordings", data={"script_id": "core-harbour", "ref_text": text}, files={"file": ("recording.wav", wav, "audio/wav")})
+    assert r.status_code == 200, r.text
+    rec = r.json()
+    assert rec["id"].startswith("rec_") and 9.0 < rec["duration_s"] < 11.0 and rec["quality"]["verdict"] in ("excellent", "good", "usable")
+    assert rec["quality"]["checks"] and rec["metrics"]["noise_floor_dbfs"] <= 0
+    assert client.get("/api/recordings").json()["recordings"][0]["id"] == rec["id"]
+    # the audio is streamed with range support
+    rid = rec["id"]
+    full = client.get(f"/media/recording/{rid}")
+    assert full.status_code == 200 and full.headers["content-type"] == "audio/wav"
+    assert client.get(f"/media/recording/{rid}", headers={"Range": "bytes=0-43"}).status_code == 206
+    assert client.get("/media/recording/rec_deadbeef").status_code == 404
+    assert client.get("/media/recording/..%2F..%2Fetc").status_code in (404, 422)
+    # Whisper check job: matches / does not match the transcript (mock ASR reads a sidecar transcript)
+    side = ctx.data_dir / "recordings" / rid / "reference-24k.wav.json"
+    side.write_text(json.dumps({"meta": {"mock_transcript": text}}))
+    w = make_worker()
+    j = client.post(f"/api/recordings/{rid}/job", json={"mode": "check"}).json()
+    w.run_until_idle()
+    res = client.get(f"/api/jobs/{j['id']}").json()
+    assert res["status"] == "completed" and res["result"]["matches"] is True and res["result"]["wer"] == 0
+    side.write_text(json.dumps({"meta": {"mock_transcript": "something completely different was said here today"}}))
+    j = client.post(f"/api/recordings/{rid}/job", json={"mode": "check"}).json()
+    w.run_until_idle()
+    assert client.get(f"/api/jobs/{j['id']}").json()["result"]["matches"] is False
+    # editing the transcript persists
+    assert client.patch(f"/api/recordings/{rid}", json={"ref_text": "Edited exact words said"}).json()["ref_text"] == "Edited exact words said"
+    # audition: Base-model synthesis from this take, honestly labelled as mock here
+    j = client.post(f"/api/recordings/{rid}/job", json={"mode": "audition", "text": "A short audition passage to compare takes."}).json()
+    w.run_until_idle()
+    res = client.get(f"/api/jobs/{j['id']}").json()
+    assert res["status"] == "completed" and res["result"]["mode"] == "audition" and "not speech" in res["result"]["note"]
+    assert client.get(f"/media/preview/{j['id']}").headers["content-type"] == "audio/wav"
+    # creating a narrator needs the ownership confirmation
+    body = {"recording_id": rid, "name": "My recorded voice", "rights_holder": "Jane Author", "owner_attest": False}
+    assert client.post("/api/voices/from-recording", json=body).status_code == 422
+    v = client.post("/api/voices/from-recording", json={**body, "owner_attest": True})
+    assert v.status_code == 200, v.text
+    v = v.json()
+    assert v["kind"] == "clone" and v["version"]["model_id"].endswith("Base-bf16") and not v["version"]["speaker"]
+    assert v["version"]["ref_text"] == "Edited exact words said" and "reference lab" in v["version"]["consent"]["statement"]
+    # draft removal
+    assert client.delete(f"/api/recordings/{rid}").status_code == 200
+    assert client.get("/api/recordings").json()["recordings"] == []
+
+
+@needs_ffmpeg
+def test_bad_recordings_are_rejected_or_blocked(client):
+    ok_text = "These are the words that were said in the recording"
+    # too short / silent / garbage / wrong type / oversize
+    r = client.post("/api/recordings", data={"ref_text": ok_text}, files={"file": ("r.wav", make_wav_bytes(1.0), "audio/wav")})
+    assert r.status_code == 422 and r.json()["details"]["quality"]["verdict"] == "poor"
+    assert client.post("/api/recordings", data={"ref_text": ok_text}, files={"file": ("r.wav", make_wav_bytes(8, silent=True), "audio/wav")}).status_code == 422
+    assert client.post("/api/recordings", data={"ref_text": ok_text}, files={"file": ("r.wav", b"RIFF0000WAVEnope" + b"\0" * 80, "audio/wav")}).status_code == 422
+    assert client.post("/api/recordings", data={"ref_text": ok_text}, files={"file": ("r.exe", make_wav_bytes(8), "application/octet-stream")}).status_code == 422
+    assert client.post("/api/recordings", data={"ref_text": "no"}, files={"file": ("r.wav", make_wav_bytes(8), "audio/wav")}).status_code == 422
+    # a clipped take is saved for inspection but cannot become a narrator
+    r = client.post("/api/recordings", data={"ref_text": ok_text}, files={"file": ("r.wav", make_speechlike_wav(8, amp=4.0), "audio/wav")})
+    assert r.status_code == 200 and r.json()["quality"]["verdict"] == "poor"
+    assert any(c["name"] == "Clipping" and c["status"] == "fail" for c in r.json()["quality"]["checks"])
+    v = client.post("/api/voices/from-recording", json={"recording_id": r.json()["id"], "name": "x", "rights_holder": "Me Myself", "owner_attest": True})
+    assert v.status_code == 422 and "poor" in v.json()["error"]
+    assert client.get("/api/recordings/rec_nonexistent").status_code in (404, 405)
+    assert client.post("/api/recordings/rec_deadbeef/job", json={"mode": "check"}).status_code == 404
+    assert client.post(f"/api/recordings/{r.json()['id']}/job", json={"mode": "nope"}).status_code == 422
+
+
+def test_reference_scripts_endpoint(client):
+    d = client.get("/api/reference-scripts").json()
+    assert len(d["scripts"]) == len(R.SCRIPTS) and d["scripts"][0]["est_seconds"] > 5 and d["audition_text"]
+
+
+def test_lab_assets_served_and_mic_policy_allows_self(client):
+    for p in ("/static/js/recorder.js", "/static/js/recorder-worklet.js", "/static/js/views/voicelab.js"):
+        assert client.get(p).status_code == 200
+    assert "microphone=(self)" in client.get("/api/overview").headers["permissions-policy"]
+
+
+def test_self_signed_certificate_for_lan_use(ctx):
+    from cryptography import x509
+
+    from studio.tls import ensure_certificate, fingerprint_sha256
+
+    s = ctx.settings().model_copy(deep=True)
+    s.server.allowed_hosts = ["studio.example.lan"]
+    ctx.save_settings(s)
+    cert, key = ensure_certificate(ctx)
+    c = x509.load_pem_x509_certificate(cert.read_bytes())
+    san = c.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert "studio.example.lan" in san.get_values_for_type(x509.DNSName) and "127.0.0.1" in {str(i) for i in san.get_values_for_type(x509.IPAddress)}
+    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)  # usable by a TLS server
+    assert (key.stat().st_mode & 0o077) == 0 or __import__("os").name == "nt"  # private key not group/world readable
+    assert ensure_certificate(ctx) == (cert, key) and fingerprint_sha256(cert).count(":") == 31  # reused, not regenerated
+    before = cert.read_bytes()
+    s.server.allowed_hosts = ["studio.example.lan", "another-name.lan"]
+    ctx.save_settings(s)
+    ensure_certificate(ctx)
+    assert cert.read_bytes() != before  # a new host name triggers a new certificate
+
+
+def test_https_settings_validation():
+    from studio.config import Settings
+
+    assert Settings.model_validate({"server": {"https_enabled": True, "https_port": 8443}}).server.https_port == 8443
+    with pytest.raises(Exception):
+        Settings.model_validate({"server": {"https_enabled": True, "port": 8443, "https_port": 8443}})
+
+
+@needs_ffmpeg
+def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_path):
+    quiet = tmp_path / "quiet.wav"
+    quiet.write_bytes(make_speechlike_wav(10.0, noise_db=-66.0))
+    m = R.analyze_recording(quiet)["metrics"]
+    assert m["noise_floor_dbfs"] < -55 and R.quality_report(m)["verdict"] in ("excellent", "good")
+    noisy = tmp_path / "noisy.wav"
+    noisy.write_bytes(make_speechlike_wav(10.0, noise_db=-33.0))
+    mn = R.analyze_recording(noisy)["metrics"]
+    q = R.quality_report(mn)
+    assert mn["noise_floor_dbfs"] > -40 and any(c["name"] == "Background noise" and c["status"] == "fail" for c in q["checks"])
+    cont = tmp_path / "continuous.wav"
+    cont.write_bytes(make_wav_bytes(10.0))  # one unbroken tone: no quiet moment to measure
+    qc = R.quality_report(R.analyze_recording(cont)["metrics"])
+    bn = next(c for c in qc["checks"] if c["name"] == "Background noise")
+    assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
+    assert qc["verdict"] != "poor"
+__STUDIO_EOF_1c0cca55ee5a__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -11825,10 +13220,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_a5bd7cfa25a7__'
-20261028220955-ea0494f9
-__STUDIO_EOF_a5bd7cfa25a7__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_c85d07adba61__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_a60202c44bb7__'
+20261028224123-b62dd50f
+__STUDIO_EOF_a60202c44bb7__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_cf1f4b7cc562__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -11837,17 +13232,17 @@ db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studi
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-a441a135aa76df89a91b66623edd4c8ef008553dae60908add7894850805cd93  README.md
+9ac232ed3bfe8130563ff410bbb56dd8fc5689b0b6ea45f18bcdaa4407f7a634  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
-ebe6560fce3cccf4a3d4ef85d41e5c0d1d20182e43f988a8b142449fd68795dd  requirements.txt
+0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
 535329dd4810ac963005223819028bcf0246fe9ea453906997e07e4686e39d70  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
-3dc24d2ac0648f3071a5fa7e516c9b7dbbedcacad95f3e3bff8e27a4567c13ca  studio/audio.py
+49663622a31635794c792cc0422cff68c8e8f8b66345b40797decad3601fff37  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
-d2cd7aa2a7c730c9166ba7cecc748bbd3c4866e4c014e2839c7d9fdb772ed135  studio/cli.py
-99e76bf191508efd8abe9e56f362e0523a009d876e55480234b777880352be6c  studio/config.py
+3e54096739657fd7db84e193f413006b85c140a06bd698730672c5e1b491878c  studio/cli.py
+6fb3508ffe70fa1725c24253d62c0d63c97a81a0abe11078f3bc12d41e192ad3  studio/config.py
 fb2d7cc679920f354415e6c7f1dd0b9bfc844fe9a8960acae3c9453876319528  studio/context.py
 0fbb1a612ba5e66974ab4318bd7f1d7797036abcbb869089ef2cb56e137a2b37  studio/db.py
 df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
@@ -11855,36 +13250,42 @@ df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
 ee3d75cb5bf27d0cf1641192a62eb6783ffb54bdfddd6586e71f68b1495af0bf  studio/pipeline.py
+0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
-2b3656d89e186ed5436cd12fadb6f3078e6a7758ec98a8bd8c01d99137aeee40  studio/services.py
+be92893f7637719ca46cc3c93d686fddcc761a4d774385564a5b5ffed53b87a5  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
+2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-d7d16e5994cbf0deb1c8d00a8c2c8f38bf4507e6f2f45beb5377ec38024d9da0  studio/web/app.py
+127e8bc8ec6db80bd56e34ed554504c1257b44c3d52ccbe10684d65823c84b94  studio/web/app.py
 5068e44bfe079a802aeb959b2361f7bc0b0dd2e6e442a4525221b6d9c6ba78b8  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
-6d1b484c18f1aeffdac768016c9fdeb902d0d8e1555fc26d22cce3879e739e22  studio/web/security.py
-88cc0578bd84713309607542fb09eaed610125391730ed7eed888d9c33937024  studio/web/static/app.css
+234b5211d21110d73f20c2d8f93561b9a76b81ac049e1bafc7fc4a90da3c717c  studio/web/security.py
+ab89b7f5b0b104787dc921595caee2ede1d4236f26259aba17bc78a468fda909  studio/web/static/app.css
 393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
 e0da28d55f1c1c93fbc84974f9d697b196349d1dcbfa327d1e630de86c69f5da  studio/web/static/js/app.js
+48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
+7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 49a8615fbfc8e557a49958ad32ed704d6cf5fac0c8e1005e475c9e9e2b6c545f  studio/web/static/js/ui.js
-f5f5d981317248e6ff2620d6c9932cd829d8c84fec4eb9e04e36d0d6140191b9  studio/web/static/js/views/about.js
+9d3217f5070341d14bd5b7174ff56602579b6292c21dfb506b5f7492f786e635  studio/web/static/js/views/about.js
 ccb124670dd0da4c4331e3972b64bc8b4a252e1ee87470f7712f79793cfcd66d  studio/web/static/js/views/book.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
 9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
 2ff497a0e6065d689f925e9f6a840c1935b5abd4c68cd285c4e849421ae76daf  studio/web/static/js/views/queue.js
 f6b03f8b7455e68e28db1cf5c85626106c1522a4f647291fd03641b7cabe0be7  studio/web/static/js/views/review.js
 0d4f60a5e35fa819053dd23665361cd449cc1dfd75188c615b78a97de8dc5927  studio/web/static/js/views/settings.js
-e704af1336b142d2612932d224387430d69089d5056244d815527ed21699e0b7  studio/web/static/js/views/voices.js
-56376683d564ca74d0ad85111770130e8939ce772a4d301d18528ac667830b3b  studio/worker.py
-9ff89789613444228f26b7bd6158c040b93a59db88fa5d356aba7a35799bd348  tests/conftest.py
+16284f75d102977965c8757f1fa5eca2ee68378633b43ba29250d4b4e64a6eea  studio/web/static/js/views/voicelab.js
+035b3199cbc70ff871dcf7c0c1830ab04a1f1f832bf3711bba2f2704e4c329e9  studio/web/static/js/views/voices.js
+afba12b3c069b092f6c182c6c25f2f1fde421281260813a77a0fbec36ad2ce7a  studio/worker.py
+c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
 32db07a4965bda4c6654f1b79c916b9cb63ffe0973226a7616c25562a813ef9b  tests/test_integration.py
+1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-a5bd7cfa25a7ee4acb18c9a10a2ec5d152b983edaeb00b4cc4e8da7739249cc9  BUILD
-__STUDIO_EOF_c85d07adba61__
+a60202c44bb7c0d09eda0f4ff03114c80050a68a7a97bf0e996fcf6a613e07e4  BUILD
+__STUDIO_EOF_cf1f4b7cc562__
 }
 
 verify_manifest() {
@@ -12034,9 +13435,9 @@ install_launchers() {
 }
 
 set_server_settings() {
-  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" <<'PY'
+  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" "${4:-0}" <<'PY'
 import json, os, sys
-path, host, port, remote = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+path, host, port, remote, https = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5] == "1"
 data = json.load(open(path)) if os.path.exists(path) else {}
 srv = data.setdefault("server", {})
 if host:
@@ -12044,6 +13445,8 @@ if host:
     srv["allow_remote"] = remote
 if port:
     srv["port"] = int(port)
+if https:
+    srv["https_enabled"] = True
 tmp = path + ".tmp"
 with open(tmp, "w") as fh:
     fh.write(json.dumps(data, indent=2) + "\n")
@@ -12171,7 +13574,9 @@ main() {
   fi
   if [ -n "$HOST" ] || [ -n "$PORT" ]; then
     case "$HOST" in ""|127.0.0.1|localhost) REMOTE=0 ;; *) REMOTE=1 ;; esac
-    set_server_settings "$HOST" "$PORT" "$REMOTE"
+    HTTPS=0
+    if [ "$LAN" = 1 ] && [ "$NO_HTTPS" = 0 ]; then HTTPS=1; fi
+    set_server_settings "$HOST" "$PORT" "$REMOTE" "$HTTPS"
     info "Server: host=${HOST:-unchanged} port=${PORT:-unchanged}"
   fi
   GENERATED_PW=""

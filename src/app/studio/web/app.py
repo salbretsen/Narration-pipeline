@@ -184,6 +184,23 @@ class UserReq(_Req):
     role: str = "operator"
 
 
+class RecordingTextReq(_Req):
+    ref_text: str = Field(min_length=5, max_length=1000)
+
+
+class RecordingJobReq(_Req):
+    mode: Literal["check", "audition"]
+    text: Optional[str] = Field(None, max_length=600)
+
+
+class FromRecordingReq(_Req):
+    recording_id: str = Field(max_length=40)
+    name: str = Field(min_length=1, max_length=80)
+    rights_holder: str = Field(max_length=120)
+    owner_attest: bool = False
+    statement: str = Field("", max_length=1000)
+
+
 class ArchiveReq(_Req):
     archived: bool = True
 
@@ -333,14 +350,33 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def _client_key(request: Request) -> str:
         return request.client.host if request.client else "unknown"
 
-    def _session(resp, user):
-        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/")
+    def _session(resp, user, request):
+        resp.set_cookie(COOKIE, app.state.auth.make_token(user), max_age=SESSION_TTL, httponly=True, samesite="strict", path="/",
+                        secure=request.url.scheme == "https")
         return resp
+
+    def _cert_fp():
+        if not getattr(app.state, "https_active", False):
+            return None
+        try:
+            from ..tls import fingerprint_sha256
+            return fingerprint_sha256(ctx.config_dir / "tls" / "studio-certificate.pem")
+        except Exception:
+            return None
+
+    @app.get("/tls/studio-certificate.pem", include_in_schema=False)
+    def tls_certificate():
+        p = ctx.config_dir / "tls" / "studio-certificate.pem"
+        if not p.exists():
+            raise S.ServiceError("HTTPS is not enabled on this studio.", 404)
+        return FileResponse(p, media_type="application/x-pem-file", filename="audiobook-studio-certificate.pem")
 
     @app.get("/api/auth/status")
     def api_auth_status(request: Request):
         return {"auth_required": app.state.auth.enabled(), "user": request.state.user, "engine": ctx.engine_mode,
-                "version": __version__, "version_label": VERSION_LABEL}
+                "version": __version__, "version_label": VERSION_LABEL,
+                "https_port": app.state.https_port if getattr(app.state, "https_active", False) else None,
+                "secure": request.url.scheme == "https", "cert_sha256": _cert_fp()}
 
     @app.post("/api/auth/login")
     def api_login(req: LoginReq, request: Request):
@@ -358,7 +394,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
         lim.ok(key)
         with ctx.db.tx() as conn:
             ctx.audit(conn, "auth", user["name"], "login", {"ip": key}, user["name"])
-        return _session(JSONResponse({"ok": True, "user": user}), user)
+        return _session(JSONResponse({"ok": True, "user": user}), user, request)
 
     @app.post("/api/auth/logout")
     def api_logout():
@@ -382,7 +418,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:
             ctx.audit(conn, "auth", u["name"], "password_changed", {}, u["name"])
-        return _session(JSONResponse({"ok": True}), u)
+        return _session(JSONResponse({"ok": True}), u, request)
 
     @app.get("/api/auth/users")
     def api_users():
@@ -604,6 +640,46 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     @app.post("/api/voices/{voice_id}/preview")
     def api_voice_preview(voice_id: int, req: PreviewReq):
         return S.enqueue_preview(ctx, voice_id, req.text, req.instruct, req.verify, req.seed)
+
+    # ------------------------------------------------- reference-voice lab (recording)
+    @app.get("/api/reference-scripts")
+    def api_reference_scripts():
+        from .. import reference as R
+        return {"scripts": R.public_scripts(), "audition_text": R.AUDITION_TEXT}
+
+    @app.post("/api/recordings")
+    async def api_recording_create(file: UploadFile = File(...), script_id: str = Form("", max_length=60), ref_text: str = Form(..., max_length=1000),
+                                   label: str = Form("", max_length=80)):
+        data = await read_upload(file, ctx.settings().server.max_reference_mb * 1024 * 1024)
+        return await run_in_threadpool(S.create_recording, ctx, file.filename or "recording.wav", data, script_id, ref_text, label)
+
+    @app.get("/api/recordings")
+    def api_recordings():
+        return {"recordings": S.list_recordings(ctx)}
+
+    @app.patch("/api/recordings/{rid}")
+    def api_recording_text(rid: str, req: RecordingTextReq):
+        return S.update_recording_text(ctx, rid, req.ref_text)
+
+    @app.delete("/api/recordings/{rid}")
+    def api_recording_delete(rid: str):
+        S.delete_recording(ctx, rid)
+        return {"ok": True}
+
+    @app.post("/api/recordings/{rid}/job")
+    def api_recording_job(rid: str, req: RecordingJobReq):
+        return S.enqueue_recording_job(ctx, rid, req.mode, req.text)
+
+    @app.post("/api/voices/from-recording")
+    def api_voice_from_recording(req: FromRecordingReq):
+        return S.create_voice_from_recording(ctx, req.recording_id, req.name,
+                                             {"owner_attest": req.owner_attest, "rights_holder": req.rights_holder, "statement": req.statement})
+
+    @app.api_route("/media/recording/{rid}", methods=["GET", "HEAD"])
+    def media_recording(rid: str, request: Request):
+        S.get_recording(ctx, rid)
+        d = S.recordings_dir(ctx) / rid
+        return _serve(d / "reference-24k.wav", [d], request, None)
 
     @app.post("/api/voices/promote")
     def api_voice_promote(req: PromoteReq):

@@ -196,9 +196,17 @@ class ServerSettings(_M):
     host: str = "127.0.0.1"
     port: int = Field(7861, ge=1024, le=65535)
     allow_remote: bool = False
+    https_enabled: bool = False
+    https_port: int = Field(8443, ge=1024, le=65535)
     allowed_hosts: list[str] = Field(default_factory=list, description="extra Host header names accepted")
     max_manuscript_mb: int = Field(100, ge=1, le=2000)
     max_reference_mb: int = Field(25, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def check_https(self):
+        if self.https_enabled and self.https_port == self.port:
+            raise ValueError("https_port must differ from port")
+        return self
 
     @model_validator(mode="after")
     def check_bind(self):

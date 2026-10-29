@@ -20,7 +20,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 PUBLIC_PREFIXES = ("/static/",)
-PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico"}
+PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/tls/studio-certificate.pem"}
 
 
 def local_names() -> set[str]:
@@ -72,9 +72,11 @@ def install(app, ctx) -> None:
     @app.middleware("http")
     async def guard(request: Request, call_next):
         s = ctx.settings().server
-        port = getattr(app.state, "port", None) or s.port
+        ports = {getattr(app.state, "port", None) or s.port}
+        if getattr(app.state, "https_active", False):
+            ports.add(getattr(app.state, "https_port", s.https_port))
         host = (request.headers.get("host") or "").lower()
-        if not host_ok(host, port):
+        if not any(host_ok(host, pt) for pt in ports):
             return JSONResponse({"error": "Invalid Host header. Add this name to server.allowed_hosts in settings.json if it is legitimate."}, status_code=421)
         path = request.url.path
         if request.method in MUTATING:
@@ -102,7 +104,7 @@ def install(app, ctx) -> None:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
         if path.startswith("/api/") or path.startswith("/media/"):
             response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response

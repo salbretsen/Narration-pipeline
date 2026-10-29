@@ -245,8 +245,44 @@ class Worker:
                     refresh_book_state(conn, job["book_id"])
             self.ctx.event(conn, "job_failed", f"{job['kind']} job #{job['id']} failed: {message[:300]}", job["book_id"], "error")
 
+    def _run_recording_job(self, job: dict, p: dict) -> None:
+        from . import reference as R
+        from .align import evaluate
+
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
+        rdir = self.ctx.data_dir / "recordings" / p["recording_id"]
+        meta = loads((rdir / "meta.json").read_text("utf-8"), {})
+        ref = rdir / "reference-24k.wav"
+        s = self.ctx.settings()
+        if p["mode"] == "check":
+            self._set(state="verifying", job=job["id"], sid=None, message="Checking a reference recording with Whisper")
+            tr = self.asr.transcribe(ref)
+            ev = evaluate(meta["ref_text"], tr["text"], tr.get("words"), meta.get("duration_s"), 1, 1)
+            errors = [i for i in ev["issues"] if i["severity"] == "error"]
+            result = {"mode": "check", "asr_text": tr["text"], "expected": meta["ref_text"], "wer": ev["wer"], "diff": ev["diff"], "issues": ev["issues"],
+                      "matches": ev["wer"] <= 0.08 and not errors, "engine": tr.get("engine")}
+        else:
+            self._set(state="previewing", job=job["id"], sid=None, message="Audition: cloning from a recording")
+            spec = VoiceSpec(kind="clone", model_id=s.models.base_model, language=s.models.language, ref_audio_path=str(ref), ref_text=meta["ref_text"])
+            text = p["text"]
+            res = self.tts.synthesize(spec, text, SynthParams(seed=1234, max_tokens=max_tokens_for(text)))
+            out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
+            A.write_wav(out, res.audio, res.sample_rate)
+            dur = round(res.audio.size / res.sample_rate, 2)
+            tr = self.asr.transcribe(out)
+            ev = evaluate(text, tr["text"], tr.get("words"), dur)
+            result = {"mode": "audition", "path": str(out), "duration_s": dur, "engine": res.engine, "model_id": res.model_id, "rtf": res.rtf,
+                      "peak_mem_gb": res.peak_mem_gb, "sample_rate": res.sample_rate, "asr_text": tr["text"], "wer": ev["wer"], "issues": ev["issues"]}
+            if res.engine == "mock":
+                result["note"] = "Mock engine: synthetic test tones, not speech."
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
+
     def _run_preview(self, job: dict) -> None:
         p = loads(job["payload_json"], {})
+        if p.get("recording_id"):
+            return self._run_recording_job(job, p)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
             vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (p["voice_version_id"],))

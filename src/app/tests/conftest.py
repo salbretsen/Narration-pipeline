@@ -177,3 +177,25 @@ CHAPTERS = [
     ("The Orchard", [SENTENCES[4] + " " + SENTENCES[5], SENTENCES[6]]),
     ("The Storm", [SENTENCES[7] + " " + SENTENCES[0]]),
 ]
+
+
+def make_speechlike_wav(seconds: float = 10.0, sr: int = 24000, amp: float = 0.25, noise_db: float = -66.0, pauses: bool = True) -> bytes:
+    """Voice-like bursts separated by short pauses, half a second of lead-in/tail, and a background noise floor."""
+    rng = np.random.default_rng(7)
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    a = np.zeros(n)
+    voiced = (t > 0.5) & (t < seconds - 0.5)
+    if pauses:
+        voiced &= (np.sin(2 * np.pi * 0.45 * t) > -0.55)
+    env = (0.55 + 0.45 * np.sin(2 * np.pi * 3.2 * t) ** 2) * voiced
+    a += amp * env * (np.sin(2 * np.pi * 150 * t) + 0.4 * np.sin(2 * np.pi * 300 * t) + 0.2 * np.sin(2 * np.pi * 450 * t))
+    a += rng.standard_normal(n) * (10 ** (noise_db / 20))
+    pcm = (np.clip(a, -1, 1) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()

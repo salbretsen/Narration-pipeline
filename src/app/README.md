@@ -78,6 +78,39 @@ everything else alone:
    * Write the QA report as HTML and JSON.
    * Record release signoff.
 
+### Reference voice lab (record a cloned narrator in the browser)
+
+**Narrator Studio → Reference voice lab** walks a new user from a blank page to a cloned narrator
+without uploading anything:
+
+1. **Set up.** Read the room, microphone and delivery checklist, pick a microphone, and watch the
+   live level meter. The studio records raw audio and switches echo cancellation, noise suppression
+   and auto-gain off on purpose.
+2. **Room check.** Four seconds of silence measure your room's background noise, with advice.
+3. **Record.** Pick a sample script and read it from the teleprompter. There are six neutral core
+   scripts of 10–18 seconds each (calm narration, a long sentence, hard consonants, dates and names,
+   dialogue, non-fiction), plus four optional emotional ones. You can also read a page from your own
+   book. The studio saves a 16-bit WAV and shows its waveform.
+4. **Review & audition.** Each saved take gets an objective quality report (length, clipping, level,
+   background noise, signal-to-noise, pauses) with a verdict from excellent to poor. You can also:
+   * check the transcript with Whisper, because the clone learns the words you typed next to your
+     voice, so they must match exactly;
+   * audition the take, which synthesizes the same passage with the Base model so you can compare
+     takes by ear.
+5. **Create narrator.** Confirm that the voice is yours or that you have permission. The take then
+   becomes a cloned narrator, and a take rated poor cannot.
+
+**Microphone access needs a secure page.** Browsers disable the microphone on plain `http://` network
+addresses. With `--lan` the installer therefore also serves **HTTPS on port 8443** with a self-signed
+certificate generated on the Mac for its own host name and addresses. Open
+`https://<mac-name>:8443`, accept the one-time browser warning (or install the certificate from the
+lab's notice), and recording works from any computer. On the Mac itself, `http://localhost:<port>` also
+works. Without HTTPS the lab explains this and you can still upload a recording you made elsewhere.
+
+**Several takes?** One narrator uses **one reference clip**. Record 2–4 neutral takes and audition them
+to keep the best. Keep the emotional register neutral-to-warm and consistent: a clone inherits the delivery
+of its reference. For a different mood, create a separate narrator from an emotional take.
+
 ### Drafts and release
 
 Exports are labelled **DRAFT** until a person records release approval. Approval is only

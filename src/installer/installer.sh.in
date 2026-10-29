@@ -30,6 +30,7 @@ STOP_RUNNING=0
 EXTRACT_ONLY=""
 PORT=""
 LAN=0
+NO_HTTPS=0
 HOST=""
 ADMIN_USER="admin"
 INSTALL_SERVICE=0
@@ -44,7 +45,9 @@ Options:
   --skip-tests       Do not run the automated test suite after installing.
   --port N           Web UI port (default 7861; applied to settings).
   --stop-running     Stop a running studio before upgrading it.
-  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required.
+  --lan              Serve on the local network: bind 0.0.0.0, default port 8080, sign-in required,
+                     plus HTTPS (self-signed) on port 8443 - required for microphone recording from other computers.
+  --no-https         With --lan: do not enable the HTTPS listener.
   --host ADDR        Bind address (default 127.0.0.1; --lan sets 0.0.0.0).
   --admin-user NAME  Administrator account created on first install (default: admin). A random
                      password is generated, printed once and saved to config/initial-admin-password.txt.
@@ -69,6 +72,7 @@ while [ $# -gt 0 ]; do
     --skip-tests) SKIP_TESTS=1 ;;
     --stop-running) STOP_RUNNING=1 ;;
     --lan) LAN=1 ;;
+    --no-https) NO_HTTPS=1 ;;
     --install-service) INSTALL_SERVICE=1 ;;
     --host) [ $# -ge 2 ] || { echo "--host needs a value" >&2; exit 2; }; HOST="$2"; shift ;;
     --admin-user) [ $# -ge 2 ] || { echo "--admin-user needs a value" >&2; exit 2; }; ADMIN_USER="$2"; shift ;;
@@ -246,9 +250,9 @@ install_launchers() {
 }
 
 set_server_settings() {
-  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" <<'PY'
+  "$VENV/bin/python" - "$APP_HOME/config/settings.json" "$1" "$2" "$3" "${4:-0}" <<'PY'
 import json, os, sys
-path, host, port, remote = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+path, host, port, remote, https = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1", sys.argv[5] == "1"
 data = json.load(open(path)) if os.path.exists(path) else {}
 srv = data.setdefault("server", {})
 if host:
@@ -256,6 +260,8 @@ if host:
     srv["allow_remote"] = remote
 if port:
     srv["port"] = int(port)
+if https:
+    srv["https_enabled"] = True
 tmp = path + ".tmp"
 with open(tmp, "w") as fh:
     fh.write(json.dumps(data, indent=2) + "\n")
@@ -383,7 +389,9 @@ main() {
   fi
   if [ -n "$HOST" ] || [ -n "$PORT" ]; then
     case "$HOST" in ""|127.0.0.1|localhost) REMOTE=0 ;; *) REMOTE=1 ;; esac
-    set_server_settings "$HOST" "$PORT" "$REMOTE"
+    HTTPS=0
+    if [ "$LAN" = 1 ] && [ "$NO_HTTPS" = 0 ]; then HTTPS=1; fi
+    set_server_settings "$HOST" "$PORT" "$REMOTE" "$HTTPS"
     info "Server: host=${HOST:-unchanged} port=${PORT:-unchanged}"
   fi
   GENERATED_PW=""

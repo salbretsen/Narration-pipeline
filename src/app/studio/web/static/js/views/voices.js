@@ -1,5 +1,6 @@
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player } from "../ui.js";
+import { createLab } from "./voicelab.js";
 
 const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, trembling lines on the black water.";
 const previews = {}; // voiceId -> last preview job
@@ -88,14 +89,17 @@ function createForms(speakers, english) {
 
 export async function render(view) {
   let data = await get("/api/voices");
+  const lab = createLab({ onVoiceCreated: () => reload() });
   const timers = new Set();
 
   const paint = () => {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
       <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
         books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
+      <div id="lab-host"></div>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
+    view.querySelector("#lab-host").appendChild(lab.el);  // the lab keeps its own state across repaints
     wireForms();
   };
 
@@ -186,6 +190,7 @@ export async function render(view) {
 
   view.addEventListener("click", onClick);
   paint();
+  lab.init();
   Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
-  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); };
+  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }

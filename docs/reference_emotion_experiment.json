@@ -1,0 +1,102 @@
+[
+ [
+  "neutral",
+  {
+   "seconds": 16.9,
+   "words_per_sec": 2.62,
+   "level_dbfs": -27.8,
+   "f0_median_hz": 111,
+   "pitch_var_semitones": 2.12,
+   "pause_fraction": 0.11
+  },
+  {
+   "seconds": 11.4,
+   "words_per_sec": 3.01,
+   "level_dbfs": -26.7,
+   "f0_median_hz": 101,
+   "pitch_var_semitones": 1.97,
+   "pause_fraction": 0.08
+  },
+  0.0312
+ ],
+ [
+  "joyful",
+  {
+   "seconds": 18.0,
+   "words_per_sec": 2.47,
+   "level_dbfs": -28.4,
+   "f0_median_hz": 150,
+   "pitch_var_semitones": 4.37,
+   "pause_fraction": 0.18
+  },
+  {
+   "seconds": 9.5,
+   "words_per_sec": 3.38,
+   "level_dbfs": -21.7,
+   "f0_median_hz": 154,
+   "pitch_var_semitones": 4.27,
+   "pause_fraction": 0.12
+  },
+  0.0
+ ],
+ [
+  "tense",
+  {
+   "seconds": 21.3,
+   "words_per_sec": 2.08,
+   "level_dbfs": -27.3,
+   "f0_median_hz": 134,
+   "pitch_var_semitones": 2.69,
+   "pause_fraction": 0.16
+  },
+  {
+   "seconds": 11.4,
+   "words_per_sec": 2.82,
+   "level_dbfs": -21.8,
+   "f0_median_hz": 128,
+   "pitch_var_semitones": 2.71,
+   "pause_fraction": 0.06
+  },
+  0.0
+ ],
+ [
+  "sad",
+  {
+   "seconds": 19.4,
+   "words_per_sec": 2.28,
+   "level_dbfs": -29.0,
+   "f0_median_hz": 107,
+   "pitch_var_semitones": 1.05,
+   "pause_fraction": 0.19
+  },
+  {
+   "seconds": 12.4,
+   "words_per_sec": 2.64,
+   "level_dbfs": -22.9,
+   "f0_median_hz": 101,
+   "pitch_var_semitones": 1.43,
+   "pause_fraction": 0.16
+  },
+  0.0312
+ ],
+ [
+  "mixed(neutral+joyful)",
+  {
+   "seconds": 11.6,
+   "words_per_sec": 2.96,
+   "level_dbfs": -26.9,
+   "f0_median_hz": 118,
+   "pitch_var_semitones": 4.78,
+   "pause_fraction": 0.08
+  },
+  {
+   "seconds": 9.4,
+   "words_per_sec": 3.47,
+   "level_dbfs": -25.1,
+   "f0_median_hz": 140,
+   "pitch_var_semitones": 2.59,
+   "pause_fraction": 0.09
+  },
+  0.0
+ ]
+]

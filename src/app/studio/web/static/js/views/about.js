@@ -40,16 +40,16 @@ export async function render(view) {
       <button class="btn" data-act="restart">Restart worker</button> <span class="small muted">(administrators only)</span>
     </section>
     <section class="card" aria-labelledby="d-h"><h2 id="d-h">Environment check</h2>
-      ${doctor ? html`<table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
-      <tbody>${doctor.checks.map((c) => html`<tr><td>${c.name}</td><td><span class="badge tone-${c.status === "ok" ? "good" : c.status === "warn" ? "warn" : "bad"}">${c.status}</span></td><td class="small">${c.detail}</td></tr>`)}</tbody></table>
+      ${doctor ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead>
+      <tbody>${doctor.checks.map((c) => html`<tr><td>${c.name}</td><td><span class="badge tone-${c.status === "ok" ? "good" : c.status === "warn" ? "warn" : "bad"}">${c.status}</span></td><td class="small">${c.detail}</td></tr>`)}</tbody></table></div>
       <p class="small muted">Home <code>${about.home}</code></p>`
         : html`<p class="muted">The environment check is available to administrators.</p>`}
     </section>
     <section class="card" aria-labelledby="q-h"><h2 id="q-h">Limits of automatic QA</h2><ul>${about.qa_limitations.map((x) => html`<li>${x}</li>`)}</ul></section>
     <section class="card" aria-labelledby="l-h"><h2 id="l-h">Models, licences and your responsibilities</h2>
       <p class="small muted">Audiobook Studio is built on the following open components. It does not bundle their weights; they are downloaded from their public sources.</p>
-      <table class="table compact"><thead><tr><th scope="col">Component</th><th scope="col">Source</th><th scope="col">Licence</th></tr></thead>
-      <tbody>${about.licenses.map((l) => html`<tr><td>${l.component}</td><td class="small">${l.source}<br><code>${l.url}</code></td><td class="small">${l.license}</td></tr>`)}</tbody></table>
+      <div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Component</th><th scope="col">Source</th><th scope="col">Licence</th></tr></thead>
+      <tbody>${about.licenses.map((l) => html`<tr><td>${l.component}</td><td class="small">${l.source}<br><code>${l.url}</code></td><td class="small">${l.license}</td></tr>`)}</tbody></table></div>
       <p class="small">Verify current model licences and commercial-use terms on the model cards, confirm you own the rights to each manuscript and every cloned voice,
         and check your distributor's technical and AI-narration policies.</p>
       <p class="small muted">Privacy: inference, transcription and storage are local. After model weights are downloaded you can disable downloads in Settings; Hugging Face telemetry is disabled by the launchers.</p>

@@ -164,6 +164,14 @@ def analyze(a: np.ndarray, sr: int, expected_s: float | None, qa: dict) -> dict:
     speech_rms = float(np.sqrt(np.mean((a[: fr.size * max(1, int(sr * 0.02))].reshape(fr.size, -1)[voiced_mask] ** 2)))) if voiced_mask.any() else rms
     metrics["rms_dbfs"] = round(db(speech_rms), 2)
     metrics["silence_threshold_db"] = round(thr, 1)
+    # noise floor: the quietest 100 ms windows (power-averaged), robust to a take with few pauses
+    pw = 10 ** (fr / 10.0)
+    win = 5
+    if pw.size >= win:
+        sm = np.convolve(pw, np.ones(win) / win, mode="valid")
+    else:
+        sm = pw
+    metrics["noise_floor_dbfs"] = round(max(-90.0, float(10 * np.log10(max(float(np.percentile(sm, 5)), 1e-9)))), 1)
     frame_s = 0.02
     if voiced_mask.any():
         idx = np.where(voiced_mask)[0]

@@ -274,6 +274,137 @@ def promote_preview_to_clone(ctx, job_id: int, name: str) -> dict:
     return out
 
 
+# ============================================================= reference-voice lab
+
+
+def recordings_dir(ctx) -> Path:
+    d = ctx.data_dir / "recordings"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _rec_meta_path(ctx, rid: str) -> Path:
+    if not re.fullmatch(r"rec_[0-9a-f]{8}", rid or ""):
+        raise ServiceError("Recording not found", 404)
+    return recordings_dir(ctx) / rid / "meta.json"
+
+
+def get_recording(ctx, rid: str) -> dict:
+    p = _rec_meta_path(ctx, rid)
+    if not p.exists():
+        raise ServiceError("Recording not found", 404)
+    return loads(p.read_text("utf-8"), {})
+
+
+def list_recordings(ctx) -> list[dict]:
+    import shutil as _sh
+
+    out, cutoff = [], now() - 14 * 86400
+    for d in recordings_dir(ctx).iterdir():
+        m = d / "meta.json"
+        if not m.exists():
+            continue
+        meta = loads(m.read_text("utf-8"), {})
+        if meta.get("created_at", now()) < cutoff:  # drafts expire after 14 days; created narrators keep their own copy
+            _sh.rmtree(d, ignore_errors=True)
+            continue
+        out.append(meta)
+    return sorted(out, key=lambda r: r.get("created_at", 0), reverse=True)
+
+
+def create_recording(ctx, filename: str, data: bytes, script_id: str, ref_text: str, label: str = "") -> dict:
+    """Store a studio recording as a draft reference: validate, analyse, convert. Nothing becomes a narrator yet."""
+    from . import reference as R
+
+    s = ctx.settings()
+    ext = os.path.splitext((filename or "").lower())[1]
+    if ext not in A.AUDIO_UPLOAD_EXTS:
+        raise ServiceError("Recording must be WAV, MP3, M4A or FLAC audio.", 422)
+    if len(data) > s.server.max_reference_mb * 1024 * 1024:
+        raise ServiceError(f"Recording is larger than {s.server.max_reference_mb} MB.", 413)
+    if not A.sniff_audio(data, ext):
+        raise ServiceError(f"The data is not a valid {ext} audio file.", 422)
+    ref_text = " ".join((ref_text or "").split())
+    if not 5 <= len(ref_text) <= 1000:
+        raise ServiceError("The transcript must be the exact words spoken (5-1000 characters).", 422)
+    rid = new_uid("rec").replace("rec_", "rec_")
+    d = recordings_dir(ctx) / rid
+    d.mkdir(parents=True)
+    try:
+        orig = d / ("original" + ext)
+        atomic_write_bytes(orig, data)
+        try:
+            analysis = R.analyze_recording(orig)
+        except A.AudioToolError as exc:
+            raise ServiceError(f"That audio could not be decoded: {exc}", 422)
+        quality = R.quality_report(analysis["metrics"])
+        try:
+            conv = A.convert_reference(orig, d / "reference-24k.wav")
+        except A.AudioValidationError as exc:
+            raise ServiceError(str(exc), 422, {"analysis": analysis["metrics"], "quality": quality})
+        script = R.script_by_id(script_id)
+        meta = {"id": rid, "created_at": now(), "script_id": script_id if script else None, "script_title": script["title"] if script else "Own text",
+                "ref_text": ref_text, "label": (label or "").strip()[:80], "duration_s": conv["duration_s"], "metrics": analysis["metrics"],
+                "issues": analysis["issues"], "quality": quality, "sha256": sha256_bytes(data), "filename": "original" + ext,
+                "convert_warnings": conv["warnings"]}
+        atomic_write_bytes(d / "meta.json", dumps(meta).encode())
+    except BaseException:
+        import shutil as _sh
+
+        _sh.rmtree(d, ignore_errors=True)
+        raise
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "recording", rid, "created", {"script": script_id, "duration_s": conv["duration_s"], "verdict": quality["verdict"]})
+    return meta
+
+
+def delete_recording(ctx, rid: str) -> None:
+    import shutil as _sh
+
+    get_recording(ctx, rid)
+    _sh.rmtree(recordings_dir(ctx) / rid, ignore_errors=True)
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "recording", rid, "deleted")
+
+
+def update_recording_text(ctx, rid: str, ref_text: str) -> dict:
+    meta = get_recording(ctx, rid)
+    ref_text = " ".join((ref_text or "").split())
+    if not 5 <= len(ref_text) <= 1000:
+        raise ServiceError("The transcript must be 5-1000 characters.", 422)
+    meta["ref_text"] = ref_text
+    atomic_write_bytes(_rec_meta_path(ctx, rid), dumps(meta).encode())
+    return meta
+
+
+def enqueue_recording_job(ctx, rid: str, mode: str, text: str | None = None) -> dict:
+    """mode 'check': transcribe the take with Whisper and compare with its transcript.
+    mode 'audition': synthesize a test passage with the Base model using this take as the reference."""
+    from . import reference as R
+
+    get_recording(ctx, rid)
+    if mode not in ("check", "audition"):
+        raise ServiceError("mode must be check or audition", 422)
+    text = " ".join((text or R.AUDITION_TEXT).split())
+    if mode == "audition" and not 3 <= len(text) <= 600:
+        raise ServiceError("Audition text must be 3-600 characters.", 422)
+    with ctx.db.tx() as conn:
+        jid = conn.execute("INSERT INTO jobs(kind, payload_json, status, position, created_at, updated_at) VALUES ('preview',?, 'queued', 0, ?, ?)",
+                           (dumps({"recording_id": rid, "mode": mode, "text": text}), now(), now())).lastrowid
+    return get_job(ctx, jid)
+
+
+def create_voice_from_recording(ctx, rid: str, name: str, consent: dict) -> dict:
+    meta = get_recording(ctx, rid)
+    if meta["quality"]["verdict"] == "poor":
+        raise ServiceError("This take was rated poor quality. Re-record it before creating a narrator.", 422, {"quality": meta["quality"]})
+    d = recordings_dir(ctx) / rid
+    data = (d / meta["filename"]).read_bytes()
+    statement = (consent.get("statement") or "").strip()
+    consent = {**consent, "statement": (statement + " " if statement else "") + f"Recorded in the studio reference lab ({meta['script_title']}, recording {rid})."}
+    return create_clone_voice(ctx, name, meta["filename"], data, meta["ref_text"], consent)
+
+
 # ====================================================================== imports
 
 

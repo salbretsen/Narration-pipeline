@@ -54,8 +54,29 @@ def cmd_serve(a):
     import atexit
 
     atexit.register(lambda: pidfile.unlink(missing_ok=True) if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()) else None)
+    https_server = None
+    if s.server.https_enabled:
+        try:
+            import threading
+
+            from .tls import ensure_certificate
+
+            cert, key = ensure_certificate(ctx)
+            app.state.https_port = s.server.https_port
+            app.state.https_active = True
+            https_server = uvicorn.Server(uvicorn.Config(app, host=host, port=s.server.https_port, ssl_certfile=str(cert), ssl_keyfile=str(key),
+                                                         log_level="info", access_log=False, lifespan="off"))
+            threading.Thread(target=https_server.run, daemon=True, name="https").start()
+            print(f"HTTPS (self-signed) on port {s.server.https_port}: certificate {cert}", flush=True)
+        except Exception as exc:  # never let a TLS problem take the studio down
+            app.state.https_active = False
+            print(f"WARNING: HTTPS could not start ({type(exc).__name__}: {exc}); serving HTTP only.", flush=True)
     print(f"Audiobook Studio {__version__} on http://{'127.0.0.1' if host == '127.0.0.1' else host}:{port}  (engine: {ctx.engine_mode})", flush=True)
-    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False, timeout_graceful_shutdown=30)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info", access_log=False, timeout_graceful_shutdown=30)
+    finally:
+        if https_server is not None:
+            https_server.should_exit = True
 
 
 def cmd_worker(a):
