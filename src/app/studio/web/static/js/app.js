@@ -137,6 +137,29 @@ function showLogin(message) {
   });
 }
 
+function showForcedPasswordChange() {
+  stopStream();
+  document.body.classList.add("signed-out");
+  document.getElementById("user-box").hidden = true;
+  document.getElementById("worker-pill").hidden = true;
+  setHTML(document.getElementById("view"), html`<div class="login-card card"><h1>Choose a new password</h1>
+    <p class="muted">You signed in with the starter password. Choose your own before continuing.</p>
+    <form id="newpw-form" class="form">
+      <label>New password (10+ characters) <input name="new" type="password" autocomplete="new-password" minlength="10" required autofocus></label>
+      <label>Type it again <input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label>
+      <button class="btn primary" type="submit">Save and continue</button>
+    </form></div>`);
+  document.getElementById("newpw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (fd.get("new") !== fd.get("confirm")) { toast("The two passwords do not match. Nothing was changed.", "error", 9000); return; }
+    try {
+      await busy(e.submitter, () => post("/api/auth/password", { new: fd.get("new"), confirm: fd.get("confirm") }));
+      await start();
+    } catch (err) { /* toast shown */ }
+  });
+}
+
 function showUser() {
   const box = document.getElementById("user-box");
   if (!authUser) { box.hidden = true; return; }
@@ -161,6 +184,7 @@ async function start() {
   const st = await get("/api/auth/status");
   showVersion(st);
   if (st.auth_required && !st.user) { showLogin(); return; }
+  if (st.user && st.user.must_change) { showForcedPasswordChange(); return; }
   authUser = st.user;
   document.body.classList.remove("signed-out");
   document.getElementById("worker-pill").hidden = false;

@@ -176,7 +176,7 @@ class LoginReq(_Req):
 
 
 class PasswordReq(_Req):
-    current: str = Field(max_length=200)
+    current: str = Field("", max_length=200)   # may be empty only while a temporary password is in force
     new: str = Field(min_length=10, max_length=200)
     confirm: str = Field(max_length=200)
 
@@ -433,10 +433,11 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         if req.new != req.confirm:
             raise S.ServiceError("The new password and its confirmation do not match. Nothing was changed.", 422)
         a = app.state.auth
-        if not a.verify(u["name"], req.current):
+        if not u.get("must_change") and not a.verify(u["name"], req.current):
             raise S.ServiceError("Current password is wrong.", 403)
         try:
             a.set_user(u["name"], req.new, u["role"])
+            u = {"name": u["name"], "role": u["role"]}
         except ValueError as exc:
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:

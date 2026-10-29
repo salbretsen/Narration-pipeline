@@ -3,6 +3,12 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.5.8
+- First sign-in without leaving the web console: a fresh managed install creates `admin` with the starter password `admin`, flagged "must change". The sign-in
+  leads straight to a "Choose a new password" page; every other API call is refused (403, `must_change_password`) until it is done. The random password file
+  `initial-admin-password.txt` is no longer written. Existing accounts are unaffected. `audiobook-studio auth add-user NAME --temporary`.
+- Note: until the password is changed, anyone who can reach the Mac on the network can sign in as `admin`; the installer says so.
+
 ## v0.5.7
 - Added the MIT `LICENSE` (copyright notice must be kept: others may use it if properly credited).
 - A fresh managed install now serves the LAN by default (HTTP and HTTPS, sign-in required); `--local-only` restricts it to this Mac. Existing

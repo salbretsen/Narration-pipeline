@@ -22,6 +22,9 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
 PUBLIC_PREFIXES = ("/static/",)
 PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/healthz", "/api/version", "/tls/studio-certificate.pem"}
 
+# While a temporary password is in force these are the only API calls allowed (the page itself and static files are not under /api/).
+PASSWORD_CHANGE_PATHS = PUBLIC_PATHS | {"/api/auth/password"}
+
 
 def local_names() -> set[str]:
     """Host names/addresses this machine legitimately answers to."""
@@ -94,6 +97,8 @@ def install(app, ctx) -> None:
             public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
             if not request.state.user and not public:
                 return JSONResponse({"error": "Sign in required.", "auth": "required"}, status_code=401)
+            if request.state.user and request.state.user.get("must_change") and path.startswith("/api/") and path not in PASSWORD_CHANGE_PATHS:
+                return JSONResponse({"error": "Choose a new password before using the studio.", "must_change_password": True}, status_code=403)
             if request.state.user and request.state.user["role"] != "admin" and is_admin_only(request.method, path):
                 return JSONResponse({"error": "This action needs an administrator account."}, status_code=403)
         elif not is_loopback(s.host):

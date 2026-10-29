@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.5.7 (build 20261029131700-bd49b995)
+#  Version v0.5.8 (build 20261029132820-29c09513)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.5.7"
+STUDIO_VERSION="v0.5.8"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261029131700-bd49b995"
+BUILD_ID="20261029132820-29c09513"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,17 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_4978f853ba9a__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_174e193e1fac__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.5.8
+- First sign-in without leaving the web console: a fresh managed install creates `admin` with the starter password `admin`, flagged "must change". The sign-in
+  leads straight to a "Choose a new password" page; every other API call is refused (403, `must_change_password`) until it is done. The random password file
+  `initial-admin-password.txt` is no longer written. Existing accounts are unaffected. `audiobook-studio auth add-user NAME --temporary`.
+- Note: until the password is changed, anyone who can reach the Mac on the network can sign in as `admin`; the installer says so.
 
 ## v0.5.7
 - Added the MIT `LICENSE` (copyright notice must be kept: others may use it if properly credited).
@@ -613,7 +619,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_4978f853ba9a__
+__STUDIO_EOF_174e193e1fac__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -643,10 +649,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_4606b61eb443__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_a87bbeb378f2__'
 # Audiobook Studio
 
-**v0.5.7** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.8** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -978,7 +984,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_4606b61eb443__
+__STUDIO_EOF_a87bbeb378f2__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -2777,7 +2783,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_678d1f664202__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_6c496f387421__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2786,13 +2792,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_678d1f664202__
+__STUDIO_EOF_6c496f387421__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -3828,7 +3834,7 @@ def build_segments(blocks, min_chars: int, max_chars: int, merge_short: bool = T
         segs[-1].pause_kind = "chapter_end"
     return segs
 __STUDIO_EOF_9f5f1545af60__
-cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_7ce437e62ff8__'
+cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_ec66838fd57f__'
 """Command line interface. The web UI is the primary interface; the CLI exists for automation,
 diagnostics and headless use."""
 from __future__ import annotations
@@ -3967,10 +3973,11 @@ def cmd_auth(a):
         if getpass.getpass("Type it again: ") != pw:
             sys.exit("The two passwords do not match. Nothing was changed.")
     try:
-        store.set_user(a.name, pw, a.role)
+        store.set_user(a.name, pw, a.role, temporary=a.temporary)
     except ValueError as exc:
         sys.exit(str(exc))
-    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else ""))
+    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else "")
+          + (" The password must be changed at first sign-in." if a.temporary else ""))
 
 
 def cmd_migrate(a):
@@ -4164,6 +4171,7 @@ def main(argv=None):
     sp.add_argument("--role", choices=["admin", "operator"], default="operator")
     sp.add_argument("--password")
     sp.add_argument("--generate", action="store_true", help="generate and print a random password")
+    sp.add_argument("--temporary", action="store_true", help="starter password (any length); the user must choose a new one at first sign-in")
     sp.set_defaults(func=cmd_auth)
     sp = sub.add_parser("doctor", help="check the environment")
     sp.add_argument("--json", action="store_true")
@@ -4219,7 +4227,7 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-__STUDIO_EOF_7ce437e62ff8__
+__STUDIO_EOF_ec66838fd57f__
 cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_3c1ee291a313__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
@@ -16338,7 +16346,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_829d0a5bfa4d__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_05f09b46abf6__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -16517,7 +16525,7 @@ class LoginReq(_Req):
 
 
 class PasswordReq(_Req):
-    current: str = Field(max_length=200)
+    current: str = Field("", max_length=200)   # may be empty only while a temporary password is in force
     new: str = Field(min_length=10, max_length=200)
     confirm: str = Field(max_length=200)
 
@@ -16774,10 +16782,11 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         if req.new != req.confirm:
             raise S.ServiceError("The new password and its confirmation do not match. Nothing was changed.", 422)
         a = app.state.auth
-        if not a.verify(u["name"], req.current):
+        if not u.get("must_change") and not a.verify(u["name"], req.current):
             raise S.ServiceError("Current password is wrong.", 403)
         try:
             a.set_user(u["name"], req.new, u["role"])
+            u = {"name": u["name"], "role": u["role"]}
         except ValueError as exc:
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:
@@ -17247,8 +17256,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_829d0a5bfa4d__
-cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5fd7f2dbd3bc__'
+__STUDIO_EOF_05f09b46abf6__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_f82331510b34__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
 from __future__ import annotations
@@ -17336,12 +17345,21 @@ class AuthStore:
     def list_users(self) -> list[dict]:
         return [{"name": n, "role": u["role"], "created_at": u.get("created_at")} for n, u in sorted(self._load()["users"].items())]
 
-    def set_user(self, name: str, password: str, role: str = "operator") -> None:
+    @staticmethod
+    def _public(name: str, u: dict) -> dict:
+        user = {"name": name, "role": u["role"]}
+        if u.get("must_change"):
+            user["must_change"] = True      # only present while a temporary password is in force
+        return user
+
+    def set_user(self, name: str, password: str, role: str = "operator", temporary: bool = False) -> None:
+        """``temporary`` stores a known starter password (the installer's ``admin``): it may be short, and the account is
+        limited to changing its password until it has been changed."""
         if not USER_RE.match(name or ""):
             raise ValueError("User names are 2-40 characters: letters, digits, . _ -")
         if role not in ROLES:
             raise ValueError("Role must be admin or operator")
-        if len(password or "") < 10:
+        if len(password or "") < (1 if temporary else 10):
             raise ValueError("Password must be at least 10 characters")
         with self._lock:
             data = dict(self._load())
@@ -17353,7 +17371,7 @@ class AuthStore:
             if existing.get("role") == "admin" and role != "admin" and sum(1 for u in data["users"].values() if u["role"] == "admin") == 1:
                 raise ValueError("Cannot demote the only administrator")
             data["users"][name] = {"salt": salt.hex(), "hash": self._hash(password, salt), "iters": ITERATIONS, "role": role,
-                                   "created_at": existing.get("created_at") or time.time()}
+                                   "created_at": existing.get("created_at") or time.time(), "must_change": bool(temporary)}
             self._save(data)
 
     def remove_user(self, name: str) -> None:
@@ -17373,7 +17391,7 @@ class AuthStore:
         salt = bytes.fromhex(u["salt"]) if u else b"\0" * 16
         got = self._hash(password or "", salt, u["iters"] if u else ITERATIONS)  # constant work for unknown users
         if u and hmac.compare_digest(got, u["hash"]):
-            return {"name": name, "role": u["role"]}
+            return self._public(name, u)
         return None
 
     # ---------------------------------------------------------------- sessions
@@ -17403,7 +17421,7 @@ class AuthStore:
         # a password change (new hash) or removed user invalidates old sessions
         if not u or payload.get("e", 0) < time.time() or payload.get("v") != u["hash"][:12]:
             return None
-        return {"name": payload["u"], "role": u["role"]}
+        return self._public(payload["u"], u)
 
 
 class LoginLimiter:
@@ -17433,7 +17451,7 @@ class LoginLimiter:
 def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-__STUDIO_EOF_5fd7f2dbd3bc__
+__STUDIO_EOF_f82331510b34__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -17773,7 +17791,7 @@ def narrative_metadata(ctx, book_id: int) -> dict:
                       "status": s["status"], "duration_s": s["duration_s"], "wer": s["wer"], "direction": dirs.get(s["id"]), "instruct": s["instruct_used"]} for s in segs],
     }
 __STUDIO_EOF_51ac6d84b25c__
-cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_4849a35f8d04__'
+cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_a4cffc340b43__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
 mutating requests (CSRF), session authentication with admin-only routes, strict headers.
 
@@ -17797,6 +17815,9 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' 
        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 PUBLIC_PREFIXES = ("/static/",)
 PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/healthz", "/api/version", "/tls/studio-certificate.pem"}
+
+# While a temporary password is in force these are the only API calls allowed (the page itself and static files are not under /api/).
+PASSWORD_CHANGE_PATHS = PUBLIC_PATHS | {"/api/auth/password"}
 
 
 def local_names() -> set[str]:
@@ -17870,6 +17891,8 @@ def install(app, ctx) -> None:
             public = path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
             if not request.state.user and not public:
                 return JSONResponse({"error": "Sign in required.", "auth": "required"}, status_code=401)
+            if request.state.user and request.state.user.get("must_change") and path.startswith("/api/") and path not in PASSWORD_CHANGE_PATHS:
+                return JSONResponse({"error": "Choose a new password before using the studio.", "must_change_password": True}, status_code=403)
             if request.state.user and request.state.user["role"] != "admin" and is_admin_only(request.method, path):
                 return JSONResponse({"error": "This action needs an administrator account."}, status_code=403)
         elif not is_loopback(s.host):
@@ -17884,7 +17907,7 @@ def install(app, ctx) -> None:
         if path.startswith("/api/") or path.startswith("/media/"):
             response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response
-__STUDIO_EOF_4849a35f8d04__
+__STUDIO_EOF_a4cffc340b43__
   mkdir -p "$DEST/studio/web/static"
 cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_9e6afeddbe18__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
@@ -18357,7 +18380,7 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_9582783ee2ef__'
 </html>
 __STUDIO_EOF_9582783ee2ef__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_1464be6ba214__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_6fb6d71471ae__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
@@ -18497,6 +18520,29 @@ function showLogin(message) {
   });
 }
 
+function showForcedPasswordChange() {
+  stopStream();
+  document.body.classList.add("signed-out");
+  document.getElementById("user-box").hidden = true;
+  document.getElementById("worker-pill").hidden = true;
+  setHTML(document.getElementById("view"), html`<div class="login-card card"><h1>Choose a new password</h1>
+    <p class="muted">You signed in with the starter password. Choose your own before continuing.</p>
+    <form id="newpw-form" class="form">
+      <label>New password (10+ characters) <input name="new" type="password" autocomplete="new-password" minlength="10" required autofocus></label>
+      <label>Type it again <input name="confirm" type="password" autocomplete="new-password" minlength="10" required></label>
+      <button class="btn primary" type="submit">Save and continue</button>
+    </form></div>`);
+  document.getElementById("newpw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    if (fd.get("new") !== fd.get("confirm")) { toast("The two passwords do not match. Nothing was changed.", "error", 9000); return; }
+    try {
+      await busy(e.submitter, () => post("/api/auth/password", { new: fd.get("new"), confirm: fd.get("confirm") }));
+      await start();
+    } catch (err) { /* toast shown */ }
+  });
+}
+
 function showUser() {
   const box = document.getElementById("user-box");
   if (!authUser) { box.hidden = true; return; }
@@ -18521,6 +18567,7 @@ async function start() {
   const st = await get("/api/auth/status");
   showVersion(st);
   if (st.auth_required && !st.user) { showLogin(); return; }
+  if (st.user && st.user.must_change) { showForcedPasswordChange(); return; }
   authUser = st.user;
   document.body.classList.remove("signed-out");
   document.getElementById("worker-pill").hidden = false;
@@ -18560,7 +18607,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_1464be6ba214__
+__STUDIO_EOF_6fb6d71471ae__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -22628,7 +22675,7 @@ def test_settings_validation():
     s = Settings.model_validate({"qa": {"max_attempts": 5}, "unknown_key": 1})
     assert s.qa.max_attempts == 5 and s.chunking.max_chars == 400
 __STUDIO_EOF_78e55b160cf0__
-cat > "$DEST/tests/test_auth.py" <<'__STUDIO_EOF_ff52f7477a45__'
+cat > "$DEST/tests/test_auth.py" <<'__STUDIO_EOF_a06f481d9cb5__'
 """Authentication, roles, LAN host handling and login rate limiting."""
 from __future__ import annotations
 
@@ -22758,6 +22805,23 @@ def test_network_bind_requires_a_user_account(ctx):
         assert c.get("/api/overview").status_code == 401
 
 
+def test_temporary_password_forces_change(ctx):
+    AuthStore(ctx.config_dir / "auth.json").set_user("admin", "admin", "admin", temporary=True)
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert login(c, "admin", "admin").json()["user"]["must_change"] is True
+        r = c.get("/api/overview")
+        assert r.status_code == 403 and r.json()["must_change_password"] is True
+        assert c.get("/api/auth/status").json()["user"]["must_change"] is True and c.get("/").status_code == 200
+        assert c.post("/api/auth/password", json={"new": "admin", "confirm": "admin"}).status_code == 422   # too short
+        assert c.post("/api/auth/password", json={"new": "a-fresh-password", "confirm": "a-fresh-password"}).status_code == 200
+        assert c.get("/api/overview").status_code == 200 and "must_change" not in c.get("/api/auth/status").json()["user"]
+        c.cookies.clear()
+        assert login(c, "admin", "admin").status_code == 401 and login(c, "admin", "a-fresh-password").status_code == 200
+        # outside the temporary state the current password is still required
+        assert c.post("/api/auth/password", json={"new": "yet-another-pass", "confirm": "yet-another-pass"}).status_code == 403
+
+
 def test_auth_store_rules(ctx):
     st = AuthStore(ctx.config_dir / "auth.json")
     with pytest.raises(ValueError):
@@ -22813,8 +22877,8 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     assert r.status_code == 200 and r.json()["library_root"].endswith("New Library")
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
-__STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ce351d20aee8__'
+__STUDIO_EOF_a06f481d9cb5__
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_5247bf113b1e__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -23199,13 +23263,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.5.7" and st["version_label"] == "v0.5.7"
+    assert st["version"] == "0.5.8" and st["version_label"] == "v0.5.8"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.5.7" and "stage" not in a
+    assert a["version_label"] == "v0.5.8" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_ce351d20aee8__
+__STUDIO_EOF_5247bf113b1e__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -26609,20 +26673,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_f5ccd3b476bf__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_690f890a4f7b__'
-20261029131700-bd49b995
-__STUDIO_EOF_690f890a4f7b__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_e7128f212a27__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_7dda1e0892b5__'
+20261029132820-29c09513
+__STUDIO_EOF_7dda1e0892b5__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_445d59b65d98__'
 {
-  "version": "0.5.7",
+  "version": "0.5.8",
   "schema_version": 2,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029131700-bd49b995",
+  "build": "20261029132820-29c09513",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_e7128f212a27__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_476b10ff6de6__'
+__STUDIO_EOF_445d59b65d98__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_c04c4951300c__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -26631,19 +26695,19 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-4978f853ba9a9aa2f8eb2f59a396b3b8153310a1f9c83f7814a1629ac72fb7e3  CHANGELOG.md
+174e193e1facd903a8eed4c138074aec476c206acc6974849662e01de0cefeff  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-4606b61eb4434b219af7472e5f0373624c782d1633fb375c85a51d4f047d06e9  README.md
+a87bbeb378f269ba889931c8dd112af2190ab0f5caa4e0679e96b97700f18d3b  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-678d1f6642022250c69628327663acdf35b66774afb8a39c94b648bea15cd64a  studio/__init__.py
+6c496f387421e87460dcc71ee0b32f42ae2a92beb72ac7e34bcd92006c088f13  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
 3d4d07dc9ae9e2d43e8778615d1a9f7c76f42009e6951ef8b53da05cb4571467  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
-7ce437e62ff89d0641c6ad43841ffc2a7ba50d02aa3d45a771853dd59bcbb1cd  studio/cli.py
+ec66838fd57f07591bd7202ff68bb8e78197335150a357e5ae0d829b2d112d06  studio/cli.py
 3c1ee291a3134db98a59eb5ae232eaffdd9b7722995e6b3cdbdc4fed22edf1c5  studio/config.py
 b388aeab35b65f3947e58c9e74267af3518b971195a487185a01cd21cebf95dc  studio/context.py
 be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
@@ -26694,14 +26758,14 @@ b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/
 812c188aa1067635eb61988c51320a107c49e9cd428a697d1cc872e4745468a0  studio/update/trust.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-829d0a5bfa4d7ceff7b16abf85367c87b5396e59a23820ee501aaebe8f35931c  studio/web/app.py
-5fd7f2dbd3bc7004cace51a787508a0f322590d8483dff350f0f1d8950fd9380  studio/web/auth.py
+05f09b46abf6cf5d3185c4b7dd67215237ca8ca3e6c31daca6ff98797503f9ec  studio/web/app.py
+f82331510b34d281a8b1612364a5cb74b2fb21e16e44be37332f83f5a4db2bb8  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
-4849a35f8d0402f4f622e37430fae3ac4decd3a46348a65bca04cf7d5ac0745e  studio/web/security.py
+a4cffc340b43b73ac6bb98d9becff9360a645d74d6ca508e36bc06f397a7e6a4  studio/web/security.py
 9e6afeddbe18a11db688047eb8515e2b47ae30f77d65c4c4c901e5c801fa43c2  studio/web/static/app.css
 9582783ee2ef3f53353d9be4fb9e7a2662e006e24d7869b843b4b7ca3cae97c0  studio/web/static/index.html
-1464be6ba2145020741271b86f8e065b396013f61c214b7844bf61f8413d2d65  studio/web/static/js/app.js
+6fb6d71471aeeed576063d0e11039a9674d78c277058ba60d51fe95a485ce031  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 697f9b779dc46503d36f2d8354e2094f4861c4a45e12c6ee64e0c9fbc7218884  studio/web/static/js/ui.js
@@ -26723,8 +26787,8 @@ e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/sta
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
-ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-ce351d20aee87df59aaf7b803ea7f31ba1a6efc63109a8f63983ce4e8db3c601  tests/test_integration.py
+a06f481d9cb56f104f988cb4cc454ec7ff4146efd14cfd59cb24f2bae56a51d2  tests/test_auth.py
+5247bf113b1efa90c867cd764172a1e428f897f934d6e4de8482f30e9cd3ecee  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
@@ -26732,9 +26796,9 @@ ce351d20aee87df59aaf7b803ea7f31ba1a6efc63109a8f63983ce4e8db3c601  tests/test_int
 4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
-690f890a4f7b4a6611c380ec23e1da070a0fe37f7deca5a19290de9d51a71983  BUILD
-e7128f212a2763453d214affeaf6d78853d3948044fe049fbc30e97e62261beb  release.json
-__STUDIO_EOF_476b10ff6de6__
+7dda1e0892b59dab79487c6432c2e29218dcef2af9057a7f50e34fcf11d95dd8  BUILD
+445d59b65d9892001dd94b005f6d3b4d2cced60f5eafef0bd85ac5d8f653e6da  release.json
+__STUDIO_EOF_c04c4951300c__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.
@@ -27014,12 +27078,9 @@ ensure_admin() {
   local users
   users="$(studio auth list 2>/dev/null | wc -l | tr -d ' ')"
   if [ "$users" = "0" ]; then
-    local out pw pwfile="$ROOT/state/config/initial-admin-password.txt"
-    out="$(studio auth add-user "$ADMIN_USER" --role admin --generate)"
-    pw="${out##*Generated password: }"
-    ( umask 077; printf 'user: %s\npassword: %s\n(delete this file once you have stored the password; change it in the web console)\n' "$ADMIN_USER" "$pw" > "$pwfile" )
-    GENERATED_PW="$pw"
-    ok "created administrator '$ADMIN_USER' (initial password saved to $pwfile, mode 600)"
+    studio auth add-user "$ADMIN_USER" --role admin --password admin --temporary >/dev/null
+    NEW_ADMIN=1
+    ok "created administrator '$ADMIN_USER' (starter password 'admin', changed at first sign-in)"
   else ok "existing user accounts kept ($users)"; fi
 }
 
@@ -27105,7 +27166,7 @@ main() {
   install_runtime
   activate_release
   install_launcher
-  GENERATED_PW=""
+  NEW_ADMIN=0
   if [ -n "$MIGRATE_FROM" ]; then
     say "Adopting the old installation at $MIGRATE_FROM"
     studio configure --manifest-only
@@ -27137,10 +27198,10 @@ main() {
                     library  $LIBRARY
                     models   $MODEL_CACHE
 EOF
-  if [ -n "$GENERATED_PW" ]; then
+  if [ "$NEW_ADMIN" = 1 ]; then
     echo
-    echo "    Sign in as '$ADMIN_USER' with the password saved in $ROOT/state/config/initial-admin-password.txt"
-    echo "    (shown once here: $GENERATED_PW). Store it, then delete that file."
+    echo "    First sign-in: user '$ADMIN_USER', password 'admin'. You will be asked to choose a new password straight away."
+    echo "    Do this soon: until you do, anyone who can reach this Mac on the network could sign in with that starter password."
   fi
   echo
 }

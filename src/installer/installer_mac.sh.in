@@ -424,12 +424,9 @@ ensure_admin() {
   local users
   users="$(studio auth list 2>/dev/null | wc -l | tr -d ' ')"
   if [ "$users" = "0" ]; then
-    local out pw pwfile="$ROOT/state/config/initial-admin-password.txt"
-    out="$(studio auth add-user "$ADMIN_USER" --role admin --generate)"
-    pw="${out##*Generated password: }"
-    ( umask 077; printf 'user: %s\npassword: %s\n(delete this file once you have stored the password; change it in the web console)\n' "$ADMIN_USER" "$pw" > "$pwfile" )
-    GENERATED_PW="$pw"
-    ok "created administrator '$ADMIN_USER' (initial password saved to $pwfile, mode 600)"
+    studio auth add-user "$ADMIN_USER" --role admin --password admin --temporary >/dev/null
+    NEW_ADMIN=1
+    ok "created administrator '$ADMIN_USER' (starter password 'admin', changed at first sign-in)"
   else ok "existing user accounts kept ($users)"; fi
 }
 
@@ -515,7 +512,7 @@ main() {
   install_runtime
   activate_release
   install_launcher
-  GENERATED_PW=""
+  NEW_ADMIN=0
   if [ -n "$MIGRATE_FROM" ]; then
     say "Adopting the old installation at $MIGRATE_FROM"
     studio configure --manifest-only
@@ -547,10 +544,10 @@ main() {
                     library  $LIBRARY
                     models   $MODEL_CACHE
 EOF
-  if [ -n "$GENERATED_PW" ]; then
+  if [ "$NEW_ADMIN" = 1 ]; then
     echo
-    echo "    Sign in as '$ADMIN_USER' with the password saved in $ROOT/state/config/initial-admin-password.txt"
-    echo "    (shown once here: $GENERATED_PW). Store it, then delete that file."
+    echo "    First sign-in: user '$ADMIN_USER', password 'admin'. You will be asked to choose a new password straight away."
+    echo "    Do this soon: until you do, anyone who can reach this Mac on the network could sign in with that starter password."
   fi
   echo
 }

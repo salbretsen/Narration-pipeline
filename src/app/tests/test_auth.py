@@ -127,6 +127,23 @@ def test_network_bind_requires_a_user_account(ctx):
         assert c.get("/api/overview").status_code == 401
 
 
+def test_temporary_password_forces_change(ctx):
+    AuthStore(ctx.config_dir / "auth.json").set_user("admin", "admin", "admin", temporary=True)
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert login(c, "admin", "admin").json()["user"]["must_change"] is True
+        r = c.get("/api/overview")
+        assert r.status_code == 403 and r.json()["must_change_password"] is True
+        assert c.get("/api/auth/status").json()["user"]["must_change"] is True and c.get("/").status_code == 200
+        assert c.post("/api/auth/password", json={"new": "admin", "confirm": "admin"}).status_code == 422   # too short
+        assert c.post("/api/auth/password", json={"new": "a-fresh-password", "confirm": "a-fresh-password"}).status_code == 200
+        assert c.get("/api/overview").status_code == 200 and "must_change" not in c.get("/api/auth/status").json()["user"]
+        c.cookies.clear()
+        assert login(c, "admin", "admin").status_code == 401 and login(c, "admin", "a-fresh-password").status_code == 200
+        # outside the temporary state the current password is still required
+        assert c.post("/api/auth/password", json={"new": "yet-another-pass", "confirm": "yet-another-pass"}).status_code == 403
+
+
 def test_auth_store_rules(ctx):
     st = AuthStore(ctx.config_dir / "auth.json")
     with pytest.raises(ValueError):

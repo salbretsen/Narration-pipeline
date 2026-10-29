@@ -136,10 +136,11 @@ def cmd_auth(a):
         if getpass.getpass("Type it again: ") != pw:
             sys.exit("The two passwords do not match. Nothing was changed.")
     try:
-        store.set_user(a.name, pw, a.role)
+        store.set_user(a.name, pw, a.role, temporary=a.temporary)
     except ValueError as exc:
         sys.exit(str(exc))
-    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else ""))
+    print(f"User '{a.name}' ({a.role}) saved." + (f" Generated password: {pw}" if generated else "")
+          + (" The password must be changed at first sign-in." if a.temporary else ""))
 
 
 def cmd_migrate(a):
@@ -333,6 +334,7 @@ def main(argv=None):
     sp.add_argument("--role", choices=["admin", "operator"], default="operator")
     sp.add_argument("--password")
     sp.add_argument("--generate", action="store_true", help="generate and print a random password")
+    sp.add_argument("--temporary", action="store_true", help="starter password (any length); the user must choose a new one at first sign-in")
     sp.set_defaults(func=cmd_auth)
     sp = sub.add_parser("doctor", help="check the environment")
     sp.add_argument("--json", action="store_true")

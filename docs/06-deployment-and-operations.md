@@ -47,7 +47,7 @@ prefetched (about 6 GB; Base and VoiceDesign are fetched lazily or with `--prefe
 Installer options: `--no-models --prefetch-all --skip-tests --port N --stop-running --lan --no-https --host ADDR --admin-user NAME
 --install-service --extract-only DIR -h`. Environment: `AUDIOBOOK_STUDIO_HOME`, `STUDIO_PYTHON`, `STUDIO_MLX_AUDIO_SPEC`,
 `AUDIOBOOK_STUDIO_ALLOW_NON_MAC=1` (CI mock install on Linux). `--lan` = bind 0.0.0.0, port 8080, HTTPS on 8443, create the first admin
-with a random password printed once and saved to `config/initial-admin-password.txt` (mode 0600; delete after storing the password).
+with the starter password `admin` that the web UI forces you to change at first sign-in (v0.5.8; earlier managed installs generated a random one).
 
 ## The service
 

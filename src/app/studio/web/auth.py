@@ -85,12 +85,21 @@ class AuthStore:
     def list_users(self) -> list[dict]:
         return [{"name": n, "role": u["role"], "created_at": u.get("created_at")} for n, u in sorted(self._load()["users"].items())]
 
-    def set_user(self, name: str, password: str, role: str = "operator") -> None:
+    @staticmethod
+    def _public(name: str, u: dict) -> dict:
+        user = {"name": name, "role": u["role"]}
+        if u.get("must_change"):
+            user["must_change"] = True      # only present while a temporary password is in force
+        return user
+
+    def set_user(self, name: str, password: str, role: str = "operator", temporary: bool = False) -> None:
+        """``temporary`` stores a known starter password (the installer's ``admin``): it may be short, and the account is
+        limited to changing its password until it has been changed."""
         if not USER_RE.match(name or ""):
             raise ValueError("User names are 2-40 characters: letters, digits, . _ -")
         if role not in ROLES:
             raise ValueError("Role must be admin or operator")
-        if len(password or "") < 10:
+        if len(password or "") < (1 if temporary else 10):
             raise ValueError("Password must be at least 10 characters")
         with self._lock:
             data = dict(self._load())
@@ -102,7 +111,7 @@ class AuthStore:
             if existing.get("role") == "admin" and role != "admin" and sum(1 for u in data["users"].values() if u["role"] == "admin") == 1:
                 raise ValueError("Cannot demote the only administrator")
             data["users"][name] = {"salt": salt.hex(), "hash": self._hash(password, salt), "iters": ITERATIONS, "role": role,
-                                   "created_at": existing.get("created_at") or time.time()}
+                                   "created_at": existing.get("created_at") or time.time(), "must_change": bool(temporary)}
             self._save(data)
 
     def remove_user(self, name: str) -> None:
@@ -122,7 +131,7 @@ class AuthStore:
         salt = bytes.fromhex(u["salt"]) if u else b"\0" * 16
         got = self._hash(password or "", salt, u["iters"] if u else ITERATIONS)  # constant work for unknown users
         if u and hmac.compare_digest(got, u["hash"]):
-            return {"name": name, "role": u["role"]}
+            return self._public(name, u)
         return None
 
     # ---------------------------------------------------------------- sessions
@@ -152,7 +161,7 @@ class AuthStore:
         # a password change (new hash) or removed user invalidates old sessions
         if not u or payload.get("e", 0) < time.time() or payload.get("v") != u["hash"][:12]:
             return None
-        return {"name": payload["u"], "role": u["role"]}
+        return self._public(payload["u"], u)
 
 
 class LoginLimiter:
