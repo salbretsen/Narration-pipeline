@@ -15,6 +15,7 @@ from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
 from .narrative import cast as N_cast
 from .narrative import store as N_store
+from .context import resolve_actor
 from .config import (CATEGORY_LABELS, ENGLISH_SPEAKERS, PRESET_SPEAKERS, STORAGE_CATEGORIES, Settings, book_snapshot,
                      merge_patch, synth_fingerprint)
 from .db import row, rows, scalar
@@ -1091,6 +1092,7 @@ def _seg_and_book(conn, segment_id: int):
 
 
 def _review(conn, ctx, seg: dict, action: str, detail: dict | None = None, actor: str = "operator") -> None:
+    actor = resolve_actor(actor)
     conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
                  (seg["id"], action, dumps(detail or {}), actor, now()))
     ctx.audit(conn, "segment", seg["sid"], action, detail, actor)
@@ -1219,7 +1221,9 @@ def approve_release(ctx, book_id: int, approved_by: str, listen_scope: str, atte
         conn.execute("INSERT INTO releases(book_id, approved_by, listen_scope, statement, checklist_json, approved_at) VALUES (?,?,?,?,?,?)",
                      (book_id, approved_by, listen_scope, statement, dumps({"notes": notes[:2000], "counts": chk["counts"]}), now()))
         conn.execute("UPDATE chapter_renders SET draft=0 WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id=?)", (book_id,))
-        ctx.audit(conn, "book", book_id, "release_approved", {"by": approved_by, "listen_scope": listen_scope}, approved_by)
+        signed_in = resolve_actor(None)
+        ctx.audit(conn, "book", book_id, "release_approved", {"by": approved_by, "signed_in_user": signed_in, "listen_scope": listen_scope},
+                  signed_in if signed_in != "operator" else approved_by)
         ctx.event(conn, "release", f"'{b['title']}' approved for publication by {approved_by} ({listen_scope} listen). Export again to get final (non-draft) files.", book_id)
         refresh_book_state(conn, book_id)
     return get_book(ctx, book_id)

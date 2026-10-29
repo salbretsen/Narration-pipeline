@@ -33,6 +33,7 @@ def build_report(ctx, book_id: int) -> dict:
         chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))
         counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (book_id,))}
         release = active_release(conn, book_id)
+        rel_audit = row(conn, "SELECT actor FROM audit_log WHERE entity='book' AND entity_id=? AND action='release_approved' ORDER BY id DESC LIMIT 1", (str(book_id),)) if release else None
         segs = rows(conn, """SELECT s.*, c.idx AS chapter_idx, c.title AS chapter_title FROM segments s JOIN chapters c ON c.id=s.chapter_id
                              WHERE s.book_id=? ORDER BY c.idx, s.idx""", (book_id,))
         attempts_by_seg: dict[int, list] = {}
@@ -94,10 +95,11 @@ def build_report(ctx, book_id: int) -> dict:
         "mean_wer": round(sum(wers) / len(wers), 4) if wers else None,
         "audio_duration_s": round(book_t, 2),
         "release": {"approved": bool(release), "approved_by": release["approved_by"] if release else None,
+                    "approved_by_account": rel_audit["actor"] if rel_audit else None,
                     "approved_at": release["approved_at"] if release else None, "listen_scope": release["listen_scope"] if release else None},
         "chapters": chapter_rows,
         "findings": findings,
-        "review_actions": [{"sid": r["sid"], "action": r["action"], "detail": loads(r["detail_json"], {}), "at": r["created_at"]} for r in reviews],
+        "review_actions": [{"sid": r["sid"], "action": r["action"], "actor": r["actor"], "detail": loads(r["detail_json"], {}), "at": r["created_at"]} for r in reviews],
         "qa_limitations": QA_LIMITATIONS,
     }
 

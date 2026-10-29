@@ -31,5 +31,7 @@ jobs:
           shellcheck -S style install_audiobook_studio_mac.sh
           shellcheck -x -S style src/app/bin/audiobook-studio
           git diff --exit-code -- install_audiobook_studio_claude.sh install_audiobook_studio_mac.sh || echo "::warning::generated installers differ from the committed ones (rebuild and commit)"
+      - name: Public-repo scrub (no private IPs, home paths, local hostnames or private keys in tracked files)
+        run: python tools/scrub_check.py
       - name: Every pinned dependency has a prebuilt macOS arm64 wheel (no Xcode needed on a clean Mac)
         run: python tools/check_lock_wheels.py
