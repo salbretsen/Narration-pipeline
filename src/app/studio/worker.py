@@ -24,6 +24,7 @@ import uuid
 from . import assembly
 from .db import row, rows
 from .engines import EngineUnavailable, VoiceSpec, SynthParams, create_asr, create_tts, max_tokens_for
+from .narrative import store as N_store
 from .pipeline import StorageUnavailable, check_storage, process_segment, recover_interrupted
 from . import audio as A
 from .util import dumps, loads, now
@@ -184,6 +185,9 @@ class Worker:
         j = row(conn, "SELECT * FROM jobs WHERE kind IN ('assemble','export') AND status IN ('queued','running') ORDER BY id LIMIT 1")
         if j:
             return j
+        j = row(conn, "SELECT * FROM jobs WHERE kind='analyze' AND status IN ('queued','running') ORDER BY id LIMIT 1")
+        if j:
+            return j
         j = row(conn, "SELECT * FROM jobs WHERE kind='book' AND status='running' ORDER BY position LIMIT 1")
         if j:
             return j
@@ -219,6 +223,8 @@ class Worker:
                 self._run_preview(job)
             elif job["kind"] in ("assemble", "export"):
                 self._run_utility(job)
+            elif job["kind"] == "analyze":
+                self._run_analyze(job)
             else:
                 self._run_book_step(job)
         except Exception as exc:
@@ -283,6 +289,8 @@ class Worker:
         p = loads(job["payload_json"], {})
         if p.get("recording_id"):
             return self._run_recording_job(job, p)
+        if p.get("segment_id"):
+            return self._run_segment_preview(job, p)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
             vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (p["voice_version_id"],))
@@ -309,6 +317,32 @@ class Worker:
             conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
         self._cleanup_previews()
 
+    def _run_segment_preview(self, job: dict, p: dict) -> None:
+        """Preview one segment exactly as production would render it: its character voice, its delivery
+        instruction, the same spoken text. Nothing is written to the segment's takes."""
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
+            seg = row(conn, "SELECT * FROM segments WHERE id=?", (p["segment_id"],))
+            book = row(conn, "SELECT * FROM books WHERE id=?", (seg["book_id"],)) if seg else None
+            plan = N_store.plan_for_segment(conn, self.ctx, seg, book) if seg else None
+        if not plan:
+            raise ValueError("segment not found for preview")
+        self._set(state="previewing", job=job["id"], sid=seg["sid"], message=f"Preview of {seg['sid']}")
+        text = plan.text
+        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct)
+        res = self.tts.synthesize(plan.voice, text, params, sid=None)
+        out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
+        A.write_wav(out, res.audio, res.sample_rate)
+        result = {"path": str(out), "duration_s": round(res.audio.size / res.sample_rate, 2), "engine": res.engine, "model_id": res.model_id,
+                  "rtf": res.rtf, "peak_mem_gb": res.peak_mem_gb, "seconds": round(res.seconds, 2), "sample_rate": res.sample_rate,
+                  "segment_id": seg["id"], "instruct": plan.instruct, "delivery_applied": plan.delivery_applied, "delivery_reason": plan.delivery_reason,
+                  "text_sent_to_tts": text, "gen_key": plan.gen_key}
+        if res.engine == "mock":
+            result["note"] = "Mock engine: synthetic test tones, not speech."
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
+        self._cleanup_previews()
+
     def _cleanup_previews(self, keep: int = 60) -> None:
         files = sorted(self.ctx.previews_dir().glob("preview-*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
         with self.ctx.db.session() as conn:
@@ -316,6 +350,25 @@ class Worker:
         for f in files[keep:]:
             if str(f) not in pinned:
                 f.unlink(missing_ok=True)
+
+    def _run_analyze(self, job: dict) -> None:
+        """One bounded unit of narrative analysis (see narrative.analysis); pause/cancel apply between units."""
+        from .narrative import analysis
+
+        jid, bid = job["id"], job["book_id"]
+        with self.ctx.db.tx() as conn:
+            cur = row(conn, "SELECT * FROM jobs WHERE id=?", (jid,))
+            if cur["cancel_requested"]:
+                conn.execute("UPDATE jobs SET status='cancelled', finished_at=?, updated_at=? WHERE id=?", (now(), now(), jid))
+                self.ctx.job_log(conn, jid, bid, "Analysis cancelled; completed stages are kept.")
+                return
+            if cur["pause_requested"]:
+                conn.execute("UPDATE jobs SET status='paused', pause_requested=0, paused_reason='operator', updated_at=? WHERE id=?", (now(), jid))
+                self.ctx.job_log(conn, jid, bid, "Analysis paused.")
+                return
+            title = row(conn, "SELECT title FROM books WHERE id=?", (bid,))["title"]
+        self._set(state="analyzing", job=jid, sid=None, message=f"Narrative analysis: {title}")
+        analysis.analysis_step(self.ctx, cur, getattr(self, "llm_transport", None))
 
     def _run_utility(self, job: dict) -> None:
         p = loads(job["payload_json"], {})
@@ -381,6 +434,20 @@ class Worker:
         if seg is None:
             self._finish_book(job, book)
             return
+        ns = N_store.book_ns(self.ctx, book)
+        if ns.director_enabled:
+            with self.ctx.db.session() as conn:
+                has_dir = row(conn, "SELECT 1 FROM directions WHERE segment_id=?", (seg["id"],))
+            if not has_dir:
+                from .narrative import analysis
+
+                self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['title']}: directing the next {ns.director_lookahead} segments")
+                try:
+                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None)))
+                except Exception as exc:  # a Director failure must never stop narration; the plan then has no delivery guidance
+                    log.exception("director batch failed")
+                    with self.ctx.db.tx() as conn:
+                        self.ctx.job_log(conn, jid, bid, f"Narrative Director failed ({type(exc).__name__}: {exc}); narrating without delivery guidance.", "warning")
         self._set(state="generating", job=jid, sid=seg["sid"], message=f"{book['title']}: {seg['sid']}")
 
         def on_attempt(s, n):

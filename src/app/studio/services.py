@@ -13,6 +13,8 @@ from pathlib import Path
 from . import audio as A
 from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
+from .narrative import cast as N_cast
+from .narrative import store as N_store
 from .config import (CATEGORY_LABELS, ENGLISH_SPEAKERS, PRESET_SPEAKERS, STORAGE_CATEGORIES, Settings, book_snapshot,
                      merge_patch, synth_fingerprint)
 from .db import row, rows, scalar
@@ -535,26 +537,40 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
     instructions = str(meta.get("instructions") or "").strip()[:1000]
     fp = synth_fingerprint(snap, vv, instructions)
     ch_s = s.chunking
+    ns = s.narrative
+    semantic = ns.semantic_segmentation
+    nar_plans, nar_cast, nar_seconds = (N_store.prepare_import(res, include, s, ns) if semantic else ([], None, 0.0))
     with ctx.db.tx() as conn:
         bid = conn.execute(
             """INSERT INTO books(uid, title, author, narrator_credit, publisher, year, description, language, genre, voice_id, voice_version_id,
-                   instructions, settings_json, synth_fingerprint, storage_json, state, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'imported', ?, ?)""",
+                   instructions, settings_json, synth_fingerprint, storage_json, state, narrative_json, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'imported', ?, ?, ?)""",
             (uid, title, str(meta.get("author") or preview.get("author") or "")[:300], str(meta.get("narrator_credit") or voice["name"])[:200],
              str(meta.get("publisher") or "")[:200], str(meta.get("year") or "")[:20], str(meta.get("description") or "")[:4000],
              str(meta.get("language") or s.models.language)[:40], str(meta.get("genre") or "Audiobook")[:60], voice["id"], vv["id"],
-             instructions, dumps(snap), fp, dumps(storage), now(), now()),
+             instructions, dumps(snap), fp, dumps(storage), dumps({"semantic_segmentation": True} if semantic else {}), now(), now()),
         ).lastrowid
         manifest = {"format": res.format, "warnings": res.warnings, "chapters": []}
         total_segments = 0
+        if semantic:
+            char_ids = N_cast.sync_cast(conn, bid, nar_cast, 1)
+            narrator_id = N_cast.ensure_narrator(conn, bid)
+            book_row = {"id": bid, "uid": uid, "narrative_json": dumps({"semantic_segmentation": True})}
         for out_idx, ci in enumerate(include, start=1):
             ch = res.chapters[ci]
+            words = ch.words()
+            if semantic:
+                plan = nar_plans[out_idx - 1]
+                chid = conn.execute("INSERT INTO chapters(book_id, idx, title, source_ref, word_count, segment_count, est_duration_s) VALUES (?,?,?,?,?,?,?)",
+                                    (bid, out_idx, ch.title, ch.source, words, 0, words * 60.0 / s.qa.words_per_minute)).lastrowid
+                N_store.persist_structure(conn, bid, uid, chid, out_idx, plan.struct, char_ids, narrator_id)
+                total_segments += N_store.resegment_chapter(ctx, conn, book_row, {"id": chid, "idx": out_idx}, ns, s)["segments"]
+                continue
             segs = build_segments(ch.readable(), ch_s.min_chars, ch_s.max_chars, ch_s.merge_short_paragraphs)
             auto_title = ch.title == "Opening" or bool(re.fullmatch(r"Section \d+", ch.title))
             if ch_s.speak_chapter_titles and ch.title and not auto_title:
                 from .chunker import Segment
                 segs.insert(0, Segment(ch.title, "heading", -1, "heading"))
-            words = ch.words()
             chid = conn.execute("INSERT INTO chapters(book_id, idx, title, source_ref, word_count, segment_count, est_duration_s) VALUES (?,?,?,?,?,?,?)",
                                 (bid, out_idx, ch.title, ch.source, words, len(segs), words * 60.0 / s.qa.words_per_minute)).lastrowid
             for n, sg in enumerate(segs, start=1):
@@ -563,6 +579,12 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
                                 VALUES (?,?,?,?,?,?,?,?,?, 'pending', ?)""",
                              (f"{uid}-c{out_idx:03d}-s{n:04d}", bid, chid, n, sg.para_idx, sg.kind, sg.pause_kind, sg.text, narr or sg.text, now()))
             total_segments += len(segs)
+        if semantic:
+            review = scalar(conn, "SELECT COUNT(*) FROM nar_spans WHERE book_id=? AND needs_review=1", (bid,), 0)
+            N_store.set_stage(conn, bid, "structure", "done", {"seconds": round(nar_seconds, 3), "chapters": len(nar_plans), "review": review,
+                                                                "spans": sum(len(p.struct.spans) for p in nar_plans)})
+            N_store.set_stage(conn, bid, "characters", "done", {"characters": len(char_ids) - 1})
+            N_store.set_stage(conn, bid, "segmentation", "done", {"segments": total_segments})
         for i, ch in enumerate(res.chapters):
             manifest["chapters"].append({"index": i, "title": ch.title, "source": ch.source, "narrated": i in include,
                                          "excluded_reason": None if i in include else (ch.include_reason or "Excluded by operator"),
@@ -658,8 +680,9 @@ def get_book(ctx, book_id: int) -> dict:
         out["release"] = active_release(conn, book_id)
         out["release_check"] = release_check_conn(conn, b)
         out["logs"] = rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE book_id=? AND level<>'debug' ORDER BY id DESC LIMIT 40", (book_id,))
-        out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export') ORDER BY id DESC LIMIT 10", (book_id,))
-        return out
+        out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export','analyze') ORDER BY id DESC LIMIT 10", (book_id,))
+    out["narrative"] = N_store.narrative_status(ctx, book_id)
+    return out
 
 
 def update_book_meta(ctx, book_id: int, patch: dict) -> dict:
@@ -835,7 +858,7 @@ def list_queue(ctx) -> dict:
                              ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, j.position, j.id""",
                     (now() - 7 * 86400,))
         utility = rows(conn, """SELECT j.id, j.kind, j.status, j.error, j.book_id, b.title, j.created_at, j.finished_at, j.payload_json
-                                FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview')
+                                FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview','analyze')
                                 ORDER BY j.id DESC LIMIT 15""")
         per_seg = _segment_seconds(conn)
         stats = _book_stats(conn, [j["book_id"] for j in jobs if j["book_id"]]) if jobs else {}
@@ -957,6 +980,17 @@ def job_logs(ctx, job_id: int, limit: int = 300) -> list[dict]:
         return rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE job_id=? ORDER BY id DESC LIMIT ?", (job_id, limit))
 
 
+def preview_segment(ctx, segment_id: int, seed: int | None = None) -> dict:
+    """Queue a preview of one segment rendered with its own voice and delivery (not saved as a take)."""
+    with ctx.db.tx() as conn:
+        seg = row(conn, "SELECT id, book_id FROM segments WHERE id=?", (segment_id,))
+        if not seg:
+            raise ServiceError("Segment not found", 404)
+        jid = conn.execute("INSERT INTO jobs(kind, book_id, payload_json, status, position, created_at, updated_at) VALUES ('preview',?,?, 'queued', 0, ?, ?)",
+                           (seg["book_id"], dumps({"segment_id": segment_id, "seed": seed if seed is not None else 1234}), now(), now())).lastrowid
+    return get_job(ctx, jid)
+
+
 def enqueue_utility(ctx, book_id: int, kind: str, payload: dict | None = None) -> dict:
     if kind not in ("assemble", "export"):
         raise ServiceError("unknown job kind", 422)
@@ -984,6 +1018,8 @@ FILTERS = {
     "approved": "s.status='approved'",
     "pending": "s.status IN ('pending','synthesizing')",
     "overridden": "s.override_text IS NOT NULL",
+    "speaker_review": "s.needs_review=1",
+    "direction_review": "EXISTS (SELECT 1 FROM directions d WHERE d.segment_id=s.id AND (d.needs_review=1 OR d.stale=1))",
     "noted": "s.note IS NOT NULL AND s.note<>''",
 }
 
@@ -1004,7 +1040,7 @@ def list_segments(ctx, book_id: int, chapter_id: int | None, flt: str, after: in
         total = scalar(conn, f"SELECT COUNT(*) FROM segments s WHERE {' AND '.join(where)}", params, 0)
         page_where = where + (["s.id > ?"] if after else [])
         items = rows(conn, f"""SELECT s.id, s.sid, s.chapter_id, s.idx, s.kind, s.status, s.original_text, s.override_text, s.attempts_used, s.round,
-                                     s.flag_reason, s.note, a.wer, a.duration_s, a.id AS attempt_id, c.idx AS chapter_idx
+                                     s.flag_reason, s.note, s.character_id, s.needs_review, s.span_kind, s.scene_idx, s.src_start, a.wer, a.duration_s, a.id AS attempt_id, c.idx AS chapter_idx
                               FROM segments s JOIN chapters c ON c.id=s.chapter_id LEFT JOIN attempts a ON a.id=s.selected_attempt_id
                               WHERE {' AND '.join(page_where)} ORDER BY s.id LIMIT ?""", params + ([after] if after else []) + [limit + 1])
     more = len(items) > limit
@@ -1067,6 +1103,8 @@ def approve_segment(ctx, segment_id: int, note: str | None = None, actor: str = 
         att = row(conn, "SELECT * FROM attempts WHERE id=?", (s["selected_attempt_id"],))
         if att["fingerprint"] != b["synth_fingerprint"]:
             raise ServiceError("The selected take uses outdated narrator settings; regenerate instead.", 409)
+        if att["gen_key"] and att["gen_key"] != N_store.plan_for_segment(conn, ctx, s, b).gen_key:
+            raise ServiceError("The selected take no longer matches this segment's voice or delivery; regenerate instead.", 409)
         conn.execute("UPDATE segments SET status='approved', note=COALESCE(?, note), updated_at=? WHERE id=?", ((note or None), now(), segment_id))
         _review(conn, ctx, s, "approve", {"attempt_id": s["selected_attempt_id"], "previous_status": s["status"], "note": note}, actor)
         refresh_book_state(conn, s["book_id"])
@@ -1110,6 +1148,8 @@ def select_take(ctx, segment_id: int, attempt_id: int) -> dict:
             raise ServiceError("That take has no playable audio.", 409)
         if a["fingerprint"] != b["synth_fingerprint"]:
             raise ServiceError("That take was rendered with different narrator settings and cannot be used in this book.", 409)
+        if a["gen_key"] and a["gen_key"] != N_store.plan_for_segment(conn, ctx, s, b).gen_key:
+            raise ServiceError("That take was rendered with a different voice, delivery or spoken text than this segment now uses; regenerate instead.", 409)
         if s["status"] in ("pending", "synthesizing"):
             raise ServiceError("Wait for the segment to finish generating.", 409)
         status = "passed" if a["passed"] else "flagged"

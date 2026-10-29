@@ -57,9 +57,9 @@ export async function render(view) {
         ${active.length ? html`<ol class="qlist" id="qlist">${active.map((j) => jobRow(j, tp, j.status !== "running"))}</ol>`
           : html`<p class="muted">Nothing queued. Add books from the <a href="#/library">Library</a>.</p>`}
       </section>
-      <section class="card" aria-labelledby="util-h"><h2 id="util-h">Assembly, export &amp; preview jobs</h2>
+      <section class="card" aria-labelledby="util-h"><h2 id="util-h">Assembly, export, preview &amp; analysis jobs</h2>
         ${data.utility.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Job</th><th scope="col">Book</th><th scope="col">Status</th><th scope="col">When</th></tr></thead>
-          <tbody>${data.utility.map((u) => html`<tr><td>#${u.id} ${u.kind}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td><td>${u.title || "–"}</td>
+          <tbody>${data.utility.map((u) => html`<tr><td>#${u.id} ${u.kind === "analyze" ? "Narrative analysis" : u.kind}${u.kind === "preview" && u.payload && u.payload.segment_id ? " (segment)" : ""}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td><td>${u.title || "–"}</td>
           <td>${badge(u.status)}${u.error ? html`<div class="small err">${u.error}</div>` : ""}</td><td class="small">${fmtAgo(u.finished_at || u.created_at)}</td></tr>`)}</tbody></table></div>`
           : html`<p class="muted">None yet.</p>`}</section>
       <section class="card" aria-labelledby="done-h"><h2 id="done-h">Recently finished (7 days)</h2>

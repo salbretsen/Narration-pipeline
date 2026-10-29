@@ -718,6 +718,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_seg_note(segment_id: int, req: NoteReq):
         return S.set_note(ctx, segment_id, req.note)
 
+    from .narrative_api import register as register_narrative
+
+    register_narrative(app, ctx)
+
     # ------------------------------------------------------------------ media
     def _book(conn, book_id):
         b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))

@@ -261,9 +261,200 @@ CREATE TABLE IF NOT EXISTS imports (
 );
 """
 
+# v0.3.0: semantic segmentation, narrative director and per-manuscript story context.
+# The jobs table is rebuilt only to widen its CHECK constraint with the 'analyze' kind
+# (SQLite cannot alter a CHECK); migrate() disables foreign keys around it and re-verifies them.
+SCHEMA_V2 = """
+CREATE TABLE jobs_v2 (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('book','preview','assemble','export','analyze')),
+    book_id INTEGER REFERENCES books(id),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('queued','running','paused','completed','failed','cancelled')),
+    position REAL NOT NULL DEFAULT 0,
+    pause_requested INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    paused_reason TEXT,
+    error TEXT,
+    retries INTEGER NOT NULL DEFAULT 0,
+    consecutive_errors INTEGER NOT NULL DEFAULT 0,
+    current_segment_sid TEXT,
+    result_json TEXT,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL,
+    updated_at REAL NOT NULL
+);
+INSERT INTO jobs_v2 (id, kind, book_id, payload_json, status, position, pause_requested, cancel_requested, paused_reason, error,
+                     retries, consecutive_errors, current_segment_sid, result_json, created_at, started_at, finished_at, updated_at)
+    SELECT id, kind, book_id, payload_json, status, position, pause_requested, cancel_requested, paused_reason, error,
+           retries, consecutive_errors, current_segment_sid, result_json, created_at, started_at, finished_at, updated_at FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v2 RENAME TO jobs;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_one_active_book_job ON jobs(book_id)
+    WHERE kind = 'book' AND status IN ('queued','running','paused');
+CREATE UNIQUE INDEX IF NOT EXISTS ux_one_active_analyze_job ON jobs(book_id)
+    WHERE kind = 'analyze' AND status IN ('queued','running','paused');
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status, kind, position);
+
+ALTER TABLE books ADD COLUMN narrative_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE segments ADD COLUMN src_start INTEGER;
+ALTER TABLE segments ADD COLUMN src_end INTEGER;
+ALTER TABLE segments ADD COLUMN character_id INTEGER;
+ALTER TABLE segments ADD COLUMN span_kind TEXT NOT NULL DEFAULT 'narration';
+ALTER TABLE segments ADD COLUMN scene_idx INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN voice_override_id INTEGER;
+ALTER TABLE segments ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN review_reason TEXT;
+ALTER TABLE segments ADD COLUMN boundary_manual INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempts ADD COLUMN gen_key TEXT;
+ALTER TABLE attempts ADD COLUMN instruct_used TEXT;
+ALTER TABLE attempts ADD COLUMN delivery_applied INTEGER;
+ALTER TABLE attempts ADD COLUMN voice_id_used INTEGER;
+ALTER TABLE attempts ADD COLUMN asr_skipped INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS ix_segments_char ON segments(character_id);
+
+CREATE TABLE chapter_text (
+    chapter_id INTEGER PRIMARY KEY REFERENCES chapters(id),
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    text TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    meta_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE characters (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    uid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'character' CHECK (kind IN ('narrator','character')),
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    gender TEXT NOT NULL DEFAULT '',
+    voice_id INTEGER REFERENCES voices(id),
+    voice_version_id INTEGER REFERENCES voice_versions(id),
+    voice_description TEXT NOT NULL DEFAULT '',
+    accent TEXT NOT NULL DEFAULT '',
+    speech_pattern TEXT NOT NULL DEFAULT '',
+    personality TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    relationships_json TEXT NOT NULL DEFAULT '[]',
+    delivery_pref TEXT NOT NULL DEFAULT '',
+    prov_json TEXT NOT NULL DEFAULT '{}',
+    merged_into INTEGER,
+    archived INTEGER NOT NULL DEFAULT 0,
+    first_chapter INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_characters_book ON characters(book_id);
+CREATE TABLE nar_spans (
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id),
+    para_idx INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    start INTEGER NOT NULL,
+    "end" INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    speaker_id INTEGER,
+    guess_id INTEGER,
+    attribution TEXT NOT NULL DEFAULT 'none',
+    confidence REAL NOT NULL DEFAULT 0,
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    evidence TEXT NOT NULL DEFAULT '',
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    scene_idx INTEGER NOT NULL DEFAULT 0,
+    cues_json TEXT NOT NULL DEFAULT '{}',
+    user_locked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_spans_chapter ON nar_spans(chapter_id, start);
+CREATE TABLE story_notes (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_idx INTEGER,
+    scene_idx INTEGER,
+    kind TEXT NOT NULL,
+    character_id INTEGER,
+    text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    refs_json TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_notes_book ON story_notes(book_id, kind);
+CREATE TABLE directions (
+    id INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL UNIQUE REFERENCES segments(id),
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    source TEXT NOT NULL,
+    raw_json TEXT NOT NULL,
+    smoothed_json TEXT NOT NULL DEFAULT '{}',
+    user_json TEXT NOT NULL DEFAULT '{}',
+    final_json TEXT NOT NULL,
+    smoothing_note TEXT NOT NULL DEFAULT '',
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    cache_key TEXT,
+    input_hash TEXT,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    stale INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_directions_book ON directions(book_id);
+CREATE TABLE direction_log (
+    id INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_dirlog_segment ON direction_log(segment_id, id);
+CREATE TABLE director_cache (
+    key TEXT PRIMARY KEY,
+    response_json TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    hits INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE TABLE seg_edits (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id),
+    kind TEXT NOT NULL CHECK (kind IN ('cut','join')),
+    offset INTEGER NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'operator',
+    created_at REAL NOT NULL,
+    UNIQUE (chapter_id, kind, offset)
+);
+CREATE TABLE segment_history (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL,
+    chapter_id INTEGER NOT NULL,
+    sid TEXT NOT NULL,
+    src_start INTEGER,
+    src_end INTEGER,
+    text TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    retired_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_seghist_chapter ON segment_history(chapter_id);
+CREATE TABLE analysis_stages (
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at REAL,
+    finished_at REAL,
+    error TEXT,
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (book_id, stage)
+);
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
+    (2, SCHEMA_V2),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 
@@ -324,6 +515,9 @@ class Database:
             with self.session() as src, sqlite3.connect(str(dest)) as dst:
                 src.backup(dst)
         with self.session() as c:
+            # Table rebuilds need foreign keys off (a no-op inside a transaction); the
+            # integrity of every reference is verified before each commit instead.
+            c.execute("PRAGMA foreign_keys = OFF")
             for version, sql in MIGRATIONS:
                 if version <= current:
                     continue
@@ -331,11 +525,15 @@ class Database:
                 try:
                     for stmt in _split_sql(sql):
                         c.execute(stmt)
+                    bad = c.execute("PRAGMA foreign_key_check").fetchall()
+                    if bad:
+                        raise sqlite3.IntegrityError(f"migration {version} left {len(bad)} dangling foreign key reference(s)")
                     c.execute(f"PRAGMA user_version = {int(version)}")
                     c.execute("COMMIT")
                 except BaseException:
                     c.execute("ROLLBACK")
                     raise
+            c.execute("PRAGMA foreign_keys = ON")
         return current, LATEST_VERSION
 
 

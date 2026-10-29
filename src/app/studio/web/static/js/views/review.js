@@ -2,7 +2,8 @@
 import { get, post, html, setHTML, badge, fmtClock, fmtDate, toast, busy, debounce, qs, onState, player, navigate, progressBar } from "../ui.js";
 
 const FILTERS = [["issues", "Issues (flags + warnings)"], ["flagged", "Flagged only"], ["all", "All segments"], ["generated", "Generated"],
-  ["passed", "QA passed"], ["approved", "Approved"], ["pending", "Not rendered yet"], ["overridden", "Spoken text edited"], ["noted", "With notes"]];
+  ["passed", "QA passed"], ["approved", "Approved"], ["pending", "Not rendered yet"], ["overridden", "Spoken text edited"], ["noted", "With notes"],
+  ["speaker_review", "Speaker needs review"], ["direction_review", "Direction needs review / stale"]];
 
 function diffView(diff) {
   if (!diff || !diff.length) return html`<span class="muted">No comparison available.</span>`;
@@ -30,7 +31,7 @@ function detailPanel(d) {
   return html`<div class="seg-detail">
     <div class="seg-head">
       <div><h2 class="seg-title"><code>${s.sid}</code></h2>
-        <div class="small muted">Chapter ${d.chapter.idx}: ${d.chapter.title} · segment ${s.idx} · ${s.kind}${d.chapter_timing ? html` · ${fmtClock(d.chapter_timing.start_s)} in chapter master` : ""}</div></div>
+        <div class="small muted">Chapter ${d.chapter.idx}: ${d.chapter.title} · segment ${s.idx} · ${s.kind} · <a href="#/inspect/${s.id}">Inspect speaker, context &amp; direction</a>${d.chapter_timing ? html` · ${fmtClock(d.chapter_timing.start_s)} in chapter master` : ""}</div></div>
       <div class="seg-badges">${badge(s.status)} <span class="badge tone-neutral">attempts ${s.attempts_used}/${d.max_attempts} (round ${s.round})</span></div>
       <div class="btn-group" role="group" aria-label="Segment navigation">
         <button class="btn small ghost" data-act="prev" ${d.prev_id ? "" : html`disabled`} aria-label="Previous segment (K)">← Prev</button>
@@ -94,7 +95,8 @@ export async function render(view, parts, query) {
   const bookId = Number(parts[0]);
   const book = await get(`/api/books/${bookId}`);
   const st = { filter: query.get("filter") || (book.flagged ? "flagged" : "all"), chapter: query.get("chapter") || "", q: "", items: [], next: null, total: 0,
-    selected: query.get("seg") ? Number(query.get("seg")) : null, detail: null };
+    selected: query.get("seg") ? Number(query.get("seg")) : null, detail: null, names: {} };
+  try { (await get(`/api/books/${bookId}/characters`)).characters.forEach((c) => { st.names[c.id] = c.name; }); } catch { /* optional */ }
 
   async function loadList(append = false) {
     const res = await get(`/api/books/${bookId}/segments` + qs({ filter: st.filter, chapter_id: st.chapter, q: st.q, after: append ? st.next : "", limit: 60 }));
@@ -110,6 +112,8 @@ export async function render(view, parts, query) {
   function listItems() {
     return html`${st.items.map((s) => html`<li><button type="button" class="seg-item ${s.id === st.selected ? "sel" : ""}" data-seg="${s.id}" aria-current="${s.id === st.selected ? "true" : "false"}">
       <span class="seg-item-top"><code>c${s.chapter_idx}·${s.idx}</code> ${badge(s.status)} ${s.wer !== null && s.wer !== undefined ? html`<span class="small muted">${(s.wer * 100).toFixed(0)}%</span>` : ""}
+      ${s.needs_review ? html`<span class="badge tone-warn" title="speaker not established - open Inspect to assign">speaker?</span>` : ""}
+      ${s.character_id && st.names[s.character_id] ? html`<span class="small muted">${st.names[s.character_id]}</span>` : ""}
       ${s.override_text ? html`<span class="badge tone-info" title="spoken text edited">✎</span>` : ""}${s.note ? html`<span class="badge tone-neutral" title="has note">✉</span>` : ""}</span>
       <span class="seg-snip">${s.original_text.slice(0, 110)}${s.original_text.length > 110 ? "…" : ""}</span></button></li>`)}`;
   }

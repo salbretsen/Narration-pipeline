@@ -21,6 +21,7 @@ from .align import evaluate
 from .config import STORAGE_CATEGORIES
 from .db import row, rows
 from .engines import EngineUnavailable, SynthParams, VoiceSpec, max_tokens_for
+from .narrative import store as N_store
 from .util import atomic_write_text, dumps, loads, now, short_hash
 
 log = logging.getLogger("studio.pipeline")
@@ -173,6 +174,28 @@ def attempt_params(snapshot: dict, sid: str, rnd: int, attempt_no: int, text: st
     )
 
 
+def reusable_take(conn, book: dict, seg: dict, gen_key: str) -> dict | None:
+    """An earlier passing take of this very segment made with identical text, voice, delivery and model
+    parameters (e.g. after a voice change is reverted). A user-requested regeneration never reuses a take."""
+    last = row(conn, "SELECT action, actor FROM review_actions WHERE segment_id=? ORDER BY id DESC LIMIT 1", (seg["id"],))
+    if last and last["action"] == "regenerate" and last["actor"] != "system":
+        return None
+    for a in rows(conn, """SELECT * FROM attempts WHERE segment_id=? AND status='done' AND passed=1 AND gen_key=? AND wav_path IS NOT NULL
+                          AND fingerprint=? ORDER BY id DESC""", (seg["id"], gen_key, book["synth_fingerprint"])):
+        if resolve_take(book, a) is not None:
+            return a
+    return None
+
+
+def verify_this(qa: dict, ns, seg: dict) -> bool:
+    """Whether Whisper checks this segment: the book's ASR switch, then the narrative verification mode."""
+    if not qa.get("enable_asr", True) or ns.verify_mode == "off":
+        return False
+    if ns.verify_mode == "sample":
+        return int(short_hash(f"{seg['sid']}:{seg['round']}", 6), 16) % 1000 < ns.verify_sample_rate * 1000
+    return True
+
+
 def score_attempt(wer: float | None, issues: list[dict]) -> float:
     s = (wer or 0.0) * 100.0
     for i in issues:
@@ -207,11 +230,23 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         chapter = row(conn, "SELECT * FROM chapters WHERE id=?", (seg["chapter_id"],))
         snapshot = loads(book["settings_json"], {})
         qa = snapshot.get("qa", {})
-        voice = voice_spec(conn, book)
+        plan = N_store.plan_for_segment(conn, ctx, seg, book)
+        voice = plan.voice
+        ns = N_store.book_ns(ctx, book)
         wpm = calibrated_wpm(conn, book["id"], qa.get("words_per_minute", 155.0))
+        reusable = reusable_take(conn, book, seg, plan.gen_key)
     check_storage(book)
     max_attempts = int(qa.get("max_attempts", 3))
     text = spoken_text(seg)
+    if reusable is not None:
+        with db.tx() as conn:
+            conn.execute("UPDATE segments SET status='passed', selected_attempt_id=?, flag_reason=NULL, attempts_used=0, updated_at=? WHERE id=?",
+                         (reusable["id"], now(), segment_id))
+            place_takes(conn, book, segment_id)
+            conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
+                         (segment_id, "cache_reuse", dumps({"attempt_id": reusable["id"], "gen_key": plan.gen_key}), "system", now()))
+        return "passed"
+    verify = verify_this(qa, ns, seg)
 
     while True:
         with db.tx() as conn:
@@ -219,13 +254,14 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             if seg["attempts_used"] >= max_attempts:
                 break
             attempt_no = seg["attempts_used"] + 1
-            params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, book.get("instructions", ""))
+            params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, plan.instruct or "")
             cur = conn.execute(
                 """INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id,
-                       fingerprint, seed, temperature, text_spoken, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (segment_id, seg["round"], attempt_no, "in_progress", tts.name, voice.model_id, voice.version_id,
-                 book["synth_fingerprint"], params.seed, params.temperature, text, now()),
+                 book["synth_fingerprint"], params.seed, params.temperature, text, now(), plan.gen_key, plan.instruct,
+                 1 if plan.delivery_applied else 0, plan.voice_id, 0 if verify else 1),
             )
             attempt_id = cur.lastrowid
             conn.execute("UPDATE segments SET status='synthesizing', attempts_used=?, updated_at=? WHERE id=?",
@@ -266,7 +302,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm), qa)
         issues = list(acoustic["issues"])
         asr_out, ev = None, None
-        if qa.get("enable_asr", True):
+        if verify:
             try:
                 asr_out = asr.transcribe(seg_path)
             except EngineUnavailable as exc:
@@ -287,7 +323,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             if ev["wer"] > qa.get("wer_threshold", 0.12) and (ev["ref_tokens"] >= 10 or errors >= 2):
                 issues.append({"severity": "error", "kind": "wer", "message": f"Word error rate {ev['wer'] * 100:.1f}% exceeds {qa.get('wer_threshold', 0.12) * 100:.0f}%", "at_s": None, "source": "asr"})
         else:
-            issues.append({"severity": "info", "kind": "asr_disabled", "message": "ASR verification disabled for this book - listen manually.", "at_s": None, "source": "settings"})
+            why = "ASR verification disabled for this book" if not qa.get("enable_asr", True) else "Whisper verification skipped by the verification setting (sampling/off)"
+            issues.append({"severity": "info", "kind": "asr_disabled", "message": f"{why} - listen manually.", "at_s": None, "source": "settings"})
         wer = ev["wer"] if ev else None
         passed = not any(i["severity"] == "error" for i in issues)
         score = score_attempt(wer, issues)

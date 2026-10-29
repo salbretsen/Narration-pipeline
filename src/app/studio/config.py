@@ -225,8 +225,85 @@ class WorkerSettings(_M):
     max_consecutive_errors: int = Field(5, ge=1, le=50)
 
 
+class LLMSettings(_M):
+    """Local LLM used for ambiguous attribution, summaries and the Narrative Director.
+    Only an OpenAI-compatible chat endpoint is supported. The API key is never stored: name
+    an environment variable instead."""
+
+    provider: Literal["none", "openai_compatible"] = "none"
+    base_url: str = "http://127.0.0.1:1234/v1"
+    model: str = Field("", max_length=200)
+    api_key_env: str = Field("", max_length=80)
+    timeout_s: float = Field(120.0, ge=5.0, le=1800.0)
+    temperature: float = Field(0.2, ge=0.0, le=1.5)
+    max_tokens: int = Field(1200, ge=100, le=8000)
+
+    @field_validator("base_url")
+    @classmethod
+    def check_url(cls, v: str) -> str:
+        v = (v or "").strip().rstrip("/")
+        if not re.match(r"^https?://[^\s/@]+(:\d+)?(/[^\s]*)?$", v):
+            raise ValueError("base_url must be an http(s) URL without credentials, e.g. http://127.0.0.1:1234/v1")
+        return v
+
+    @field_validator("api_key_env")
+    @classmethod
+    def check_env(cls, v: str) -> str:
+        v = (v or "").strip()
+        # Only variables meant for this purpose may be read, so the setting cannot be used to send
+        # an unrelated secret from the service's environment to the configured URL.
+        if v and not re.fullmatch(r"STUDIO_LLM_[A-Z0-9_]{0,60}", v):
+            raise ValueError("api_key_env is the NAME of an environment variable (STUDIO_LLM_...) set for the service, not the key itself")
+        return v
+
+
+class DeliverySettings(_M):
+    """How the Director's delivery guidance is passed to each Qwen3-TTS model. The Base
+    (reference-cloning) model has no instruction input, so it is not configurable."""
+
+    custom_voice: Literal["instruct", "off"] = "instruct"
+    voice_design: Literal["append", "off"] = "append"
+    max_instruct_chars: int = Field(160, ge=40, le=400)
+
+
+class NarrativeSettings(_M):
+    semantic_segmentation: bool = False
+    max_segment_chars: int = Field(500, ge=80, le=1200)
+    min_segment_chars: int = Field(120, ge=0, le=600)
+    context_before_chars: int = Field(1250, ge=0, le=8000)
+    context_after_chars: int = Field(1250, ge=0, le=8000)
+    attribution_threshold: float = Field(0.6, ge=0.0, le=1.0)
+    emotion_sensitivity: float = Field(0.5, ge=0.0, le=1.0)
+    auto_character_tracking: bool = True
+    chapter_summaries: bool = True
+    tags_with_speaker: bool = False  # let a character voice read a short tag ("she said.") attached to their line
+    director_enabled: bool = False
+    director_lookahead: int = Field(12, ge=1, le=200)
+    continuity_smoothing: bool = True
+    smoothing_strength: float = Field(0.6, ge=0.0, le=1.0)
+    reset_scope: Literal["none", "scene", "chapter"] = "chapter"
+    cascade_limit: int = Field(24, ge=1, le=500)
+    verify_mode: Literal["every", "sample", "off"] = "every"
+    verify_sample_rate: float = Field(0.25, ge=0.0, le=1.0)
+    delivery: DeliverySettings = Field(default_factory=DeliverySettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+
+    @model_validator(mode="after")
+    def check_rules(self):
+        if self.min_segment_chars >= self.max_segment_chars:
+            raise ValueError("min_segment_chars must be smaller than max_segment_chars")
+        if self.director_enabled and not self.semantic_segmentation:
+            raise ValueError("The Narrative Director needs semantic segmentation (it works on source offsets and speakers)")
+        return self
+
+    @property
+    def total_context_chars(self) -> int:
+        return self.context_before_chars + self.context_after_chars
+
+
 class Settings(_M):
     version: int = 1
+    narrative: NarrativeSettings = Field(default_factory=NarrativeSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     chunking: ChunkSettings = Field(default_factory=ChunkSettings)
     qa: QASettings = Field(default_factory=QASettings)
@@ -259,6 +336,11 @@ def merge_patch(base: dict, patch: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+def effective_narrative(settings: Settings, overrides: dict | None) -> NarrativeSettings:
+    """Global narrative defaults with a project's overrides merged on top."""
+    return NarrativeSettings.model_validate(merge_patch(settings.narrative.model_dump(mode="json"), overrides or {}))
 
 
 def book_snapshot(settings: Settings) -> dict:

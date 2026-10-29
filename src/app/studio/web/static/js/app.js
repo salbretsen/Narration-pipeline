@@ -8,8 +8,10 @@ import * as review from "./views/review.js";
 import * as book from "./views/book.js";
 import * as settings from "./views/settings.js";
 import * as about from "./views/about.js";
+import * as narrative from "./views/narrative.js";
+import * as inspector from "./views/inspector.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector };
 let cleanup = null;
 let currentKey = "";
 
@@ -19,7 +21,7 @@ async function route() {
   const key = location.hash;
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const active = a.dataset.nav === name || (name === "book" && a.dataset.nav === "library");
+    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
     a.classList.toggle("active", active);
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });

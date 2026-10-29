@@ -1,5 +1,6 @@
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
 import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
 
 /** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
 function browseFolder(startPath) {
@@ -138,6 +139,30 @@ function field(section, [key, label, type, opt = {}], val) {
   return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
 }
 
+function narrativeCard(n) {
+  return html`<section class="card" aria-labelledby="sec-narrative"><h2 id="sec-narrative">Narrative processing (semantic segmentation &amp; Narrative Director)</h2>
+    <p class="small muted">These are the global defaults for books imported from now on. A book can override them on its own
+      <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
+      context is given to the Director for analysis only.</p>
+    ${NARRATIVE_FIELDS.map(([title, fields]) => html`<h3>${title}</h3>
+      ${title.startsWith("Context") ? html`<p class="small muted">Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.</p>` : ""}
+      ${title.startsWith("Delivery") ? html`<p class="small muted">Base (voice cloning): <strong>no instruction input — not configurable.</strong> The Base model is conditioned only by the
+        reference clip, so emotion direction is recorded but not applied. The 0.6B CustomVoice model ignores instructions as well.</p>` : ""}
+      ${title.startsWith("Local LLM") ? html`<p class="small muted">The API key itself is never stored: enter the <em>name</em> of an environment variable the worker process can read.
+        Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.</p>` : ""}
+      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>`)}
+  </section>`;
+}
+
+function collectNarrative(form) {
+  const out = {};
+  for (const f of allFields()) {
+    const v = readInput(form, "narrative.", f);
+    if (v !== undefined) setPath(out, f[0], v);
+  }
+  return out;
+}
+
 function pathStatus(v) {
   if (!v) return "";
   return html`<div class="path-status ${v.ok ? "ok" : "bad"}" role="status">
@@ -186,10 +211,17 @@ export async function render(view) {
       ${sec === "models" ? html`<p class="small muted">Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.</p>` : ""}
       ${sec === "server" ? html`<p class="small muted">The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.</p>` : ""}
       <div class="form-grid">${fields.map((f) => field(sec, f, s.settings[sec][f[0]]))}</div></section>`)}
+    ${narrativeCard(s.settings.narrative)}
     <div class="sticky-actions"><button class="btn primary" type="submit">Save settings</button>
       <span class="small muted">Saved settings apply to new imports; each existing book keeps its own snapshot.</span></div>
     </form>`);
     view.querySelector("#settings-form").addEventListener("submit", save);
+    const total = () => {
+      const f = view.querySelector("#settings-form");
+      const out = view.querySelector("#nar-total");
+      if (out) out.textContent = String((Number(f.elements["narrative.context_before_chars"].value) || 0) + (Number(f.elements["narrative.context_after_chars"].value) || 0));
+    };
+    ["context_before_chars", "context_after_chars"].forEach((k) => view.querySelector(`[name="narrative.${k}"]`).addEventListener("input", total));
   };
 
   function collect(form) {
@@ -204,6 +236,7 @@ export async function render(view) {
       else if (type === "list") set(`${sec}.${key}`, el.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number));
       else set(`${sec}.${key}`, el.value.trim());
     }
+    out.narrative = collectNarrative(form);
     out.storage = {};
     form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
     return out;
@@ -213,7 +246,8 @@ export async function render(view) {
     e.preventDefault();
     const form = e.target;
     if (!form.reportValidity()) return;
-    s = await busy(e.submitter, () => put("/api/settings", collect(form)), "Settings saved");
+    try { s = await busy(e.submitter, () => put("/api/settings", collect(form)), "Settings saved"); }
+    catch { return; } // the server's validation message is already shown
     storage = await get("/api/storage");
     Object.keys(checks).forEach((k) => delete checks[k]);
     paint();

@@ -1,6 +1,18 @@
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
 
+function narrativeCard(b, id) {
+  const n = b.narrative;
+  if (!n) return "";
+  return html`<section class="card" aria-labelledby="nar-sum-h"><h2 id="nar-sum-h">Narrative analysis</h2>
+    ${n.semantic
+      ? html`<p class="small">Semantic segmentation: <strong>${n.characters}</strong> character(s) · <strong>${n.directed}</strong>/${n.segments} segments directed ·
+          ${n.needs_review ? html`<a class="warn-text" href="#/review/${id}?filter=speaker_review"><strong>${n.needs_review}</strong> line(s) need a speaker</a>` : html`<span class="good-text">no speaker flags</span>`}
+          ${n.direction_review ? html` · <a class="warn-text" href="#/review/${id}?filter=direction_review">${n.direction_review} direction(s) to review</a>` : ""}</p>`
+      : html`<p class="small muted">This book uses the classic segmenter. Convert it to get speaker analysis, a character directory and the Narrative Director.</p>`}
+    <a class="btn" href="#/narrative/${id}">Open narrative page</a></section>`;
+}
+
 export async function render(view, parts) {
   const id = Number(parts[0]);
   let b = await get(`/api/books/${id}`);
@@ -27,6 +39,7 @@ export async function render(view, parts) {
     </div>
     ${b.last_error ? html`<div class="callout bad small"><strong>Last error:</strong> ${b.last_error}</div>` : ""}
 
+    ${narrativeCard(b, id)}
     <section class="card" aria-labelledby="ch-h"><h2 id="ch-h">Chapters</h2>
       <div class="form-actions"><button class="btn" data-act="assemble" ${busyJob ? html`disabled` : ""}>Assemble chapter masters (WAV + MP3)</button>
         ${busyJob ? html`<span class="small muted"><span class="spinner" aria-hidden="true"></span> ${busyJob.kind} job #${busyJob.id} ${busyJob.status}…</span>` : ""}

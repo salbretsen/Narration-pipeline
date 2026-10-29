@@ -22,6 +22,7 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
 # Paths only an administrator may use (settings, storage, process control, user management).
 ADMIN_RULES = [
     ("PUT", re.compile(r"^/api/settings$")),
+    ("PUT", re.compile(r"^/api/books/\d+/narrative/settings$")),
     ("GET", re.compile(r"^/api/storage$")),
     ("GET", re.compile(r"^/api/storage/browse$")),
     ("POST", re.compile(r"^/api/storage/")),

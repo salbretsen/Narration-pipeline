@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.2.2 (build 20261028232018-d6932b10)
+#  Version v0.3.0 (build 20261028235813-7911947c)
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -20,8 +20,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.2.2"
-BUILD_ID="20261028232018-d6932b10"
+STUDIO_VERSION="v0.3.0"
+BUILD_ID="20261028235813-7911947c"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -377,11 +377,40 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_ac83d53ee392__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_a92815240f70__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.3.0
+Context-aware multi-character narration. Everything below is opt-in (Settings > Narrative); with it off, books import and
+render exactly as in v0.2.2.
+- **Two-pass semantic segmentation.** Pass 1 parses each chapter into paragraphs, scenes and dialogue/narration spans with exact
+  character offsets, attributes quoted speech from tags, beats, pronouns plus gender, quote continuation and turn-taking (it never
+  assumes "the last speaker"; uncertain lines are flagged for review), tracks characters and aliases across chapters, and records
+  emotional cues and tension. Pass 2 builds the narration segments (default ceiling 500 characters, never filled for its own sake),
+  splitting at speaker changes (when voices differ), scene breaks and meaningful emotional turns, joining tiny fragments, and
+  splitting over-long sentences at the least disruptive punctuation. Segments are exact slices of the chapter text.
+- **Dual context windows.** The spoken text is only the segment's words. A separate narrative context window (default 1,250
+  characters before and after, set independently) feeds analysis only and cannot reach the TTS engine.
+- **Narrative Director** with a controlled emotion vocabulary, schema-validated and auditable output (facts are verified against the
+  text and dropped if ungrounded; interpretations are kept separate), a configurable OpenAI-compatible local LLM, and a deterministic
+  rules engine that is used when no LLM is configured or when it fails. Results are cached by text, context, profile, previous
+  delivery, model and prompt version.
+- **Cross-segment continuity.** Per-speaker delivery state with bounded intensity steps, decay instead of snapping back to neutral,
+  escalation, scene/chapter resets, and no smoothing of changes the manuscript supports. Edits recompute downstream directions
+  only until they stabilise (bounded cascade), without new LLM calls.
+- **Characters and story notes** per manuscript: aliases, merge, voice assignment, accents and personality with provenance and
+  confidence; user-confirmed values always win. Extractive chapter/scene summaries (verbatim sentences) so summaries cannot invent events.
+- **Model-aware delivery**: CustomVoice gets an `instruct` style instruction; VoiceDesign gets the delivery appended to the voice
+  description; the Base cloning model receives no instruction (the library has no such input) and keeps its reference conditioning.
+- **Segment Inspector, character directory, boundary editing, per-segment preview** in the web UI; project-level overrides of every
+  narrative setting; a Narrative analysis job in the queue with pause, cancel and restart recovery.
+- **Targeted regeneration and audio cache.** Every take records a generation key (text, voice, delivery, model parameters). A voice or
+  delivery change resets only the affected segments, and reverting it reuses the earlier take.
+- **Whisper verification modes**: every segment (default), a deterministic sample, or off.
+- Database migration v2 (a backup is taken first); installer rebuilt. New tests: `tests/test_narrative.py`.
 
 ## v0.2.2
 - Documentation set for new sessions: `docs/` (overview, architecture, API, frontend, development workflow, deployment and
@@ -405,7 +434,7 @@ additions or overhauls inside the current major release; PATCH = minor adjustmen
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_ac83d53ee392__
+__STUDIO_EOF_a92815240f70__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -435,10 +464,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_6fdfb1f570b9__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_f5991d1fa71c__'
 # Audiobook Studio
 
-**v0.2.2** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.3.0** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -721,7 +750,7 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_6fdfb1f570b9__
+__STUDIO_EOF_f5991d1fa71c__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
@@ -738,7 +767,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_313f07b8e271__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_b430e4e22eca__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -747,13 +776,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_313f07b8e271__
+__STUDIO_EOF_b430e4e22eca__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -2149,7 +2178,7 @@ def main(argv=None):
 if __name__ == "__main__":
     main()
 __STUDIO_EOF_3e5409673965__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_6fb3508ffe70__'
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_2f3629afdbf9__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -2377,8 +2406,85 @@ class WorkerSettings(_M):
     max_consecutive_errors: int = Field(5, ge=1, le=50)
 
 
+class LLMSettings(_M):
+    """Local LLM used for ambiguous attribution, summaries and the Narrative Director.
+    Only an OpenAI-compatible chat endpoint is supported. The API key is never stored: name
+    an environment variable instead."""
+
+    provider: Literal["none", "openai_compatible"] = "none"
+    base_url: str = "http://127.0.0.1:1234/v1"
+    model: str = Field("", max_length=200)
+    api_key_env: str = Field("", max_length=80)
+    timeout_s: float = Field(120.0, ge=5.0, le=1800.0)
+    temperature: float = Field(0.2, ge=0.0, le=1.5)
+    max_tokens: int = Field(1200, ge=100, le=8000)
+
+    @field_validator("base_url")
+    @classmethod
+    def check_url(cls, v: str) -> str:
+        v = (v or "").strip().rstrip("/")
+        if not re.match(r"^https?://[^\s/@]+(:\d+)?(/[^\s]*)?$", v):
+            raise ValueError("base_url must be an http(s) URL without credentials, e.g. http://127.0.0.1:1234/v1")
+        return v
+
+    @field_validator("api_key_env")
+    @classmethod
+    def check_env(cls, v: str) -> str:
+        v = (v or "").strip()
+        # Only variables meant for this purpose may be read, so the setting cannot be used to send
+        # an unrelated secret from the service's environment to the configured URL.
+        if v and not re.fullmatch(r"STUDIO_LLM_[A-Z0-9_]{0,60}", v):
+            raise ValueError("api_key_env is the NAME of an environment variable (STUDIO_LLM_...) set for the service, not the key itself")
+        return v
+
+
+class DeliverySettings(_M):
+    """How the Director's delivery guidance is passed to each Qwen3-TTS model. The Base
+    (reference-cloning) model has no instruction input, so it is not configurable."""
+
+    custom_voice: Literal["instruct", "off"] = "instruct"
+    voice_design: Literal["append", "off"] = "append"
+    max_instruct_chars: int = Field(160, ge=40, le=400)
+
+
+class NarrativeSettings(_M):
+    semantic_segmentation: bool = False
+    max_segment_chars: int = Field(500, ge=80, le=1200)
+    min_segment_chars: int = Field(120, ge=0, le=600)
+    context_before_chars: int = Field(1250, ge=0, le=8000)
+    context_after_chars: int = Field(1250, ge=0, le=8000)
+    attribution_threshold: float = Field(0.6, ge=0.0, le=1.0)
+    emotion_sensitivity: float = Field(0.5, ge=0.0, le=1.0)
+    auto_character_tracking: bool = True
+    chapter_summaries: bool = True
+    tags_with_speaker: bool = False  # let a character voice read a short tag ("she said.") attached to their line
+    director_enabled: bool = False
+    director_lookahead: int = Field(12, ge=1, le=200)
+    continuity_smoothing: bool = True
+    smoothing_strength: float = Field(0.6, ge=0.0, le=1.0)
+    reset_scope: Literal["none", "scene", "chapter"] = "chapter"
+    cascade_limit: int = Field(24, ge=1, le=500)
+    verify_mode: Literal["every", "sample", "off"] = "every"
+    verify_sample_rate: float = Field(0.25, ge=0.0, le=1.0)
+    delivery: DeliverySettings = Field(default_factory=DeliverySettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+
+    @model_validator(mode="after")
+    def check_rules(self):
+        if self.min_segment_chars >= self.max_segment_chars:
+            raise ValueError("min_segment_chars must be smaller than max_segment_chars")
+        if self.director_enabled and not self.semantic_segmentation:
+            raise ValueError("The Narrative Director needs semantic segmentation (it works on source offsets and speakers)")
+        return self
+
+    @property
+    def total_context_chars(self) -> int:
+        return self.context_before_chars + self.context_after_chars
+
+
 class Settings(_M):
     version: int = 1
+    narrative: NarrativeSettings = Field(default_factory=NarrativeSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     chunking: ChunkSettings = Field(default_factory=ChunkSettings)
     qa: QASettings = Field(default_factory=QASettings)
@@ -2411,6 +2517,11 @@ def merge_patch(base: dict, patch: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+def effective_narrative(settings: Settings, overrides: dict | None) -> NarrativeSettings:
+    """Global narrative defaults with a project's overrides merged on top."""
+    return NarrativeSettings.model_validate(merge_patch(settings.narrative.model_dump(mode="json"), overrides or {}))
 
 
 def book_snapshot(settings: Settings) -> dict:
@@ -2447,7 +2558,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_6fb3508ffe70__
+__STUDIO_EOF_2f3629afdbf9__
 cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_fb2d7cc67992__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
@@ -2581,7 +2692,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     root.addHandler(fh)
     root.addHandler(sh)
 __STUDIO_EOF_fb2d7cc67992__
-cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_0fbb1a612ba5__'
+cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_be4c41185c85__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
 
@@ -2845,9 +2956,200 @@ CREATE TABLE IF NOT EXISTS imports (
 );
 """
 
+# v0.3.0: semantic segmentation, narrative director and per-manuscript story context.
+# The jobs table is rebuilt only to widen its CHECK constraint with the 'analyze' kind
+# (SQLite cannot alter a CHECK); migrate() disables foreign keys around it and re-verifies them.
+SCHEMA_V2 = """
+CREATE TABLE jobs_v2 (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('book','preview','assemble','export','analyze')),
+    book_id INTEGER REFERENCES books(id),
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('queued','running','paused','completed','failed','cancelled')),
+    position REAL NOT NULL DEFAULT 0,
+    pause_requested INTEGER NOT NULL DEFAULT 0,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    paused_reason TEXT,
+    error TEXT,
+    retries INTEGER NOT NULL DEFAULT 0,
+    consecutive_errors INTEGER NOT NULL DEFAULT 0,
+    current_segment_sid TEXT,
+    result_json TEXT,
+    created_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL,
+    updated_at REAL NOT NULL
+);
+INSERT INTO jobs_v2 (id, kind, book_id, payload_json, status, position, pause_requested, cancel_requested, paused_reason, error,
+                     retries, consecutive_errors, current_segment_sid, result_json, created_at, started_at, finished_at, updated_at)
+    SELECT id, kind, book_id, payload_json, status, position, pause_requested, cancel_requested, paused_reason, error,
+           retries, consecutive_errors, current_segment_sid, result_json, created_at, started_at, finished_at, updated_at FROM jobs;
+DROP TABLE jobs;
+ALTER TABLE jobs_v2 RENAME TO jobs;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_one_active_book_job ON jobs(book_id)
+    WHERE kind = 'book' AND status IN ('queued','running','paused');
+CREATE UNIQUE INDEX IF NOT EXISTS ux_one_active_analyze_job ON jobs(book_id)
+    WHERE kind = 'analyze' AND status IN ('queued','running','paused');
+CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status, kind, position);
+
+ALTER TABLE books ADD COLUMN narrative_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE segments ADD COLUMN src_start INTEGER;
+ALTER TABLE segments ADD COLUMN src_end INTEGER;
+ALTER TABLE segments ADD COLUMN character_id INTEGER;
+ALTER TABLE segments ADD COLUMN span_kind TEXT NOT NULL DEFAULT 'narration';
+ALTER TABLE segments ADD COLUMN scene_idx INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN voice_override_id INTEGER;
+ALTER TABLE segments ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE segments ADD COLUMN review_reason TEXT;
+ALTER TABLE segments ADD COLUMN boundary_manual INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attempts ADD COLUMN gen_key TEXT;
+ALTER TABLE attempts ADD COLUMN instruct_used TEXT;
+ALTER TABLE attempts ADD COLUMN delivery_applied INTEGER;
+ALTER TABLE attempts ADD COLUMN voice_id_used INTEGER;
+ALTER TABLE attempts ADD COLUMN asr_skipped INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS ix_segments_char ON segments(character_id);
+
+CREATE TABLE chapter_text (
+    chapter_id INTEGER PRIMARY KEY REFERENCES chapters(id),
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    text TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    meta_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE characters (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    uid TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'character' CHECK (kind IN ('narrator','character')),
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    gender TEXT NOT NULL DEFAULT '',
+    voice_id INTEGER REFERENCES voices(id),
+    voice_version_id INTEGER REFERENCES voice_versions(id),
+    voice_description TEXT NOT NULL DEFAULT '',
+    accent TEXT NOT NULL DEFAULT '',
+    speech_pattern TEXT NOT NULL DEFAULT '',
+    personality TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    relationships_json TEXT NOT NULL DEFAULT '[]',
+    delivery_pref TEXT NOT NULL DEFAULT '',
+    prov_json TEXT NOT NULL DEFAULT '{}',
+    merged_into INTEGER,
+    archived INTEGER NOT NULL DEFAULT 0,
+    first_chapter INTEGER,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_characters_book ON characters(book_id);
+CREATE TABLE nar_spans (
+    id INTEGER PRIMARY KEY,
+    uid TEXT NOT NULL UNIQUE,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id),
+    para_idx INTEGER NOT NULL,
+    idx INTEGER NOT NULL,
+    start INTEGER NOT NULL,
+    "end" INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    speaker_id INTEGER,
+    guess_id INTEGER,
+    attribution TEXT NOT NULL DEFAULT 'none',
+    confidence REAL NOT NULL DEFAULT 0,
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    evidence TEXT NOT NULL DEFAULT '',
+    candidates_json TEXT NOT NULL DEFAULT '[]',
+    scene_idx INTEGER NOT NULL DEFAULT 0,
+    cues_json TEXT NOT NULL DEFAULT '{}',
+    user_locked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_spans_chapter ON nar_spans(chapter_id, start);
+CREATE TABLE story_notes (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_idx INTEGER,
+    scene_idx INTEGER,
+    kind TEXT NOT NULL,
+    character_id INTEGER,
+    text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 1,
+    confirmed INTEGER NOT NULL DEFAULT 0,
+    refs_json TEXT NOT NULL DEFAULT '[]',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_notes_book ON story_notes(book_id, kind);
+CREATE TABLE directions (
+    id INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL UNIQUE REFERENCES segments(id),
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    source TEXT NOT NULL,
+    raw_json TEXT NOT NULL,
+    smoothed_json TEXT NOT NULL DEFAULT '{}',
+    user_json TEXT NOT NULL DEFAULT '{}',
+    final_json TEXT NOT NULL,
+    smoothing_note TEXT NOT NULL DEFAULT '',
+    needs_review INTEGER NOT NULL DEFAULT 0,
+    cache_key TEXT,
+    input_hash TEXT,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    stale INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_directions_book ON directions(book_id);
+CREATE TABLE direction_log (
+    id INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_dirlog_segment ON direction_log(segment_id, id);
+CREATE TABLE director_cache (
+    key TEXT PRIMARY KEY,
+    response_json TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    hits INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+CREATE TABLE seg_edits (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id),
+    kind TEXT NOT NULL CHECK (kind IN ('cut','join')),
+    offset INTEGER NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'operator',
+    created_at REAL NOT NULL,
+    UNIQUE (chapter_id, kind, offset)
+);
+CREATE TABLE segment_history (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL,
+    chapter_id INTEGER NOT NULL,
+    sid TEXT NOT NULL,
+    src_start INTEGER,
+    src_end INTEGER,
+    text TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    retired_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_seghist_chapter ON segment_history(chapter_id);
+CREATE TABLE analysis_stages (
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at REAL,
+    finished_at REAL,
+    error TEXT,
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (book_id, stage)
+);
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
+    (2, SCHEMA_V2),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 
@@ -2908,6 +3210,9 @@ class Database:
             with self.session() as src, sqlite3.connect(str(dest)) as dst:
                 src.backup(dst)
         with self.session() as c:
+            # Table rebuilds need foreign keys off (a no-op inside a transaction); the
+            # integrity of every reference is verified before each commit instead.
+            c.execute("PRAGMA foreign_keys = OFF")
             for version, sql in MIGRATIONS:
                 if version <= current:
                     continue
@@ -2915,11 +3220,15 @@ class Database:
                 try:
                     for stmt in _split_sql(sql):
                         c.execute(stmt)
+                    bad = c.execute("PRAGMA foreign_key_check").fetchall()
+                    if bad:
+                        raise sqlite3.IntegrityError(f"migration {version} left {len(bad)} dangling foreign key reference(s)")
                     c.execute(f"PRAGMA user_version = {int(version)}")
                     c.execute("COMMIT")
                 except BaseException:
                     c.execute("ROLLBACK")
                     raise
+            c.execute("PRAGMA foreign_keys = ON")
         return current, LATEST_VERSION
 
 
@@ -2955,7 +3264,7 @@ def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), defau
 
 def copy_db_file(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
-__STUDIO_EOF_0fbb1a612ba5__
+__STUDIO_EOF_be4c41185c85__
 cat > "$DEST/studio/doctor.py" <<'__STUDIO_EOF_df299aa34968__'
 """Environment diagnostics shared by `studio doctor` and the About page."""
 from __future__ import annotations
@@ -3447,6 +3756,3231 @@ def create_asr(ctx) -> object:
         return MockASR()
     return MlxWhisperASR(s.models.asr_model, allow_downloads=s.models.allow_downloads)
 __STUDIO_EOF_9df2a6804c72__
+  mkdir -p "$DEST/studio/narrative"
+cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
+"""Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
+
+Module map
+  vocab        controlled emotion vocabulary and the lexical cue tables
+  structure    Pass 1  - paragraphs, scenes, dialogue spans, speaker attribution, cues
+  segmenter    Pass 2  - narration segments built from the Pass 1 structure
+  windows      narration window (spoken text) and narrative context window (analysis only)
+  llm          OpenAI-compatible chat client (no new dependencies)
+  director     Narrative Director: prompt, schema validation, rules fallback, leak guard
+  continuity   delivery continuity state and smoothing
+  delivery     translation of a direction into model-appropriate Qwen3-TTS inputs
+  cast         per-manuscript characters, aliases and story notes
+  store        persistence and orchestration (stages, edits, inspector, generation plan)
+  voicecheck   acoustic voice-consistency measurement across independently generated segments
+"""
+__STUDIO_EOF_6fc98fbc881d__
+cat > "$DEST/studio/narrative/analysis.py" <<'__STUDIO_EOF_c3a3ee251354__'
+"""Analysis stages that run in the worker, ahead of synthesis.
+
+Stage order: structure -> attribution (LLM, only for flagged spans) -> characters -> summaries ->
+segmentation -> director (+ continuity). Each stage persists its output, so a restart resumes
+where it stopped, and unchanged inputs are never re-analysed (the Director is cached by a key
+over text, context, profile, previous delivery, model and prompt version).
+"""
+from __future__ import annotations
+
+import re
+import time
+
+from ..config import NarrativeSettings
+from ..db import row, rows, scalar
+from ..util import dumps, loads, now, short_hash
+from . import cast as C
+from . import continuity as CT
+from . import director as D
+from . import store as ST
+from . import structure as S
+from . import vocab as V
+from . import windows as W
+from .llm import LLMClient, LLMError, extract_json
+
+
+def make_llm(ns: NarrativeSettings, transport=None) -> LLMClient:
+    return LLMClient(ns.llm, transport=transport)
+
+
+# --------------------------------------------------------------------- attribution (LLM)
+
+ATTR_SYSTEM = """You identify who speaks a quoted line in a novel, using ONLY the passage you are given.
+Reply with ONE JSON object: {"speaker": <a name from the cast list, or "UNKNOWN">, "confidence": <0-1>, "evidence": <a short VERBATIM quote from the passage that supports your answer>}.
+Rules: never invent a character; if the passage does not make the speaker clear, answer UNKNOWN. Do not pick someone just because they were mentioned most recently."""
+
+
+def _validate_attr(raw: dict, passage: str, names: dict[str, str]) -> dict:
+    sp = str(raw.get("speaker", "")).strip()
+    conf = max(0.0, min(0.85, float(raw.get("confidence", 0))))  # a model's own certainty is capped
+    if sp.upper() == "UNKNOWN" or not sp:
+        return {"speaker": None, "confidence": 0.0, "evidence": ""}
+    canon = names.get(sp.lower())
+    if not canon:
+        raise ValueError(f"'{sp}' is not in the cast list")
+    ev = str(raw.get("evidence", "")).strip()
+    if not ev or D._norm(ev) not in D._norm(passage):
+        raise ValueError("the evidence is not a verbatim quote from the passage")
+    return {"speaker": canon, "confidence": conf, "evidence": ev[:200]}
+
+
+def run_attribution(ctx, book_id: int, client: LLMClient, max_spans: int = 6) -> dict:
+    """Resolve flagged dialogue spans with the LLM. Returns counts; ``remaining`` is what is still untried."""
+    stats = {"tried": 0, "resolved": 0, "unknown": 0, "errors": 0}
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        ns = ST.book_ns(ctx, book)
+        chars = C.list_characters(conn, book_id)
+        todo = [r for r in rows(conn, "SELECT * FROM nar_spans WHERE book_id=? AND kind='dialogue' AND needs_review=1 AND user_locked=0 ORDER BY chapter_id, start", (book_id,))
+                if not loads(r["cues_json"], {}).get("llm_tried")][:max_spans]
+        remaining = scalar(conn, "SELECT COUNT(*) FROM nar_spans WHERE book_id=? AND kind='dialogue' AND needs_review=1 AND user_locked=0 AND cues_json NOT LIKE '%llm_tried%'", (book_id,), 0)
+    names = {}
+    for c in chars:
+        if c["kind"] == "narrator":
+            continue
+        for nm in {c["name"], *c["aliases"]}:
+            names[nm.lower()] = c["name"]
+    id_of = {c["name"]: c["id"] for c in chars}
+    for r in todo:
+        with ctx.db.session() as conn:
+            ct = row(conn, "SELECT text FROM chapter_text WHERE chapter_id=?", (r["chapter_id"],))["text"]
+        lo = max(0, r["start"] - min(ns.context_before_chars, 1500))
+        hi = min(len(ct), r["end"] + min(ns.context_after_chars, 600))
+        passage = ct[lo:r["start"]] + "<<<" + ct[r["start"]:r["end"]] + ">>>" + ct[r["end"]:hi]
+        user = f"Cast: {', '.join(sorted({c['name'] for c in chars if c['kind'] != 'narrator'}))}\n\nPassage (the line to attribute is between <<< and >>>):\n{passage}"
+        cues = loads(r["cues_json"], {})
+        cues["llm_tried"] = client.model_label
+        stats["tried"] += 1
+        try:
+            res = client.chat_json(ATTR_SYSTEM, user, lambda raw: _validate_attr(raw, passage, names))
+        except LLMError:
+            stats["errors"] += 1
+            with ctx.db.tx() as conn:
+                conn.execute("UPDATE nar_spans SET cues_json=? WHERE id=?", (dumps({**cues, "llm_tried": "error"}), r["id"]))
+            if stats["errors"] >= 2:
+                break
+            continue
+        with ctx.db.tx() as conn:
+            if res["speaker"] and res["confidence"] >= ns.attribution_threshold:
+                conn.execute("""UPDATE nar_spans SET speaker_id=?, attribution='llm', confidence=?, needs_review=0, evidence=?, cues_json=? WHERE id=?""",
+                             (id_of[res["speaker"]], res["confidence"], f"LLM ({client.model_label}): {res['evidence']}", dumps(cues), r["id"]))
+                stats["resolved"] += 1
+            else:
+                guess = id_of.get(res["speaker"]) if res["speaker"] else None
+                conn.execute("UPDATE nar_spans SET guess_id=COALESCE(?, guess_id), cues_json=? WHERE id=?", (guess, dumps(cues), r["id"]))
+                stats["unknown"] += 1
+    stats["remaining"] = max(0, remaining - stats["tried"])
+    return stats
+
+
+# -------------------------------------------------------------------------- summaries
+
+
+def _sentences(text: str) -> list[tuple[int, int]]:
+    from .segmenter import sentence_ranges
+
+    return sentence_ranges(text, 0)
+
+
+def run_summaries(ctx, book_id: int, client: LLMClient | None) -> dict:
+    """Extractive chapter and scene summaries: sentences copied verbatim from the chapter, with their
+    source offsets, so a summary can never contain an event that is not in the manuscript. When an
+    LLM is configured it may add an abstractive summary, which is stored as unconfirmed inference and
+    rejected if it names anything that does not occur in the chapter."""
+    made = skipped = rejected = 0
+    with ctx.db.session() as conn:
+        chapters = rows(conn, "SELECT c.id, c.idx, c.title, t.text, t.sha256, t.meta_json FROM chapters c JOIN chapter_text t ON t.chapter_id=c.id WHERE c.book_id=? ORDER BY c.idx", (book_id,))
+        have = {(r["chapter_idx"], r["scene_idx"], r["source"]): loads(r["refs_json"], []) for r in rows(conn, "SELECT chapter_idx, scene_idx, source, refs_json FROM story_notes WHERE book_id=? AND kind='summary'", (book_id,))}
+    for ch in chapters:
+        digest = ch["sha256"][:12]
+        meta = loads(ch["meta_json"], {})
+        text = ch["text"]
+        scene_starts = meta.get("scene_starts") or [0]
+        bounds = list(zip(scene_starts, scene_starts[1:] + [len(text)]))
+        notes = []
+        for sc, (a, b) in enumerate(bounds):
+            body = text[a:b]
+            sents = [(x + a, y + a) for x, y in _sentences(body) if y - x > 25]
+            if not sents:
+                continue
+            pick = [sents[0]]
+            if len(sents) > 2:
+                scored = max(sents[1:-1], key=lambda se: V.tension_score(text[se[0]:se[1]]) + len(V.cue_scores(text[se[0]:se[1]])))
+                pick.append(scored)
+            if len(sents) > 1:
+                pick.append(sents[-1])
+            quote = " … ".join(text[x:y] for x, y in sorted(set(pick)))[:900]
+            notes.append((sc, quote, [{"start": x, "end": y} for x, y in sorted(set(pick))]))
+        with ctx.db.tx() as conn:
+            if have.get((ch["idx"], 0, "extractive")) and have[(ch["idx"], 0, "extractive")][:1] == [{"sha": digest}]:
+                skipped += 1
+            else:
+                conn.execute("DELETE FROM story_notes WHERE book_id=? AND chapter_idx=? AND kind='summary' AND source='extractive'", (book_id, ch["idx"]))
+                for sc, quote, refs in notes:
+                    conn.execute("""INSERT INTO story_notes(book_id, chapter_idx, scene_idx, kind, text, source, confidence, confirmed, refs_json, created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?)""", (book_id, ch["idx"], sc, "summary", quote, "extractive", 1.0, 0, dumps([{"sha": digest}, *refs]), now()))
+                made += 1
+        if client is not None and client.enabled and not have.get((ch["idx"], None, "llm")):
+            try:
+                excerpt = text[:6000]
+                out = client.chat("Summarise the chapter excerpt in at most 3 sentences. Use only events stated in the text; never add events, names or motives. Reply as JSON: {\"summary\": str}.", excerpt)
+                summ = str(extract_json(out).get("summary", ""))
+            except (LLMError, ValueError):
+                summ = ""
+            caps = set(re.findall(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{2,})\b", summ))
+            if summ and all(c.lower() in text.lower() for c in caps):
+                with ctx.db.tx() as conn:
+                    conn.execute("""INSERT INTO story_notes(book_id, chapter_idx, scene_idx, kind, text, source, confidence, confirmed, refs_json, created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?)""", (book_id, ch["idx"], None, "summary", summ[:900], "llm", 0.6, 0, dumps([{"sha": digest}]), now()))
+            elif summ:
+                rejected += 1
+    return {"chapters": len(chapters), "made": made, "skipped": skipped, "rejected_llm": rejected}
+
+
+# --------------------------------------------------------------------------- director
+
+
+def segment_cues(conn, seg: dict) -> dict:
+    """Aggregate the Pass 1 cues of the spans a segment covers."""
+    best = None
+    explicit = False
+    tension = 0.0
+    for r in rows(conn, 'SELECT kind, cues_json FROM nar_spans WHERE chapter_id=? AND "end">? AND start<?', (seg["chapter_id"], seg["src_start"], seg["src_end"])):
+        c = loads(r["cues_json"], {})
+        if not c:
+            continue
+        explicit = explicit or bool(c.get("explicit"))
+        tension = max(tension, float(c.get("tension", 0)))
+        rank = (r["kind"] == "dialogue", int(c.get("intensity", 1)))
+        if best is None or rank > best[0]:
+            best = (rank, c)
+    out = dict(best[1]) if best else {"emotion": "neutral", "intensity": 1, "pace": "normal", "evidence": []}
+    out["explicit"], out["tension"] = explicit, tension
+    return out
+
+
+def _ordered(conn, book_id: int) -> list[dict]:
+    return rows(conn, """SELECT s.*, c.idx AS ch_idx FROM segments s JOIN chapters c ON c.id=s.chapter_id
+                         WHERE s.book_id=? ORDER BY c.idx, s.idx""", (book_id,))
+
+
+def _speaker_label(seg: dict, chars: dict[int, dict]) -> str | None:
+    if seg["character_id"] and seg["character_id"] in chars:
+        return chars[seg["character_id"]]["name"]
+    return None if seg["span_kind"] in ("dialogue", "mixed") else S.NARRATOR_NAME
+
+
+def _cache_fns(conn):
+    def get(key):
+        r = row(conn, "SELECT response_json FROM director_cache WHERE key=?", (key,))
+        if r:
+            conn.execute("UPDATE director_cache SET hits=hits+1 WHERE key=?", (key,))
+            return loads(r["response_json"], None)
+        return None
+
+    def put(key, d, model):
+        conn.execute("INSERT OR REPLACE INTO director_cache(key, response_json, model, hits, created_at) VALUES (?,?,?,0,?)", (key, dumps(d), model, now()))
+
+    return get, put
+
+
+def _smooth_and_store(conn, ctx, seg: dict, raw: dict, user: dict, state_in: dict, ns: NarrativeSettings, speaker: str, source: str, key: str | None, actor: str = "system") -> tuple[dict, dict]:
+    locked = any(k in user for k in ("emotion", "intensity"))
+    base = {**raw, **{k: user[k] for k in ("emotion", "intensity", "pacing", "tension") if k in user}} if locked else raw
+    smoothed, state_out, note, kind = CT.apply(base, state_in, speaker=speaker, scene=seg["scene_idx"], chapter=seg["ch_idx"], strength=ns.smoothing_strength,
+                                              enabled=ns.continuity_smoothing, reset_scope=ns.reset_scope, locked=locked)
+    final = CT.final_of(raw, smoothed, user)
+    final["continuity"] = kind
+    d = row(conn, "SELECT id FROM directions WHERE segment_id=?", (seg["id"],))
+    vals = (source, dumps(raw), dumps(smoothed), dumps(user), dumps(final), f"{kind}: {note}"[:400], 1 if raw.get("needs_review") else 0, key, dumps(state_out), now())
+    if d:
+        conn.execute("""UPDATE directions SET source=?, raw_json=?, smoothed_json=?, user_json=?, final_json=?, smoothing_note=?, needs_review=?, cache_key=COALESCE(?, cache_key),
+                            state_json=?, stale=0, updated_at=? WHERE segment_id=?""", (*vals, seg["id"]))
+    else:
+        conn.execute("""INSERT INTO directions(segment_id, book_id, source, raw_json, smoothed_json, user_json, final_json, smoothing_note, needs_review, cache_key, state_json, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (seg["id"], seg["book_id"], *vals))
+    conn.execute("INSERT INTO direction_log(segment_id, source, payload_json, actor, created_at) VALUES (?,?,?,?,?)",
+                 (seg["id"], source, dumps({"final": final, "note": note, "kind": kind}), actor, now()))
+    return final, state_out
+
+
+def director_batch(ctx, book_id: int, limit: int | None = None, client: LLMClient | None = None, redo_stale: bool = False) -> dict:
+    """Direct the next ``limit`` segments (in book order) that have no direction yet."""
+    t0 = time.time()
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        ns = ST.book_ns(ctx, book)
+    limit = limit or ns.director_lookahead
+    client = client if client is not None else make_llm(ns)
+    director = D.Director(client)
+    done = 0
+    with ctx.db.tx() as conn:
+        segs = _ordered(conn, book_id)
+        have = {r["segment_id"]: r for r in rows(conn, "SELECT segment_id, stale FROM directions WHERE book_id=?", (book_id,))}
+        chars = {c["id"]: c for c in C.list_characters(conn, book_id, include_archived=True)}
+        notes = rows(conn, "SELECT * FROM story_notes WHERE book_id=? ORDER BY id", (book_id,))
+        get, put = _cache_fns(conn)
+        order = [i for i, s in enumerate(segs) if s["id"] not in have or (redo_stale and have[s["id"]]["stale"])]
+        for i in order[:limit]:
+            seg = segs[i]
+            if seg["src_start"] is None:
+                continue
+            prev = segs[i - 1] if i > 0 else None
+            prev_dir = row(conn, "SELECT final_json, state_json FROM directions WHERE segment_id=?", (prev["id"],)) if prev else None
+            state_in = loads(prev_dir["state_json"], None) if prev_dir else None
+            state_in = state_in or CT.new_state()
+            ct = row(conn, "SELECT text, meta_json FROM chapter_text WHERE chapter_id=?", (seg["chapter_id"],))
+            meta = loads(ct["meta_json"], {})
+            ctxw = W.context_window(ct["text"], seg["src_start"], seg["src_end"], ns.context_before_chars, ns.context_after_chars, meta.get("scene_starts"))
+            label = _speaker_label(seg, chars)
+            ch = chars.get(seg["character_id"]) if seg["character_id"] else None
+            nxt = segs[i + 1] if i + 1 < len(segs) and segs[i + 1]["chapter_id"] == seg["chapter_id"] else None
+            up = None
+            if nxt is not None and nxt["src_start"] is not None:
+                nc = segment_cues(conn, nxt)
+                up = {"emotion": nc["emotion"], "intensity": nc["intensity"], "speaker": _speaker_label(nxt, chars)}
+            ch_notes = [n["text"][:500] for n in notes if n["chapter_idx"] == seg["ch_idx"] and n["kind"] == "summary" and n["scene_idx"] in (None, seg["scene_idx"])][:3]
+            ch_notes += [n["text"][:300] for n in notes if n["kind"] == "fact" and n["confirmed"]][:5]
+            existing = row(conn, "SELECT user_json FROM directions WHERE segment_id=?", (seg["id"],))
+            user = loads(existing["user_json"], {}) if existing else {}
+            hints = (ch["delivery_pref"] if ch else "") or ""
+            speaker_name = label or "Narrator"
+            p = {"sid": seg["sid"], "text": W.narration_window(seg["original_text"]), "kind": seg["span_kind"], "speaker": label, "voice_label": None,
+                 "chapter": {"index": seg["ch_idx"]}, "scene": seg["scene_idx"], "context": ctxw, "notes": ch_notes,
+                 "profile": C.profile_for_prompt(ch) if ch else {}, "prev": ({"speaker": _speaker_label(prev, chars), **loads(prev_dir["final_json"], {})} if prev_dir else None),
+                 "speaker_state": state_in["speakers"].get(speaker_name), "upcoming": up, "hints": hints, "sensitivity": ns.emotion_sensitivity,
+                 "cues": segment_cues(conn, seg), "cast_names": [c["name"] for c in chars.values() if not c["archived"]]}
+            if p["prev"]:
+                p["prev"] = {k: p["prev"].get(k) for k in ("speaker", "emotion", "intensity", "pacing", "delivery")}
+            raw, key = director.direct(p, get, put)
+            _smooth_and_store(conn, ctx, {**seg, "ch_idx": seg["ch_idx"]}, raw, user, state_in, ns, speaker_name, raw.get("source", "rules"), key)
+            done += 1
+        remaining = max(0, len(order) - done)
+        ST.set_stage(conn, book_id, "director", "done" if not remaining else "running",
+                     {"directed": scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=?", (book_id,), 0), "remaining": remaining,
+                      "model": director.model_label, **{k: _acc(conn, book_id, "director", k, v) for k, v in director.stats.items()},
+                      "seconds": round(_acc(conn, book_id, "director", "seconds", time.time() - t0), 3)})
+    return {"directed": done, "remaining": remaining, "seconds": round(time.time() - t0, 3), **director.stats}
+
+
+def _acc(conn, book_id: int, stage: str, key: str, add: float) -> float:
+    """Accumulate a counter in a stage's stats across batches."""
+    r = row(conn, "SELECT stats_json FROM analysis_stages WHERE book_id=? AND stage=?", (book_id, stage))
+    return (loads(r["stats_json"], {}).get(key, 0) if r else 0) + add
+
+
+def store_user_direction(conn, ctx, seg: dict, book: dict, user: dict, actor: str) -> None:
+    """Record the user's overrides; create the direction (from the rules engine) if the Director has not run."""
+    ns = ST.book_ns(ctx, book)
+    d = row(conn, "SELECT * FROM directions WHERE segment_id=?", (seg["id"],))
+    chars = {c["id"]: c for c in C.list_characters(conn, book["id"], include_archived=True)}
+    ch_idx = scalar(conn, "SELECT idx FROM chapters WHERE id=?", (seg["chapter_id"],), 1)
+    if d:
+        conn.execute("UPDATE directions SET user_json=?, updated_at=? WHERE segment_id=?", (dumps(user), now(), seg["id"]))
+        conn.execute("INSERT INTO direction_log(segment_id, source, payload_json, actor, created_at) VALUES (?,?,?,?,?)", (seg["id"], "user", dumps({"user": user}), actor, now()))
+        return
+    cues = segment_cues(conn, seg) if seg["src_start"] is not None else {}
+    raw = D.rules_direction(seg["sid"], _speaker_label(seg, chars), cues, ns.emotion_sensitivity, seg["original_text"])
+    _smooth_and_store(conn, ctx, {**seg, "ch_idx": ch_idx}, raw, user, CT.new_state(), ns, _speaker_label(seg, chars) or "Narrator", "user", None, actor)
+
+
+def recompute_from(ctx, book_id: int, segment_id: int) -> dict:
+    """Re-run continuity smoothing from one segment forward using the stored raw directions (no new
+    LLM calls). Stops as soon as a segment's result and state are unchanged, or at the cascade limit."""
+    with ctx.db.tx() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        ns = ST.book_ns(ctx, book)
+        segs = _ordered(conn, book_id)
+        chars = {c["id"]: c for c in C.list_characters(conn, book_id, include_archived=True)}
+        pos = next((i for i, s in enumerate(segs) if s["id"] == segment_id), None)
+        if pos is None:
+            return {"recomputed": 0, "changed": []}
+        prev = row(conn, "SELECT state_json FROM directions WHERE segment_id=?", (segs[pos - 1]["id"],)) if pos > 0 else None
+        state = (loads(prev["state_json"], None) if prev else None) or CT.new_state()
+        changed, count = [], 0
+        for i in range(pos, len(segs)):
+            seg = segs[i]
+            d = row(conn, "SELECT * FROM directions WHERE segment_id=?", (seg["id"],))
+            if not d:
+                break
+            if i - pos >= ns.cascade_limit:
+                conn.execute("UPDATE directions SET stale=1 WHERE segment_id=?", (seg["id"],))
+                break
+            raw, user = loads(d["raw_json"], {}), loads(d["user_json"], {})
+            before_final, before_state = d["final_json"], d["state_json"]
+            final, state = _smooth_and_store(conn, ctx, seg, raw, user, state, ns, _speaker_label(seg, chars) or "Narrator", d["source"], None)
+            count += 1
+            if dumps(final) != before_final:
+                changed.append(seg["id"])
+            if i > pos and dumps(final) == before_final and dumps(state) == before_state:
+                break
+        reset = ST.invalidate_changed(conn, ctx, book_id, only_ids=changed) if ns.director_enabled else []
+        ST.set_stage(conn, book_id, "continuity", "done", {"recomputed": count, "changed": len(changed), "audio_reset": len(reset)})
+    return {"recomputed": count, "changed": changed, "audio_reset": reset}
+
+
+# ----------------------------------------------------------------------- worker job
+
+
+def enqueue(ctx, book_id: int, stages: list[str] | None = None, rebuild: bool = False, confirm: bool = False) -> dict:
+    from ..services import NeedsConfirmation, ServiceError, get_job
+
+    stages = stages or list(ST.STAGES)
+    bad = [s for s in stages if s not in ST.STAGES]
+    if bad:
+        raise ServiceError(f"Unknown stage(s): {', '.join(bad)}", 422)
+    with ctx.db.tx() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=? AND archived=0", (book_id,))
+        if not b:
+            raise ServiceError("Book not found", 404)
+        existing = row(conn, "SELECT id FROM jobs WHERE book_id=? AND kind='analyze' AND status IN ('queued','running','paused')", (book_id,))
+        if existing:
+            return {**get_job(ctx, existing["id"]), "created": False}
+        legacy = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND src_start IS NULL", (book_id,), 0)
+        rendered = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND status<>'pending'", (book_id,), 0)
+        if legacy and not row(conn, "SELECT 1 FROM chapter_text WHERE book_id=? LIMIT 1", (book_id,)):
+            rebuild = True
+            if rendered and not confirm:
+                raise NeedsConfirmation(f"Converting this book to semantic segmentation re-cuts every segment; {rendered} rendered segment(s) would be regenerated "
+                                        "(their takes are kept as history, not reused).", {"rendered_segments": rendered})
+            ns_over = loads(b["narrative_json"], {})
+            ns_over["semantic_segmentation"] = True
+            conn.execute("UPDATE books SET narrative_json=? WHERE id=?", (dumps(ns_over), book_id))
+        jid = conn.execute("INSERT INTO jobs(kind, book_id, payload_json, status, position, created_at, updated_at) VALUES ('analyze',?,?, 'queued', 0, ?, ?)",
+                           (book_id, dumps({"stages": stages, "rebuild": rebuild, "progress": {}}), now(), now())).lastrowid
+        ctx.job_log(conn, jid, book_id, f"Analysis queued ({', '.join(stages)})")
+        ctx.event(conn, "analysis", f"Narrative analysis queued for '{b['title']}'", book_id)
+    return {**get_job(ctx, jid), "created": True}
+
+
+def analysis_step(ctx, job: dict, llm_transport=None) -> str:
+    """One bounded unit of analysis work. Returns 'continue' or 'done'. Called repeatedly by the worker, so
+    pause/cancel and other jobs are honoured between units."""
+    jid, bid = job["id"], job["book_id"]
+    p = loads(job["payload_json"], {})
+    prog = p.setdefault("progress", {})
+    stages = p.get("stages") or list(ST.STAGES)
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
+    ns = ST.book_ns(ctx, book)
+    client = make_llm(ns, llm_transport)
+    t0 = time.time()
+
+    def save(msg: str | None = None):
+        with ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET payload_json=?, status=CASE WHEN status='queued' THEN 'running' ELSE status END, started_at=COALESCE(started_at, ?), updated_at=? WHERE id=?",
+                         (dumps(p), now(), now(), jid))
+            if msg:
+                ctx.job_log(conn, jid, bid, msg)
+
+    def stage(name: str, status: str, stats: dict | None = None, error: str | None = None):
+        with ctx.db.tx() as conn:
+            ST.set_stage(conn, bid, name, status, stats, error)
+
+    try:
+        if p.get("rebuild") and not prog.get("structure"):
+            stage("structure", "running")
+            r = ST.rebuild_structure(ctx, bid)
+            prog["structure"] = True
+            prog["structure_seconds"] = r["seconds"]
+            save(f"Pass 1 complete in {r['seconds']}s; {r['review']} dialogue span(s) need review")
+            return "continue"
+        if "attribution" in stages and not prog.get("attribution") and client.enabled:
+            stage("attribution", "running")
+            r = run_attribution(ctx, bid, client)
+            stage("attribution", "running" if r["remaining"] else "done", r)
+            if r["remaining"] and r["tried"]:
+                save(f"LLM attribution: {r['resolved']} resolved, {r['unknown']} left for review ({r['remaining']} to go)")
+                return "continue"
+            prog["attribution"] = True
+            prog["resegment"] = False
+        elif "attribution" in stages and not client.enabled and not prog.get("attribution"):
+            stage("attribution", "skipped", {"reason": "no LLM configured; flagged speakers stay flagged for review"})
+            prog["attribution"] = True
+        if "segmentation" in stages and not prog.get("resegment"):
+            stage("segmentation", "running")
+            r = ST.resegment_book(ctx, bid)
+            with ctx.db.tx() as conn:
+                reset = ST.invalidate_changed(conn, ctx, bid)
+            prog["resegment"] = True
+            prog["reset"] = len(reset)
+            save(f"Pass 2: {r['kept']} segment(s) unchanged, {r['created']} new, {r['retired']} retired; {len(reset)} regenerated for voice changes")
+            return "continue"
+        if "summaries" in stages and ns.chapter_summaries and not prog.get("summaries"):
+            stage("summaries", "running")
+            r = run_summaries(ctx, bid, client if client.enabled else None)
+            stage("summaries", "done", r)
+            prog["summaries"] = True
+            save(f"Summaries: {r['made']} chapter(s) summarised, {r['skipped']} unchanged")
+            return "continue"
+        if "director" in stages and ns.director_enabled:
+            r = director_batch(ctx, bid, ns.director_lookahead, client)
+            prog["directed"] = prog.get("directed", 0) + r["directed"]
+            if r["directed"]:
+                save(f"Director: {prog['directed']} segment(s) directed ({r['cache_hits']} cached, {r['llm_calls']} LLM calls, {r['rules']} rules)")
+            if r["remaining"] and r["directed"]:
+                return "continue"
+        elif "director" in stages:
+            stage("director", "skipped", {"reason": "Narrative Director is off for this book"})
+        with ctx.db.tx() as conn:
+            res = {"stages": {x["stage"]: x["status"] for x in rows(conn, "SELECT stage, status FROM analysis_stages WHERE book_id=?", (bid,))}, "progress": prog}
+            conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(res), now(), now(), jid))
+            ctx.job_log(conn, jid, bid, "Analysis finished")
+            ctx.event(conn, "analysis", f"Narrative analysis finished for '{book['title']}'", bid)
+        return "done"
+    except Exception as exc:
+        with ctx.db.tx() as conn:
+            ST.set_stage(conn, bid, "director" if prog.get("resegment") else "structure", "error", None, f"{type(exc).__name__}: {exc}"[:400])
+        raise
+__STUDIO_EOF_c3a3ee251354__
+cat > "$DEST/studio/narrative/cast.py" <<'__STUDIO_EOF_cf297e52cdeb__'
+"""Per-manuscript characters and story notes.
+
+Every inferred fact carries provenance (``rules`` / ``llm`` / ``user``), a confidence and a
+``confirmed`` flag. A field the user has set or confirmed is never overwritten by analysis.
+Merging two identities re-points their dialogue and keeps the old name as an alias, so a
+recurring character is not split into new speakers when their name or title changes.
+"""
+from __future__ import annotations
+
+from ..db import row, rows
+from ..util import dumps, loads, new_uid, now
+from .structure import NARRATOR_NAME, Cast, KnownCharacter
+
+TEXT_FIELDS = ("gender", "voice_description", "accent", "speech_pattern", "personality", "description", "delivery_pref")
+
+
+def _err(message: str, status: int = 400, details=None):
+    from ..services import ServiceError
+
+    return ServiceError(message, status, details)
+
+
+def parse_char(r: dict) -> dict:
+    out = dict(r)
+    out["aliases"] = loads(out.pop("aliases_json"), []) or []
+    out["relationships"] = loads(out.pop("relationships_json"), []) or []
+    out["prov"] = loads(out.pop("prov_json"), {}) or {}
+    return out
+
+
+def set_prov(prov: dict, field: str, source: str, confidence: float = 1.0, confirmed: bool = False) -> None:
+    prov[field] = {"source": source, "confidence": round(float(confidence), 2), "confirmed": bool(confirmed)}
+
+
+def is_confirmed(prov: dict, field: str) -> bool:
+    return bool((prov.get(field) or {}).get("confirmed"))
+
+
+def list_characters(conn, book_id: int, include_archived: bool = False) -> list[dict]:
+    q = "SELECT * FROM characters WHERE book_id=?" + ("" if include_archived else " AND archived=0") + " ORDER BY (kind='narrator') DESC, id"
+    chars = [parse_char(r) for r in rows(conn, q, (book_id,))]
+    lines = {r["character_id"]: r for r in rows(
+        conn, """SELECT character_id, COUNT(*) segs, SUM(LENGTH(original_text)) chars, SUM(needs_review) review,
+                        MIN(chapter_id) first_ch FROM segments WHERE book_id=? AND character_id IS NOT NULL GROUP BY character_id""", (book_id,))}
+    voices = {r["id"]: r for r in rows(conn, "SELECT id, name, kind FROM voices")}
+    for c in chars:
+        st = lines.get(c["id"], {})
+        c["segments"], c["characters_spoken"], c["review_count"] = st.get("segs", 0) or 0, st.get("chars", 0) or 0, st.get("review", 0) or 0
+        v = voices.get(c["voice_id"])
+        c["voice"] = {"id": v["id"], "name": v["name"], "kind": v["kind"]} if v else None
+    return chars
+
+
+def known_for_analysis(conn, book_id: int) -> list[KnownCharacter]:
+    out = []
+    for r in rows(conn, "SELECT * FROM characters WHERE book_id=? AND archived=0 AND merged_into IS NULL", (book_id,)):
+        c = parse_char(r)
+        out.append(KnownCharacter(name=c["name"], aliases=c["aliases"], gender=c["gender"], kind=c["kind"], id=c["id"]))
+    return out
+
+
+def ensure_narrator(conn, book_id: int) -> int:
+    r = row(conn, "SELECT id FROM characters WHERE book_id=? AND kind='narrator' AND archived=0", (book_id,))
+    if r:
+        return r["id"]
+    return conn.execute(
+        "INSERT INTO characters(book_id, uid, name, kind, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+        (book_id, new_uid("ch"), NARRATOR_NAME, "narrator", now(), now())).lastrowid
+
+
+def sync_cast(conn, book_id: int, cast: Cast, chapter_idx: int | None = None) -> dict[str, int]:
+    """Create/update character rows from the analysis cast. -> {entry name: character id}."""
+    existing = [parse_char(r) for r in rows(conn, "SELECT * FROM characters WHERE book_id=? AND archived=0", (book_id,))]
+    by_id = {c["id"]: c for c in existing}
+    by_name = {}
+    for c in existing:
+        for nm in {c["name"], *c["aliases"]}:
+            by_name.setdefault(nm.lower(), c)
+    mapping: dict[str, int] = {}
+    for e in cast.entries.values():
+        c = by_id.get(e.id) if e.id else None
+        if c is None:
+            c = by_name.get(e.name.lower()) or next((by_name[a.lower()] for a in e.aliases if a.lower() in by_name), None)
+        if e.kind == "narrator":
+            mapping[e.name] = ensure_narrator(conn, book_id)
+            continue
+        if c is None:
+            prov = {}
+            if e.gender:
+                set_prov(prov, "gender", "rules", 0.5)
+            set_prov(prov, "name", "rules", 0.8)
+            cid = conn.execute(
+                """INSERT INTO characters(book_id, uid, name, kind, aliases_json, gender, prov_json, first_chapter, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (book_id, new_uid("ch"), e.name, "character", dumps(sorted(e.aliases)), e.gender, dumps(prov), chapter_idx, now(), now())).lastrowid
+            mapping[e.name] = cid
+            by_name[e.name.lower()] = {"id": cid, "name": e.name, "aliases": sorted(e.aliases)}
+            continue
+        prov = c["prov"]
+        aliases = list(c["aliases"])
+        for a in sorted(e.aliases | ({e.name} if e.name != c["name"] else set())):
+            if a != c["name"] and a not in aliases:
+                aliases.append(a)
+        sets = {"aliases_json": dumps(aliases)}
+        if e.gender and not c["gender"] and not is_confirmed(prov, "gender"):
+            sets["gender"] = e.gender
+            set_prov(prov, "gender", "rules", 0.5)
+        if e.name != c["name"] and not is_confirmed(prov, "name") and not e.known:
+            if c["name"] not in aliases:
+                aliases.append(c["name"])
+            sets.update({"name": e.name, "aliases_json": dumps([a for a in aliases if a != e.name])})
+        sets["prov_json"] = dumps(prov)
+        conn.execute(f"UPDATE characters SET {', '.join(k + '=?' for k in sets)}, updated_at=? WHERE id=?", (*sets.values(), now(), c["id"]))
+        mapping[e.name] = c["id"]
+    return mapping
+
+
+def create_character(ctx, book_id: int, name: str, actor: str = "operator") -> dict:
+    name = " ".join((name or "").split())
+    if not 1 <= len(name) <= 80:
+        raise _err("Enter a character name (1-80 characters).", 422)
+    with ctx.db.tx() as conn:
+        if not row(conn, "SELECT id FROM books WHERE id=?", (book_id,)):
+            raise _err("Book not found", 404)
+        for c in rows(conn, "SELECT name, aliases_json FROM characters WHERE book_id=? AND archived=0", (book_id,)):
+            if name.lower() == c["name"].lower() or name.lower() in [a.lower() for a in loads(c["aliases_json"], [])]:
+                raise _err(f"'{name}' already exists as a character or alias.", 409)
+        prov = {}
+        set_prov(prov, "name", "user", 1.0, True)
+        cid = conn.execute("INSERT INTO characters(book_id, uid, name, prov_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                           (book_id, new_uid("ch"), name, dumps(prov), now(), now())).lastrowid
+        ctx.audit(conn, "character", cid, "create", {"name": name}, actor)
+        return parse_char(row(conn, "SELECT * FROM characters WHERE id=?", (cid,)))
+
+
+def get_character(conn, character_id: int) -> dict:
+    r = row(conn, "SELECT * FROM characters WHERE id=?", (character_id,))
+    if not r:
+        raise _err("Character not found", 404)
+    return parse_char(r)
+
+
+def apply_patch(ctx, conn, character_id: int, patch: dict, actor: str = "operator") -> tuple[dict, bool]:
+    """Apply user edits (confirmed, never overwritten by analysis). -> (updated character, voice_changed)."""
+    c = get_character(conn, character_id)
+    if c["archived"]:
+        raise _err("This character was merged into another one.", 409)
+    prov = c["prov"]
+    sets: dict = {}
+    voice_changed = False
+    if "name" in patch and patch["name"] is not None:
+        nm = " ".join(str(patch["name"]).split())
+        if not 1 <= len(nm) <= 80:
+            raise _err("Name must be 1-80 characters.", 422)
+        if c["kind"] == "narrator":
+            raise _err("The narrator's name cannot be changed.", 422)
+        if nm != c["name"]:
+            clash = row(conn, "SELECT id FROM characters WHERE book_id=? AND id<>? AND archived=0 AND LOWER(name)=LOWER(?)", (c["book_id"], c["id"], nm))
+            if clash:
+                raise _err(f"Another character is already named '{nm}'. Merge them instead.", 409)
+            sets["name"] = nm
+            aliases = [a for a in c["aliases"] if a.lower() != nm.lower()] + [c["name"]]
+            sets["aliases_json"] = dumps(aliases)
+            c["aliases"] = aliases
+            set_prov(prov, "name", "user", 1.0, True)
+    if "aliases" in patch and patch["aliases"] is not None:
+        al = []
+        for a in patch["aliases"]:
+            a = " ".join(str(a).split())
+            if a and a.lower() != sets.get("name", c["name"]).lower() and a.lower() not in [x.lower() for x in al]:
+                if len(a) > 80:
+                    raise _err("Aliases must be at most 80 characters.", 422)
+                other = row(conn, "SELECT id FROM characters WHERE book_id=? AND id<>? AND archived=0 AND (LOWER(name)=LOWER(?) OR aliases_json LIKE ?)",
+                            (c["book_id"], c["id"], a, f'%"{a}"%'))
+                if other:
+                    raise _err(f"'{a}' already belongs to another character; merge the characters instead.", 409)
+                al.append(a)
+        sets["aliases_json"] = dumps(al[:30])
+        set_prov(prov, "aliases", "user", 1.0, True)
+    for f in TEXT_FIELDS:
+        if f in patch and patch[f] is not None:
+            v = " ".join(str(patch[f]).split())[:600]
+            if f == "gender" and v not in ("", "male", "female", "neutral"):
+                raise _err("gender must be male, female, neutral or empty", 422)
+            if v != c[f]:
+                sets[f] = v
+            set_prov(prov, f, "user", 1.0, True)
+    if "relationships" in patch and patch["relationships"] is not None:
+        rel = [{"with": str(x.get("with", ""))[:80], "kind": str(x.get("kind", ""))[:80]} for x in patch["relationships"] if isinstance(x, dict)][:30]
+        sets["relationships_json"] = dumps(rel)
+        set_prov(prov, "relationships", "user", 1.0, True)
+    if "voice_id" in patch:
+        if c["kind"] == "narrator":
+            raise _err("The narrator uses the book's narrator voice. Change it from the book's narrator settings.", 422)
+        vid = patch["voice_id"]
+        if vid in (None, 0):
+            if c["voice_id"] is not None:
+                voice_changed = True
+            sets.update({"voice_id": None, "voice_version_id": None})
+        else:
+            v = row(conn, "SELECT * FROM voices WHERE id=? AND archived=0", (vid,))
+            if not v:
+                raise _err("Voice not found", 404)
+            if c["voice_id"] != vid or c["voice_version_id"] != v["current_version_id"]:
+                voice_changed = True
+            sets.update({"voice_id": vid, "voice_version_id": v["current_version_id"]})
+        set_prov(prov, "voice", "user", 1.0, True)
+    if sets or prov != c["prov"]:
+        sets["prov_json"] = dumps(prov)
+        conn.execute(f"UPDATE characters SET {', '.join(k + '=?' for k in sets)}, updated_at=? WHERE id=?", (*sets.values(), now(), character_id))
+        ctx.audit(conn, "character", character_id, "update", {k: v for k, v in patch.items()}, actor)
+    return get_character(conn, character_id), voice_changed
+
+
+def merge_into(ctx, conn, src_id: int, dst_id: int, actor: str = "operator") -> dict:
+    """Fold ``src`` into ``dst``: dialogue, segments and aliases move; src is archived (kept for audit)."""
+    if src_id == dst_id:
+        raise _err("Choose a different character to merge into.", 422)
+    src, dst = get_character(conn, src_id), get_character(conn, dst_id)
+    if src["book_id"] != dst["book_id"]:
+        raise _err("Characters belong to different books.", 422)
+    if src["kind"] == "narrator":
+        raise _err("The narrator cannot be merged into a character.", 422)
+    if src["archived"] or dst["archived"]:
+        raise _err("One of these characters was already merged.", 409)
+    aliases = list(dst["aliases"])
+    for a in [src["name"], *src["aliases"]]:
+        if a.lower() != dst["name"].lower() and a.lower() not in [x.lower() for x in aliases]:
+            aliases.append(a)
+    prov = dst["prov"]
+    set_prov(prov, "aliases", "user", 1.0, True)
+    sets = {"aliases_json": dumps(aliases), "prov_json": dumps(prov)}
+    for f in TEXT_FIELDS:
+        if not dst[f] and src[f]:
+            sets[f] = src[f]
+            prov[f] = src["prov"].get(f, prov.get(f, {"source": "user", "confidence": 1.0, "confirmed": True}))
+    sets["prov_json"] = dumps(prov)
+    if dst["voice_id"] is None and src["voice_id"] is not None and dst["kind"] != "narrator":
+        sets.update({"voice_id": src["voice_id"], "voice_version_id": src["voice_version_id"]})
+    conn.execute(f"UPDATE characters SET {', '.join(k + '=?' for k in sets)}, updated_at=? WHERE id=?", (*sets.values(), now(), dst_id))
+    n_seg = conn.execute("UPDATE segments SET character_id=? WHERE character_id=?", (dst_id, src_id)).rowcount
+    n_span = conn.execute("UPDATE nar_spans SET speaker_id=? WHERE speaker_id=?", (dst_id, src_id)).rowcount
+    conn.execute("UPDATE nar_spans SET guess_id=? WHERE guess_id=?", (dst_id, src_id))
+    conn.execute("UPDATE story_notes SET character_id=? WHERE character_id=?", (dst_id, src_id))
+    conn.execute("UPDATE characters SET merged_into=?, archived=1, updated_at=? WHERE id=?", (dst_id, now(), src_id))
+    ctx.audit(conn, "character", dst_id, "merge", {"from": src_id, "from_name": src["name"], "segments": n_seg, "spans": n_span}, actor)
+    return get_character(conn, dst_id)
+
+
+def profile_for_prompt(c: dict) -> dict:
+    """The character profile as the Director sees it: user-confirmed facts first, inferred ones labelled."""
+    prof = {"name": c["name"], "aliases": c["aliases"][:8]}
+    confirmed, inferred = {}, {}
+    for f in (*TEXT_FIELDS, "relationships"):
+        v = c.get(f)
+        if not v:
+            continue
+        (confirmed if is_confirmed(c["prov"], f) else inferred)[f] = v
+    if confirmed:
+        prof["confirmed"] = confirmed
+    if inferred:
+        prof["inferred_unconfirmed"] = inferred
+    return prof
+__STUDIO_EOF_cf297e52cdeb__
+cat > "$DEST/studio/narrative/continuity.py" <<'__STUDIO_EOF_29cef5adfd5e__'
+"""Cross-segment emotional continuity.
+
+A *delivery continuity state* is kept per speaker (and read per scene). It is a lightweight record -
+last emotion, intensity, pacing and tension of that speaker - that biases the next direction without
+locking the character into an emotion:
+
+* an unsupported return to neutral after a strong emotion decays instead of snapping back;
+* intensity moves by a bounded step unless the manuscript signals an abrupt change;
+* an escalating scene (rising tension, same emotion family) is allowed to keep climbing;
+* abrupt changes the manuscript supports (a shout, a revelation) are never smoothed away;
+* scene and chapter boundaries reset or decay the state (setting ``reset_scope``).
+
+Smoothing is deterministic and keeps the raw direction alongside the smoothed one, so every
+adjustment is auditable.
+"""
+from __future__ import annotations
+
+from . import vocab as V
+
+FIELDS = ("emotion", "intensity", "pacing", "tension")
+
+
+def new_state() -> dict:
+    return {"speakers": {}, "scene": None, "chapter": None}
+
+
+def _step_toward(cur: str, target: str) -> str:
+    a, b = V.PACINGS.index(cur), V.PACINGS.index(target)
+    return V.PACINGS[a + (1 if b > a else -1)] if a != b else cur
+
+
+def apply(raw: dict, state: dict, *, speaker: str, scene: int, chapter: int, strength: float, enabled: bool, reset_scope: str,
+          locked: bool = False) -> tuple[dict, dict, str, str]:
+    """Smooth one raw direction against the running state.
+
+    -> (smoothed fields, new state, note, kind) where kind is one of
+       ``first`` | ``unchanged`` | ``intentional`` | ``smoothed`` | ``reset`` | ``user``.
+    The returned state is a new dict; the input state is not mutated."""
+    st = {"speakers": {k: dict(v) for k, v in state.get("speakers", {}).items()}, "scene": scene, "chapter": chapter}
+    note, kind = "", "first"
+    out = {k: raw[k] for k in FIELDS}
+    chapter_changed = state.get("chapter") is not None and state.get("chapter") != chapter
+    scene_changed = state.get("scene") is not None and state.get("scene") != scene and not chapter_changed
+    if (chapter_changed and reset_scope in ("scene", "chapter")) or (scene_changed and reset_scope == "scene"):
+        st["speakers"] = {}
+        note, kind = ("state reset at a chapter start" if chapter_changed else "state reset at a scene break"), "reset"
+    elif scene_changed and reset_scope == "chapter":
+        for v in st["speakers"].values():  # a new scene: emotions fade but do not vanish
+            v["intensity"] = max(1, int(v["intensity"]) - 1)
+    prev = st["speakers"].get(speaker)
+
+    if locked:
+        kind, note = "user", "user override; used as-is and as the new state"
+    elif not enabled or prev is None:
+        if prev is None and kind != "reset":
+            note, kind = "first delivery for this speaker in the current span", "first"
+    else:
+        support = bool(raw.get("support"))
+        s = max(0.0, min(1.0, strength))
+        limit = max(1, round(4 - 3 * s))
+        if support and raw["emotion"] != prev["emotion"]:
+            kind, note = "intentional", f"kept {prev['emotion']}->{raw['emotion']}: the text signals the change"
+        else:
+            changes = []
+            # 1. do not fall to neutral without a reason
+            if raw["emotion"] in ("neutral", "calm") and prev["emotion"] not in ("neutral", "calm") and int(prev["intensity"]) >= 3 and not support:
+                out["emotion"] = prev["emotion"]
+                out["intensity"] = max(int(raw["intensity"]), int(prev["intensity"]) - 1)
+                changes.append(f"carried {prev['emotion']} (was {prev['intensity']}) instead of dropping to {raw['emotion']}")
+            # 2. bounded intensity step
+            tgt = int(out["intensity"])
+            if not support and abs(tgt - int(prev["intensity"])) > limit:
+                tgt = int(prev["intensity"]) + (limit if tgt > int(prev["intensity"]) else -limit)
+                changes.append(f"intensity step limited to {limit}")
+            # 3. escalation keeps climbing
+            if (out["emotion"] == prev["emotion"] and int(raw["tension"]) > int(prev["tension"])
+                    and tgt <= int(prev["intensity"]) and out["emotion"] not in ("neutral", "calm")):
+                tgt = min(5, int(prev["intensity"]) + 1)
+                changes.append("tension is rising, so intensity continues to build")
+            out["intensity"] = V.clamp_intensity(tgt)
+            # 4. pacing moves one notch at a time
+            if not support and raw["pacing"] != prev["pacing"] and abs(V.PACINGS.index(raw["pacing"]) - V.PACINGS.index(prev["pacing"])) > 1:
+                out["pacing"] = _step_toward(prev["pacing"], raw["pacing"])
+                changes.append("pacing eased one step")
+            if changes:
+                kind, note = "smoothed", "; ".join(changes)
+            else:
+                kind, note = "unchanged", "consistent with the previous delivery"
+    st["speakers"][speaker] = {**{k: out[k] for k in FIELDS}, "scene": scene}
+    return out, st, note, kind
+
+
+def final_of(raw: dict, smoothed: dict, user: dict) -> dict:
+    """Effective direction: user override > smoothed > raw. Free-text delivery comes from the user or the raw reply."""
+    f = {k: smoothed.get(k, raw.get(k)) for k in FIELDS}
+    f["delivery"] = raw.get("delivery", "")
+    for k, v in (user or {}).items():
+        if v not in (None, ""):
+            f[k] = v
+    return f
+__STUDIO_EOF_29cef5adfd5e__
+cat > "$DEST/studio/narrative/delivery.py" <<'__STUDIO_EOF_708bc7550271__'
+"""Translate a final direction into inputs a given Qwen3-TTS model actually accepts.
+
+Verified against mlx-audio 0.6.3 (``mlx_audio/tts/models/qwen3_tts/qwen3_tts.py``):
+
+* CustomVoice  ``generate_custom_voice(text, speaker, language, instruct=...)`` - ``instruct`` is an
+  emotion/style instruction. The 0.6B CustomVoice model ignores it (the library sets it to None).
+* VoiceDesign  ``generate_voice_design(text, instruct, ...)`` - ``instruct`` is the *voice
+  description itself*; there is no separate delivery channel, so delivery guidance can only be
+  appended to the stable description, and the voice is re-created on every call (identity can drift).
+* Base (cloning)  ``generate(text, ref_audio=..., ref_text=...)`` - reference conditioning only. The
+  library's cloning path requires ``instruct is None``; there is no instruction input.
+"""
+from __future__ import annotations
+
+import re
+
+from ..config import DeliverySettings
+from . import vocab as V
+
+EMOTION_ADJ = {
+    "neutral": "neutral", "calm": "calm", "joy": "joyful", "excitement": "excited", "tenderness": "tender", "sadness": "sad",
+    "grief": "grief-stricken", "fear": "fearful", "anxiety": "anxious", "anger": "angry", "surprise": "surprised",
+    "disgust": "disgusted", "determination": "determined", "humor": "amused", "resignation": "resigned",
+}
+
+
+def model_supports_instruct(kind: str, model_id: str) -> tuple[bool, str]:
+    """(supported, reason) for a voice kind on a model."""
+    if kind == "clone":
+        return False, "The Base (voice cloning) model has no instruction input; delivery is conditioned only by the reference clip."
+    if kind == "preset" and re.search(r"0[._]?6B", model_id, re.I):
+        return False, "The 0.6B CustomVoice model ignores instructions."
+    return True, ""
+
+
+def compose(final: dict, max_chars: int = 160) -> str | None:
+    emotion = final.get("emotion", "neutral")
+    inten = int(final.get("intensity", 1))
+    pacing = final.get("pacing", "normal")
+    free = " ".join(str(final.get("delivery") or "").replace('"', "").split())
+    neutral = emotion == "neutral" and inten <= 2
+    parts = []
+    if not neutral:
+        adv = V.INTENSITY_ADVERB.get(inten, "moderately")
+        parts.append(f"Speak {adv} {EMOTION_ADJ.get(emotion, emotion)}")
+    if pacing != "normal":
+        parts.append(V.PACING_PHRASES.get(pacing, pacing))
+    text = ", ".join(parts)
+    if free:
+        text = f"{text}. {free}" if text else free
+    if not text:
+        return None
+    text = text.strip()
+    if not text.endswith((".", "!", "?")):
+        text += "."
+    if len(text) > max_chars:
+        cut = text[:max_chars]
+        k = max(cut.rfind(". "), cut.rfind(", "), cut.rfind(" "))
+        text = (cut[:k] if k > 20 else cut).rstrip(" ,;") + "."
+    return text
+
+
+def build_instruct(final: dict | None, voice_kind: str, model_id: str, cfg: DeliverySettings) -> tuple[str | None, dict]:
+    """-> (instruction text for ``SynthParams.instruct`` or None, info). ``info['applied']`` says
+    whether the delivery guidance reaches the model."""
+    if not final:
+        return None, {"applied": False, "reason": "no direction for this segment"}
+    ok, why = model_supports_instruct(voice_kind, model_id)
+    if not ok:
+        return None, {"applied": False, "reason": why}
+    mode = cfg.custom_voice if voice_kind == "preset" else cfg.voice_design
+    if mode == "off":
+        return None, {"applied": False, "reason": f"Delivery instructions are switched off for {voice_kind} voices in Settings."}
+    text = compose(final, cfg.max_instruct_chars)
+    if not text:
+        return None, {"applied": False, "reason": "neutral delivery needs no instruction"}
+    if voice_kind == "design":
+        text = f"For this line: {text}"
+    return text, {"applied": True, "reason": "passed as the model's instruct input"}
+__STUDIO_EOF_708bc7550271__
+cat > "$DEST/studio/narrative/director.py" <<'__STUDIO_EOF_4f4935b0c20f__'
+"""The Narrative Director: per-segment delivery direction.
+
+Two interchangeable engines produce the same schema-validated record:
+
+* ``llm``   - a local OpenAI-compatible model reads the segment, its surrounding context, the
+  character profile, story notes and the previous delivery decisions;
+* ``rules`` - a deterministic engine that uses the lexical and structural cues found in Pass 1.
+  It is always available, is what runs when no LLM is configured, and is the fallback when the
+  LLM fails. It is modest by design and labelled as such everywhere.
+
+The Director never changes manuscript text. Its output separates ``facts`` (verbatim quotations
+that are checked against the supplied text and dropped when they are not found) from
+``inferences`` (interpretation). Analysis-only text cannot leak into the TTS instruction: the
+delivery string is checked against the surrounding context and truncated if it quotes it.
+"""
+from __future__ import annotations
+
+import json
+import re
+
+from ..util import dumps, short_hash
+from . import vocab as V
+from .llm import LLMClient, LLMError
+
+PROMPT_VERSION = "director-3"
+
+SYNONYMS = {
+    "sad": "sadness", "happy": "joy", "joyful": "joy", "angry": "anger", "scared": "fear", "afraid": "fear", "fearful": "fear",
+    "worried": "anxiety", "nervous": "anxiety", "anxious": "anxiety", "excited": "excitement", "grieving": "grief", "tender": "tenderness",
+    "loving": "tenderness", "amused": "humor", "resigned": "resignation", "determined": "determination", "surprised": "surprise",
+    "disgusted": "disgust", "serene": "calm", "tense": "anxiety", "mournful": "grief", "furious": "anger", "joyous": "joy",
+}
+
+SYSTEM_PROMPT = f"""You are the Narrative Director for an audiobook production system. For ONE segment of a manuscript you decide how it should be performed by a text-to-speech narrator or character voice.
+
+Rules:
+- Reply with ONE JSON object and nothing else.
+- Never rewrite, add, shorten or translate manuscript text. You only describe delivery.
+- Use the controlled vocabulary exactly. emotion is one of: {", ".join(V.EMOTIONS)}. pacing is one of: {", ".join(V.PACINGS)}. intensity and tension are integers 1-5.
+- "facts" are objective things the manuscript states, each as a SHORT VERBATIM QUOTE copied from the segment or its context. "inferences" are your interpretations. Do not put interpretations in facts.
+- Respect continuity: the previous segment's delivery and the speaker's current emotional state persist unless the text gives a reason to change. Set "text_supported_change" to true ONLY when the manuscript itself signals an abrupt change (a shout, a revelation, a scene turn).
+- Prefer the user's confirmed character information over anything you infer. Do not invent character traits or events.
+- "delivery" is a short natural-language performance note (max 25 words) such as "voice breaking, barely above a whisper". It must not quote the manuscript.
+- If the speaker or the emotion is genuinely unclear, say so in "ambiguity" and set needs_review true instead of guessing confidently.
+
+JSON shape:
+{{"segment_id": str, "speaker": str, "voice_profile": str, "emotion": str, "intensity": int, "delivery": str, "pacing": str, "tension": int,
+ "confidence": {{"speaker": 0-1, "emotion": 0-1, "overall": 0-1}}, "text_supported_change": bool,
+ "context_refs": [{{"kind": "previous|following|summary|character|story", "quote": str}}], "facts": [str], "inferences": [str],
+ "ambiguity": str|null, "needs_review": bool}}"""
+
+
+class DirectorError(ValueError):
+    pass
+
+
+def _norm(s: str) -> str:
+    return " ".join(re.sub(r"[^\w\s']", " ", s.lower()).split())
+
+
+def _grounded(quote: str, haystack_norm: str) -> bool:
+    q = _norm(quote)
+    return len(q) >= 3 and q in haystack_norm
+
+
+def leak_guard(delivery: str, forbidden: list[str], window: int = 6) -> tuple[str, bool]:
+    """Remove from ``delivery`` any run of ``window`` or more consecutive words copied from the
+    forbidden texts (the segment itself and the analysis-only context). -> (clean text, changed)"""
+    words = delivery.split()
+    if len(words) < window:
+        return delivery, False
+    pool = " " + " ".join(_norm(t) for t in forbidden) + " "
+    keep = [True] * len(words)
+    norm_words = [_norm(w) for w in words]
+    for i in range(len(words) - window + 1):
+        chunk = " ".join(norm_words[i:i + window]).strip()
+        if chunk and f" {chunk} " in pool:
+            for j in range(i, i + window):
+                keep[j] = False
+    if all(keep):
+        return delivery, False
+    return " ".join(w for w, k in zip(words, keep) if k).strip(" ,;"), True
+
+
+def _int(v, lo=1, hi=5, default=3) -> int:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if 0.0 < f <= 1.0 and not float(f).is_integer():
+        f = f * 5
+    return int(max(lo, min(hi, round(f))))
+
+
+def validate_direction(raw: dict, *, sid: str, text: str, context: str, known_speaker: str | None, cast_names: list[str]) -> dict:
+    """Normalise and check an LLM reply. Raises DirectorError on anything unusable; repairs and
+    annotates the rest (nothing is silently trusted)."""
+    if not isinstance(raw, dict):
+        raise DirectorError("reply is not a JSON object")
+    notes: list[str] = []
+    emo = str(raw.get("emotion", "")).strip().lower()
+    emo = SYNONYMS.get(emo, emo)
+    if emo not in V.EMOTIONS:
+        raise DirectorError(f"emotion {raw.get('emotion')!r} is not in the controlled vocabulary")
+    pacing = str(raw.get("pacing", "normal")).strip().lower()
+    pacing = {"slowly": "slow", "quick": "brisk", "quickly": "brisk", "medium": "normal", "moderate": "normal", "steady": "measured"}.get(pacing, pacing)
+    if pacing not in V.PACINGS:
+        raise DirectorError(f"pacing {raw.get('pacing')!r} is not in the controlled vocabulary")
+    hay = _norm(text + " " + context)
+    facts, dropped = [], 0
+    for f in (raw.get("facts") or [])[:8]:
+        if isinstance(f, str) and _grounded(f, hay):
+            facts.append(f.strip()[:200])
+        else:
+            dropped += 1
+    if dropped:
+        notes.append(f"{dropped} stated fact(s) were not found in the supplied manuscript text and were removed")
+    refs = []
+    for r in (raw.get("context_refs") or [])[:8]:
+        if isinstance(r, dict) and isinstance(r.get("quote"), str) and (_grounded(r["quote"], hay) or r.get("kind") in ("character", "story", "summary")):
+            refs.append({"kind": str(r.get("kind", "previous"))[:12], "quote": r["quote"].strip()[:200]})
+    delivery = " ".join(str(raw.get("delivery") or "").replace('"', "").replace("\n", " ").split())[:240]
+    delivery, changed = leak_guard(delivery, [text, context])
+    if changed:
+        notes.append("delivery text quoted the manuscript and was trimmed")
+    speaker = str(raw.get("speaker") or "").strip()
+    needs = bool(raw.get("needs_review", False))
+    ambiguity = raw.get("ambiguity") if isinstance(raw.get("ambiguity"), str) and raw.get("ambiguity") else None
+    if known_speaker and speaker and speaker.lower() != known_speaker.lower():
+        notes.append(f"the model named '{speaker}' as the speaker; the established attribution '{known_speaker}' was kept")
+        needs = True
+        ambiguity = ambiguity or f"The Director disagrees with the attribution ({speaker} vs {known_speaker})."
+    conf = raw.get("confidence") if isinstance(raw.get("confidence"), dict) else {}
+    conf = {k: round(max(0.0, min(1.0, float(conf.get(k, 0.5)))), 2) for k in ("speaker", "emotion", "overall")}
+    return {
+        "segment_id": sid, "speaker": known_speaker or speaker, "voice_profile": str(raw.get("voice_profile") or "")[:200],
+        "emotion": emo, "intensity": _int(raw.get("intensity")), "delivery": delivery, "pacing": pacing, "tension": _int(raw.get("tension"), default=2),
+        "confidence": conf, "support": bool(raw.get("text_supported_change", False)) and conf["emotion"] >= 0.6,
+        "context_refs": refs, "facts": facts, "inferences": [str(x)[:240] for x in (raw.get("inferences") or [])[:6] if isinstance(x, str)],
+        "ambiguity": ambiguity, "needs_review": needs or conf["overall"] < 0.4, "notes": notes, "source": "llm",
+    }
+
+
+def rules_direction(sid: str, speaker: str | None, cues: dict, sensitivity: float, text: str, note: str = "") -> dict:
+    """Deterministic direction from the Pass 1 cues. Intensity is scaled by the sensitivity setting."""
+    emo = cues.get("emotion", "neutral")
+    raw_int = int(cues.get("intensity", 1))
+    scale = 0.5 + sensitivity  # 0.5 .. 1.5
+    inten = V.clamp_intensity(1 + (raw_int - 1) * scale)
+    explicit = bool(cues.get("explicit"))
+    if not explicit and sensitivity < 0.3 and emo not in ("neutral", "calm"):
+        emo, inten = "neutral", 1
+    tension = V.clamp_intensity(max(1, round(float(cues.get("tension", 0)))))
+    ev = cues.get("evidence") or []
+    facts = []
+    for e in ev:
+        m = re.search(r"'([^']+)'", e)
+        if m and _grounded(m.group(1).rstrip("…"), _norm(text)):
+            facts.append(m.group(1))
+    delivery = {"slow": "unhurried", "measured": "measured and deliberate", "brisk": "quick and urgent", "fast": "rapid, urgent"}.get(cues.get("pace", "normal"), "")
+    return {
+        "segment_id": sid, "speaker": speaker or "Narrator", "voice_profile": "", "emotion": emo, "intensity": inten, "delivery": delivery if inten >= 3 else "",
+        "pacing": cues.get("pace", "normal") if cues.get("pace") in V.PACINGS else "normal", "tension": tension,
+        "confidence": {"speaker": 0.5, "emotion": 0.7 if explicit else 0.35, "overall": 0.6 if explicit else 0.35},
+        "support": explicit, "context_refs": [], "facts": facts[:4],
+        "inferences": ([f"Emotion '{emo}' inferred from: {', '.join(ev)}"] if ev else ["No emotional cue found; neutral delivery assumed"]),
+        "ambiguity": None, "needs_review": False, "notes": [note] if note else [], "source": "rules",
+    }
+
+
+def build_prompt(p: dict) -> str:
+    """The user message. ``p`` carries only analysis material; the segment text is quoted once under
+    ``segment.text`` and is the only thing the performance is for."""
+    payload = {
+        "segment": {"id": p["sid"], "text": p["text"], "kind": p["kind"], "speaker": p.get("speaker"), "voice": p.get("voice_label")},
+        "location": {"chapter": p.get("chapter"), "scene": p.get("scene")},
+        "context_before": p["context"]["before"], "context_after": p["context"]["after"],
+        "story_notes": p.get("notes") or [],
+        "character_profile": p.get("profile") or {},
+        "previous_segment": p.get("prev"), "speaker_state": p.get("speaker_state"), "upcoming": p.get("upcoming"),
+        "user_instructions": p.get("hints") or "",
+        "emotion_sensitivity": p.get("sensitivity"),
+    }
+    return "Direct this segment.\n" + json.dumps(payload, ensure_ascii=False, indent=1)
+
+
+def cache_key(p: dict, model_label: str) -> str:
+    prev = p.get("prev") or {}
+    st = p.get("speaker_state") or {}
+    basis = {
+        "v": PROMPT_VERSION, "m": model_label, "t": p["text"], "b": p["context"]["before"], "a": p["context"]["after"],
+        "n": p.get("notes") or [], "pf": p.get("profile") or {}, "sp": p.get("speaker"),
+        "prev": [prev.get("speaker"), prev.get("emotion"), prev.get("intensity")], "st": [st.get("emotion"), st.get("intensity")],
+        "up": p.get("upcoming"), "h": p.get("hints") or "", "s": round(float(p.get("sensitivity", 0.5)), 2),
+    }
+    return short_hash(dumps(basis), 24)
+
+
+class Director:
+    """Facade used by the analysis stage."""
+
+    def __init__(self, llm: LLMClient | None):
+        self.llm = llm if llm is not None and llm.enabled else None
+        self.llm_failures = 0
+        self.stats = {"llm_calls": 0, "cache_hits": 0, "rules": 0, "fallbacks": 0}
+
+    @property
+    def model_label(self) -> str:
+        return self.llm.model_label if self.llm else "rules"
+
+    def direct(self, p: dict, cache_get, cache_put) -> tuple[dict, str]:
+        """-> (direction, cache_key)."""
+        key = cache_key(p, self.model_label)
+        cached = cache_get(key)
+        if cached is not None:
+            self.stats["cache_hits"] += 1
+            return cached, key
+        context = (p["context"]["before"] + " " + p["context"]["after"]).strip()
+        cast_names = p.get("cast_names") or []
+        if self.llm is not None and self.llm_failures < 3:
+            try:
+                d = self.llm.chat_json(SYSTEM_PROMPT, build_prompt(p),
+                                       lambda raw: validate_direction(raw, sid=p["sid"], text=p["text"], context=context,
+                                                                       known_speaker=p.get("speaker"), cast_names=cast_names))
+                self.stats["llm_calls"] += 1
+                self.llm_failures = 0
+                cache_put(key, d, self.model_label)
+                return d, key
+            except (LLMError, DirectorError) as exc:
+                self.llm_failures += 1
+                self.stats["fallbacks"] += 1
+                d = rules_direction(p["sid"], p.get("speaker"), p.get("cues") or {}, p.get("sensitivity", 0.5), p["text"],
+                                    note=f"LLM unavailable or invalid ({str(exc)[:120]}); rules engine used")
+                d["needs_review"] = True
+                return d, key  # fallbacks are not cached, so a later run retries the LLM
+        self.stats["rules"] += 1
+        d = rules_direction(p["sid"], p.get("speaker"), p.get("cues") or {}, p.get("sensitivity", 0.5), p["text"])
+        cache_put(key, d, "rules")
+        return d, key
+__STUDIO_EOF_4f4935b0c20f__
+cat > "$DEST/studio/narrative/llm.py" <<'__STUDIO_EOF_524e9293fdba__'
+"""Minimal OpenAI-compatible chat client for a local LLM (LM Studio, Ollama's /v1, mlx_lm.server,
+llama.cpp server...). Uses httpx, which the application already depends on."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import time
+from typing import Callable, TypeVar
+
+from ..config import LLMSettings
+
+log = logging.getLogger("studio.llm")
+T = TypeVar("T")
+
+
+class LLMError(RuntimeError):
+    """The LLM endpoint is unreachable, misconfigured, or returned something unusable."""
+
+
+class LLMClient:
+    def __init__(self, cfg: LLMSettings, transport=None, environ=None):
+        self.cfg = cfg
+        self._transport = transport  # httpx transport, injected by tests
+        self._env = environ if environ is not None else os.environ
+        self.calls = 0
+        self.seconds = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.cfg.provider == "openai_compatible" and bool(self.cfg.model.strip())
+
+    @property
+    def model_label(self) -> str:
+        return f"{self.cfg.provider}:{self.cfg.model}" if self.enabled else "rules"
+
+    def _headers(self) -> dict:
+        h = {"Content-Type": "application/json"}
+        if self.cfg.api_key_env:
+            key = self._env.get(self.cfg.api_key_env, "")
+            if not key:
+                raise LLMError(f"Environment variable {self.cfg.api_key_env} (the API key) is not set for the worker process")
+            h["Authorization"] = f"Bearer {key}"
+        return h
+
+    def chat(self, system: str, user: str, json_mode: bool = True) -> str:
+        if not self.enabled:
+            raise LLMError("No LLM is configured (Settings > Narrative > Local LLM)")
+        import httpx
+
+        body = {
+            "model": self.cfg.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": self.cfg.temperature,
+            "max_tokens": self.cfg.max_tokens,
+            "stream": False,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        t0 = time.time()
+        try:
+            with httpx.Client(timeout=self.cfg.timeout_s, transport=self._transport) as c:
+                r = c.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
+                if r.status_code == 400 and json_mode:  # server without response_format support
+                    body.pop("response_format")
+                    r = c.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
+                r.raise_for_status()
+                data = r.json()
+        except LLMError:
+            raise
+        except Exception as exc:
+            raise LLMError(f"LLM request to {self.cfg.base_url} failed: {type(exc).__name__}: {exc}") from exc
+        finally:
+            self.calls += 1
+            self.seconds += time.time() - t0
+        try:
+            return str(data["choices"][0]["message"]["content"] or "")
+        except Exception as exc:
+            raise LLMError(f"Unexpected LLM response shape: {str(data)[:200]}") from exc
+
+    def chat_json(self, system: str, user: str, validate: Callable[[dict], T], retries: int = 1) -> T:
+        """Ask for one JSON object and validate it. One repair round is attempted with the
+        validation error fed back to the model."""
+        prompt, last = user, ""
+        for attempt in range(retries + 1):
+            text = self.chat(system, prompt)
+            try:
+                return validate(extract_json(text))
+            except (ValueError, KeyError, TypeError) as exc:
+                last = str(exc)
+                log.info("LLM output rejected (%s), attempt %d", last[:200], attempt + 1)
+                prompt = user + f"\n\nYour previous reply was rejected: {last[:300]}\nReply again with ONLY the corrected JSON object."
+        raise LLMError(f"LLM output failed validation: {last[:300]}")
+
+
+def extract_json(text: str) -> dict:
+    """First JSON object in a model reply (tolerates code fences and chatter around it)."""
+    text = re.sub(r"```(?:json)?", "", text)
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in reply")
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(text[start:i + 1])
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON: {exc}") from exc
+                if not isinstance(obj, dict):
+                    raise ValueError("JSON reply is not an object")
+                return obj
+    raise ValueError("unterminated JSON object")
+__STUDIO_EOF_524e9293fdba__
+cat > "$DEST/studio/narrative/segmenter.py" <<'__STUDIO_EOF_42741318923c__'
+"""Pass 2 - narration segment construction from the Pass 1 structure.
+
+Every segment is an exact ``[start, end)`` slice of the chapter's canonical text, so wording,
+punctuation and capitalisation are preserved by construction and the segments of a chapter
+cover every non-whitespace character exactly once, in order. The maximum length is a ceiling:
+a segment ends at the first natural boundary (paragraph, speaker change, scene, emotional turn)
+once it is long enough, rather than being filled up to the limit.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Callable
+
+from ..chunker import ABBREVIATIONS
+from .structure import ChapterStructure, Span
+
+_BOUNDARY = re.compile(r"([.!?…]+[\"'”’)\]]*)(\s+)")
+_STRONG = re.compile(r"[;:—–](?=\s)")
+_CONJ = re.compile(r",(?=\s+(?:and|but|or|so|yet|which|who|whom|whose|while|when|because|although|though|if|then|until|as|where|before|after)\b)", re.I)
+_COMMA = re.compile(r",(?=\s)")
+_HARD_LIMIT = 1200  # a user-forced join may exceed the ceiling, never this
+
+
+@dataclass
+class Atom:
+    start: int
+    end: int
+    para: int
+    scene: int
+    kind: str  # narration | dialogue | heading
+    speaker: str | None
+    voice_key: str
+    shift: float = 0.0
+    needs_review: bool = False
+    first_of_span: bool = True
+
+
+@dataclass
+class Seg:
+    start: int
+    end: int
+    text: str
+    kind: str  # body | heading
+    para_idx: int
+    scene_idx: int
+    speaker: str | None
+    span_kind: str  # narration | dialogue | mixed | heading
+    voice_key: str
+    needs_review: bool = False
+    pause_kind: str = "sentence"
+    manual: bool = False
+    atoms: list[Atom] = field(default_factory=list, repr=False)
+
+
+def sentence_ranges(text: str, base: int = 0) -> list[tuple[int, int]]:
+    """Sentence boundaries of ``text`` as absolute ``(start, end)`` ranges (whitespace trimmed)."""
+    out: list[tuple[int, int]] = []
+    start = 0
+    for m in _BOUNDARY.finditer(text):
+        end = m.end(1)
+        word = text[max(start, end - 14):end].split(" ")[-1]
+        tok = re.findall(r"([A-Za-z][A-Za-z.]*)\.+$", word)
+        token = tok[0].lower().rstrip(".") if tok else ""
+        nxt = text[m.end():m.end() + 1]
+        if m.group(1).startswith(".") and (token in ABBREVIATIONS or re.fullmatch(r"[a-z]", token)):
+            continue
+        if nxt and nxt.islower():
+            continue
+        out.append((base + start, base + end))
+        start = m.end()
+    if text[start:].strip():
+        out.append((base + start, base + len(text.rstrip())))
+    return out
+
+
+def _best_split(text: str, lo: int, hi: int, max_chars: int) -> int:
+    """Offset (within text[lo:hi]) of the least disruptive split. Higher-priority punctuation is
+    preferred as long as neither side is a tiny orphan; otherwise the nearest word boundary to
+    the middle is used."""
+    seg = text[lo:hi]
+    n = len(seg)
+    mid = n / 2
+
+    def pick(positions: list[int]) -> int | None:
+        ok = [p for p in positions if 0.2 * n <= p <= 0.8 * n or (p <= max_chars and n - p <= max_chars and min(p, n - p) >= 0.12 * n)]
+        return min(ok, key=lambda p: abs(p - mid)) if ok else None
+
+    for rx in (_STRONG, _CONJ, _COMMA):
+        pos = [m.end() for m in rx.finditer(seg)]
+        got = pick(pos)
+        if got is not None:
+            return got
+    spaces = [m.start() for m in re.finditer(r"\s", seg) if 0 < m.start() < n - 1]
+    return min(spaces, key=lambda p: abs(p - mid)) if spaces else n
+
+
+def split_long(text: str, start: int, end: int, max_chars: int) -> list[tuple[int, int]]:
+    """Split an over-long sentence into pieces of at most ``max_chars`` (a single word longer than
+    that is kept whole)."""
+    if end - start <= max_chars:
+        return [(start, end)]
+    cut = start + _best_split(text, start, end, max_chars)
+    left_end = cut
+    while left_end > start and text[left_end - 1].isspace():
+        left_end -= 1
+    right_start = cut
+    while right_start < end and text[right_start].isspace():
+        right_start += 1
+    if left_end <= start or right_start >= end:
+        return [(start, end)]
+    return split_long(text, start, left_end, max_chars) + split_long(text, right_start, end, max_chars)
+
+
+def _apply_cuts(atoms: list[Atom], cuts: set[int], text: str) -> list[Atom]:
+    """Split any atom that contains a manual cut offset strictly inside it."""
+    if not cuts:
+        return atoms
+    out: list[Atom] = []
+    for a in atoms:
+        pieces = [a]
+        for c in sorted(x for x in cuts if a.start < x < a.end):
+            last = pieces[-1]
+            if not last.start < c < last.end:
+                continue
+            left_end = c
+            while left_end > last.start and text[left_end - 1].isspace():
+                left_end -= 1
+            if left_end <= last.start:
+                continue
+            right = Atom(c, last.end, last.para, last.scene, last.kind, last.speaker, last.voice_key, 0.0, last.needs_review, False)
+            pieces[-1] = Atom(last.start, left_end, last.para, last.scene, last.kind, last.speaker, last.voice_key, last.shift, last.needs_review, last.first_of_span)
+            pieces.append(right)
+        out.extend(pieces)
+    return out
+
+
+def _atoms(struct: ChapterStructure, max_chars: int, voice_key_of: Callable[[str | None], str], tags_with_speaker: bool = False) -> list[Atom]:
+    text = struct.text
+    out: list[Atom] = []
+    for sp in struct.spans:
+        vk = voice_key_of(sp.speaker if sp.kind == "dialogue" else (sp.tag_speaker if tags_with_speaker and sp.is_tag else None))
+        if sp.kind == "heading":
+            out.append(Atom(sp.start, sp.end, sp.para_idx, sp.scene_idx, "heading", None, voice_key_of(None)))
+            continue
+        shift = float(sp.cues.get("shift", 0.0))
+        pieces: list[tuple[int, int]] = []
+        if sp.end - sp.start <= max_chars:
+            pieces = [(sp.start, sp.end)]
+        else:
+            for a, b in sentence_ranges(text[sp.start:sp.end], sp.start):
+                pieces.extend(split_long(text, a, b, max_chars))
+        for i, (a, b) in enumerate(pieces):
+            out.append(Atom(a, b, sp.para_idx, sp.scene_idx, sp.kind, sp.speaker if sp.kind == "dialogue" else None, vk,
+                            shift if i == 0 else 0.0, sp.needs_review, i == 0))
+    return out
+
+
+def build(struct: ChapterStructure, *, max_chars: int = 500, min_chars: int = 120, sensitivity: float = 0.5,
+          voice_key_of: Callable[[str | None], str] = lambda s: "narrator", cuts: set[int] | None = None,
+          joins: set[int] | None = None, tags_with_speaker: bool = False) -> list[Seg]:
+    cuts, joins = cuts or set(), joins or set()
+    text = struct.text
+    atoms = _apply_cuts(_atoms(struct, max_chars, voice_key_of, tags_with_speaker), cuts, text)
+    shift_gate = 1.0 - sensitivity if sensitivity > 0 else 9.0
+
+    def barrier(prev: Atom, a: Atom, cur_len: int, shift_ok: bool = True) -> bool:
+        if prev.kind == "heading" or a.kind == "heading" or prev.scene != a.scene:
+            return True
+        if a.start in cuts:
+            return True
+        if a.start in joins:
+            return False
+        if prev.voice_key != a.voice_key:
+            return True
+        if prev.kind == "dialogue" and a.kind == "dialogue" and (prev.speaker != a.speaker or (prev.speaker is None and prev.para != a.para)):
+            return True
+        if (prev.kind == "dialogue") != (a.kind == "dialogue") and prev.para != a.para:
+            return True
+        if shift_ok and a.first_of_span and a.shift >= shift_gate and cur_len >= 40:
+            return True  # a meaningful emotional transition deserves its own delivery guidance
+        return False
+
+    groups: list[list[Atom]] = []
+    cur: list[Atom] = []
+    for a in atoms:
+        if cur:
+            span_len = a.end - cur[0].start
+            forced = a.start in joins and span_len <= _HARD_LIMIT
+            cur_len = cur[-1].end - cur[0].start
+            if barrier(cur[-1], a, cur_len) or (span_len > max_chars and not forced):
+                groups.append(cur)
+                cur = []
+            elif a.para != cur[-1].para and cur_len >= min_chars and not forced:
+                groups.append(cur)  # natural paragraph boundary once the segment is long enough
+                cur = []
+        cur.append(a)
+    if cur:
+        groups.append(cur)
+
+    # fold fragments that are too short into a neighbour when nothing separates them
+    i = 0
+    while i < len(groups):
+        g = groups[i]
+        length = g[-1].end - g[0].start
+        if length < min_chars and g[0].kind != "heading":
+            merged = False
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(groups):
+                    a, b = (groups[j], g) if j < i else (g, groups[j])
+                    la, lb = a[-1].end - a[0].start, b[-1].end - b[0].start
+                    if barrier(a[-1], b[0], la, shift_ok=min(la, lb) >= 25) and b[0].start not in joins:
+                        continue
+                    if b[-1].end - a[0].start <= max_chars:
+                        groups[min(i, j)] = a + b
+                        del groups[max(i, j)]
+                        i = max(0, min(i, j) - 0)
+                        merged = True
+                        break
+            if merged:
+                continue
+        i += 1
+
+    segs: list[Seg] = []
+    for g in groups:
+        s, e = g[0].start, g[-1].end
+        dlg = [a for a in g if a.kind == "dialogue"]
+        kinds = {a.kind for a in g}
+        span_kind = "heading" if kinds == {"heading"} else "mixed" if len(kinds) > 1 else next(iter(kinds))
+        speaker = dlg[0].speaker if dlg else None
+        segs.append(Seg(s, e, text[s:e], "heading" if span_kind == "heading" else "body", g[0].para, g[0].scene, speaker, span_kind,
+                        g[0].voice_key if not dlg else dlg[0].voice_key, any(a.needs_review for a in g), manual=s in cuts or s in joins, atoms=g))
+    for k, sg in enumerate(segs):
+        nxt = segs[k + 1] if k + 1 < len(segs) else None
+        if sg.kind == "heading":
+            sg.pause_kind = "heading"
+        elif nxt is None:
+            sg.pause_kind = "chapter_end"
+        elif nxt.scene_idx != sg.scene_idx:
+            sg.pause_kind = "scene"
+        elif nxt.para_idx != sg.para_idx:
+            sg.pause_kind = "paragraph"
+        else:
+            sg.pause_kind = "sentence"
+    return segs
+
+
+def check_coverage(struct: ChapterStructure, segs: list[Seg]) -> list[str]:
+    """Invariants: ordered, non-overlapping, exact slices, and every non-whitespace character
+    of the chapter is in exactly one segment. Returns a list of violations (empty = sound)."""
+    problems: list[str] = []
+    text = struct.text
+    covered = [False] * len(text)
+    last_end = -1
+    for sg in segs:
+        if sg.start < last_end:
+            problems.append(f"segment at {sg.start} overlaps or is out of order")
+        last_end = sg.end
+        if text[sg.start:sg.end] != sg.text:
+            problems.append(f"segment at {sg.start} is not an exact slice")
+        for k in range(sg.start, sg.end):
+            if covered[k] and not text[k].isspace():
+                problems.append(f"character {k} is in two segments")
+            covered[k] = True
+    for k, ch in enumerate(text):
+        if not ch.isspace() and not covered[k]:
+            problems.append(f"character {k} ({ch!r}) is in no segment")
+            break
+    return problems[:10]
+__STUDIO_EOF_42741318923c__
+cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_07e3bd8e8640__'
+"""Persistence and orchestration for semantic segmentation (Pass 1 + Pass 2).
+
+Segments keep stable ids. Re-segmentation (after a voice assignment, a merge of characters, a
+boundary edit or a re-analysis) *reconciles* the new segment list with the existing one: a
+segment whose ``[src_start, src_end)`` range is unchanged keeps its row, id, takes, direction and
+history; only segments whose range changed are retired (recorded in ``segment_history``) and
+replaced. That is what limits the effect of an edit to the artifacts that really depend on it.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from ..config import NarrativeSettings, Settings, effective_narrative
+from ..db import row, rows, scalar
+from ..engines import VoiceSpec
+from ..normalize import to_speech
+from ..util import dumps, loads, new_uid, now, sha256_bytes, short_hash
+from . import cast as C
+from . import delivery as DL
+from . import segmenter as G
+from . import structure as S
+from . import windows as W
+
+
+def _err(message: str, status: int = 400, details=None):
+    from ..services import ServiceError
+
+    return ServiceError(message, status, details)
+
+
+# ------------------------------------------------------------------------------ settings
+
+
+def book_ns(ctx, book: dict) -> NarrativeSettings:
+    return effective_narrative(ctx.settings(), loads(book.get("narrative_json"), {}))
+
+
+def is_semantic(ctx, book: dict) -> bool:
+    return bool(loads(book.get("narrative_json"), {}).get("semantic_segmentation"))
+
+
+def set_book_overrides(ctx, book_id: int, patch: dict, actor: str = "operator") -> dict:
+    """Project-level narrative settings: merged over the global defaults. A ``null`` value removes an override."""
+    from ..config import merge_patch
+
+    with ctx.db.tx() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not b:
+            raise _err("Book not found", 404)
+        cur = loads(b["narrative_json"], {})
+        merged = merge_patch(cur, patch or {})
+
+        def prune(d):
+            out = {}
+            for k, v in d.items():
+                v = prune(v) if isinstance(v, dict) else v
+                if v is not None and v != {}:
+                    out[k] = v
+            return out
+
+        merged = prune(merged)
+        if merged.get("semantic_segmentation") is False and cur.get("semantic_segmentation") and scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND src_start IS NOT NULL", (book_id,), 0):
+            raise _err("Semantic segmentation cannot be switched off for a book that was segmented with it (segment ids and offsets depend on it).", 409)
+        try:
+            effective_narrative(ctx.settings(), merged)
+        except Exception as exc:
+            raise _err(f"Invalid narrative settings: {exc}", 422)
+        conn.execute("UPDATE books SET narrative_json=?, updated_at=? WHERE id=?", (dumps(merged), now(), book_id))
+        ctx.audit(conn, "book", book_id, "narrative_overrides", patch, actor)
+    return get_book_settings(ctx, book_id)
+
+
+def get_book_settings(ctx, book_id: int) -> dict:
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    if not b:
+        raise _err("Book not found", 404)
+    return {"overrides": loads(b["narrative_json"], {}), "effective": book_ns(ctx, b).model_dump(mode="json"),
+            "defaults": ctx.settings().narrative.model_dump(mode="json")}
+
+
+# --------------------------------------------------------------------------------- stages
+
+
+def set_stage(conn, book_id: int, stage: str, status: str, stats: dict | None = None, error: str | None = None) -> None:
+    t = now()
+    cur = row(conn, "SELECT * FROM analysis_stages WHERE book_id=? AND stage=?", (book_id, stage))
+    merged = {**loads(cur["stats_json"], {}), **(stats or {})} if cur else (stats or {})
+    if cur:
+        conn.execute("UPDATE analysis_stages SET status=?, started_at=COALESCE(started_at, ?), finished_at=?, error=?, stats_json=? WHERE book_id=? AND stage=?",
+                     (status, t, t if status in ("done", "error", "skipped") else None, error, dumps(merged), book_id, stage))
+    else:
+        conn.execute("INSERT INTO analysis_stages(book_id, stage, status, started_at, finished_at, error, stats_json) VALUES (?,?,?,?,?,?,?)",
+                     (book_id, stage, status, t, t if status in ("done", "error", "skipped") else None, error, dumps(merged)))
+
+
+STAGES = ("structure", "attribution", "characters", "summaries", "segmentation", "director", "continuity")
+
+
+# ---------------------------------------------------------------------- import (Pass 1/2)
+
+
+@dataclass
+class ChapterPlan:
+    out_idx: int
+    source_chapter: object
+    title: str | None
+    struct: S.ChapterStructure
+    words: int
+
+
+def prepare_import(res, include: list[int], settings: Settings, ns: NarrativeSettings, known=None) -> tuple[list[ChapterPlan], S.Cast, float]:
+    """Pass 1 for every chapter to be narrated, with one cast carried across chapters. Pure computation."""
+    import time
+
+    t0 = time.time()
+    cast = S.Cast(known)
+    plans: list[ChapterPlan] = []
+    ch_s = settings.chunking
+    first_person = None
+    for out_idx, ci in enumerate(include, start=1):
+        ch = res.chapters[ci]
+        auto_title = ch.title == "Opening" or bool(re.fullmatch(r"Section \d+", ch.title))
+        title = ch.title if (ch_s.speak_chapter_titles and ch.title and not auto_title) else None
+        st = S.analyze_chapter(ch.readable(), title, cast, ns.attribution_threshold, ns.auto_character_tracking, None, first_person)
+        plans.append(ChapterPlan(out_idx, ch, title, st, ch.words()))
+    return plans, cast, time.time() - t0
+
+
+def _span_rows(conn, struct: S.ChapterStructure, book_id: int, uid: str, chapter_id: int, out_idx: int, ids: dict[str, int], narrator_id: int) -> int:
+    for sp in struct.spans:
+        sid = ids.get(sp.speaker) if sp.speaker else None
+        guess = ids.get(sp.candidates[0]) if sp.candidates and not sid else None
+        cues = dict(sp.cues)
+        if sp.is_tag:
+            cues["is_tag"], cues["tag_speaker"] = True, sp.tag_speaker
+        conn.execute(
+            """INSERT INTO nar_spans(uid, book_id, chapter_id, para_idx, idx, start, "end", kind, speaker_id, guess_id, attribution, confidence,
+                   needs_review, evidence, candidates_json, scene_idx, cues_json, user_locked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (f"{uid}-c{out_idx:03d}-t{sp.idx:05d}", book_id, chapter_id, sp.para_idx, sp.idx, sp.start, sp.end, sp.kind,
+             sid if sp.kind == "dialogue" else narrator_id, guess, sp.attribution, round(sp.confidence, 3), 1 if sp.needs_review else 0,
+             sp.evidence, dumps(sp.candidates), sp.scene_idx, dumps(cues), 1 if sp.user_locked else 0))
+    return len(struct.spans)
+
+
+def persist_structure(conn, book_id: int, uid: str, chapter_id: int, out_idx: int, struct: S.ChapterStructure, ids: dict[str, int], narrator_id: int) -> None:
+    scene_starts, last = [], None
+    for sp in struct.spans:
+        if sp.scene_idx != last:
+            scene_starts.append(sp.start)
+            last = sp.scene_idx
+    meta = {"scene_starts": scene_starts, "perspective": struct.perspective, "warnings": struct.warnings, "scenes": struct.scenes,
+            "tension": struct.tension, "tension_shifts": struct.tension_shifts}
+    conn.execute("DELETE FROM chapter_text WHERE chapter_id=?", (chapter_id,))
+    conn.execute("INSERT INTO chapter_text(chapter_id, book_id, text, sha256, meta_json) VALUES (?,?,?,?,?)",
+                 (chapter_id, book_id, struct.text, sha256_bytes(struct.text.encode("utf-8")), dumps(meta)))
+    conn.execute("DELETE FROM nar_spans WHERE chapter_id=?", (chapter_id,))
+    _span_rows(conn, struct, book_id, uid, chapter_id, out_idx, ids, narrator_id)
+
+
+def load_structure(conn, chapter_id: int) -> S.ChapterStructure:
+    ct = row(conn, "SELECT * FROM chapter_text WHERE chapter_id=?", (chapter_id,))
+    if not ct:
+        raise _err("This chapter has no semantic structure (it was imported without semantic segmentation).", 409)
+    names = {r["id"]: r["name"] for r in rows(conn, "SELECT id, name FROM characters WHERE book_id=?", (ct["book_id"],))}
+    meta = loads(ct["meta_json"], {})
+    spans = []
+    for r in rows(conn, 'SELECT * FROM nar_spans WHERE chapter_id=? ORDER BY start', (chapter_id,)):
+        cues = loads(r["cues_json"], {})
+        sp = S.Span(r["para_idx"], r["idx"], r["start"], r["end"], r["kind"], ct["text"][r["start"]:r["end"]], r["scene_idx"],
+                    speaker=names.get(r["speaker_id"]) if r["kind"] == "dialogue" or r["speaker_id"] else None, attribution=r["attribution"],
+                    confidence=r["confidence"], needs_review=bool(r["needs_review"]), evidence=r["evidence"], candidates=loads(r["candidates_json"], []),
+                    cues=cues, user_locked=bool(r["user_locked"]), is_tag=bool(cues.get("is_tag")), tag_speaker=cues.get("tag_speaker"))
+        if r["kind"] == "dialogue" and not r["speaker_id"]:
+            sp.speaker = None
+        spans.append(sp)
+    return S.ChapterStructure(ct["text"], [], spans, meta.get("scenes", 1), meta.get("perspective", "third"), meta.get("warnings", []),
+                              meta.get("tension", []), meta.get("tension_shifts", []))
+
+
+def voice_key_fn(conn, book_id: int):
+    keys, ids = {}, {}
+    for c in C.list_characters(conn, book_id):
+        k = "narrator" if (c["kind"] == "narrator" or not c["voice_id"]) else f"v{c['voice_id']}"
+        for nm in {c["name"], *c["aliases"]}:
+            keys[nm], ids[nm] = k, c["id"]
+    return (lambda sp: keys.get(sp, "narrator") if sp else "narrator"), ids
+
+
+def _review_reason(struct: S.ChapterStructure, seg: G.Seg) -> str | None:
+    for sp in struct.spans:
+        if sp.kind == "dialogue" and sp.needs_review and sp.start < seg.end and sp.end > seg.start:
+            cand = f" Candidates: {', '.join(sp.candidates[:4])}." if sp.candidates else ""
+            return f"Speaker not established: {sp.evidence}.{cand}"[:500]
+    return None
+
+
+def _speech_text(text: str, settings: Settings) -> str:
+    norm = " ".join(text.split())
+    return (to_speech(norm) if settings.chunking.normalize_for_speech else norm) or norm
+
+
+def resegment_chapter(ctx, conn, book: dict, chapter: dict, ns: NarrativeSettings, settings: Settings) -> dict:
+    """Pass 2 for one chapter, reconciled with the segments that already exist."""
+    struct = load_structure(conn, chapter["id"])
+    voice_of, ids = voice_key_fn(conn, book["id"])
+    narrator_id = C.ensure_narrator(conn, book["id"])
+    cuts = {r["offset"] for r in rows(conn, "SELECT offset FROM seg_edits WHERE chapter_id=? AND kind='cut'", (chapter["id"],))}
+    joins = {r["offset"] for r in rows(conn, "SELECT offset FROM seg_edits WHERE chapter_id=? AND kind='join'", (chapter["id"],))}
+    segs = G.build(struct, max_chars=ns.max_segment_chars, min_chars=ns.min_segment_chars, sensitivity=ns.emotion_sensitivity,
+                   voice_key_of=voice_of, cuts=cuts, joins=joins, tags_with_speaker=ns.tags_with_speaker)
+    problems = G.check_coverage(struct, segs)
+    if problems:
+        raise RuntimeError("segmentation invariant violated: " + "; ".join(problems))
+    old = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter["id"],))
+    by_range = {(o["src_start"], o["src_end"]): o for o in old if o["src_start"] is not None}
+    used: set[int] = set()
+    uid_book = book["uid"]
+    seq = max([int(m.group(1)) for o in old if (m := re.search(r"-s(\d+)$", o["sid"]))] +
+              [int(m.group(1)) for r in rows(conn, "SELECT sid FROM segment_history WHERE chapter_id=?", (chapter["id"],)) if (m := re.search(r"-s(\d+)$", r["sid"]))] + [0])
+    kept = created = 0
+    new_ids: list[int] = []
+    for n, sg in enumerate(segs, start=1):
+        cid = ids.get(sg.speaker) if sg.speaker else (None if sg.span_kind in ("dialogue", "mixed") else narrator_id)
+        reason = _review_reason(struct, sg) if sg.needs_review else None
+        o = by_range.get((sg.start, sg.end))
+        if o is not None and o["id"] not in used:
+            used.add(o["id"])
+            conn.execute("""UPDATE segments SET idx=?, para_idx=?, kind=?, pause_kind=?, character_id=?, span_kind=?, scene_idx=?, needs_review=?, review_reason=?,
+                                boundary_manual=? WHERE id=?""",
+                         (n, sg.para_idx, sg.kind, sg.pause_kind, cid, sg.span_kind, sg.scene_idx, 1 if sg.needs_review else 0, reason, 1 if sg.manual else 0, o["id"]))
+            kept += 1
+            new_ids.append(o["id"])
+            continue
+        seq += 1
+        sid = f"{uid_book}-c{chapter['idx']:03d}-s{seq:04d}"
+        cur = conn.execute(
+            """INSERT INTO segments(sid, book_id, chapter_id, idx, para_idx, kind, pause_kind, original_text, narration_text, status, updated_at,
+                   src_start, src_end, character_id, span_kind, scene_idx, needs_review, review_reason, boundary_manual)
+               VALUES (?,?,?,?,?,?,?,?,?, 'pending', ?, ?,?,?,?,?,?,?,?)""",
+            (sid, book["id"], chapter["id"], n, sg.para_idx, sg.kind, sg.pause_kind, sg.text, _speech_text(sg.text, settings), now(),
+             sg.start, sg.end, cid, sg.span_kind, sg.scene_idx, 1 if sg.needs_review else 0, reason, 1 if sg.manual else 0))
+        created += 1
+        new_ids.append(cur.lastrowid)
+    retired = 0
+    for o in old:
+        if o["id"] in used:
+            continue
+        conn.execute("INSERT INTO segment_history(book_id, chapter_id, sid, src_start, src_end, text, reason, retired_at) VALUES (?,?,?,?,?,?,?,?)",
+                     (book["id"], chapter["id"], o["sid"], o["src_start"], o["src_end"], o["original_text"], "boundaries changed", now()))
+        for tbl, col in (("attempts", "segment_id"), ("review_actions", "segment_id"), ("directions", "segment_id"), ("direction_log", "segment_id")):
+            conn.execute(f"DELETE FROM {tbl} WHERE {col}=?", (o["id"],))
+        conn.execute("DELETE FROM segments WHERE id=?", (o["id"],))
+        retired += 1
+    conn.execute("UPDATE chapters SET segment_count=? WHERE id=?", (len(segs), chapter["id"]))
+    if created or retired:
+        conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (chapter["id"],))
+        from .. import services as SV
+
+        SV._revoke(conn, ctx, book["id"], "segment boundaries changed")
+    return {"chapter": chapter["idx"], "segments": len(segs), "kept": kept, "created": created, "retired": retired, "ids": new_ids}
+
+
+def resegment_book(ctx, book_id: int, chapter_ids: list[int] | None = None) -> dict:
+    settings = ctx.settings()
+    with ctx.db.tx() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        ns = book_ns(ctx, book)
+        out = []
+        for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,)):
+            if chapter_ids and ch["id"] not in chapter_ids:
+                continue
+            if row(conn, "SELECT 1 FROM chapter_text WHERE chapter_id=?", (ch["id"],)):
+                out.append(resegment_chapter(ctx, conn, book, ch, ns, settings))
+        set_stage(conn, book_id, "segmentation", "done", {"segments": sum(o["segments"] for o in out), "created": sum(o["created"] for o in out),
+                                                           "retired": sum(o["retired"] for o in out), "kept": sum(o["kept"] for o in out)})
+        from ..worker import refresh_book_state
+
+        refresh_book_state(conn, book_id)
+    return {"chapters": out, "created": sum(o["created"] for o in out), "retired": sum(o["retired"] for o in out), "kept": sum(o["kept"] for o in out),
+            "ids": [i for o in out for i in o["ids"]]}
+
+
+def reparse_chapters(conn, book_id: int, include_from_manifest: bool = True):
+    """Re-parse the immutable stored manuscript and pair its narrated chapters with the book's chapter rows."""
+    from ..parsing import parse_manuscript
+
+    m = row(conn, "SELECT * FROM manuscripts WHERE book_id=? ORDER BY id DESC LIMIT 1", (book_id,))
+    if not m:
+        raise _err("The book has no stored manuscript.", 409)
+    from pathlib import Path
+
+    data = Path(m["stored_path"]).read_bytes()
+    res = parse_manuscript(m["original_name"], data)
+    manifest = loads(m["parse_report_json"], {})
+    narrated = [c["index"] for c in manifest.get("chapters", []) if c.get("narrated")]
+    chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))
+    if len(narrated) != len(chapters):
+        raise _err("The stored manuscript no longer matches the book's chapters.", 409)
+    return res, list(zip(chapters, narrated))
+
+
+def rebuild_structure(ctx, book_id: int) -> dict:
+    """Pass 1 again over the stored manuscript, keeping characters, user-locked attributions and edits."""
+    import time
+
+    t0 = time.time()
+    settings = ctx.settings()
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        ns = book_ns(ctx, book)
+        res, pairs = reparse_chapters(conn, book_id)
+        known = C.known_for_analysis(conn, book_id)
+        locked = {r["chapter_id"]: {(x["start"], x["end"]): x["name"] for x in rows(
+            conn, "SELECT s.start, s.\"end\" AS end, c.name FROM nar_spans s JOIN characters c ON c.id=s.speaker_id WHERE s.chapter_id=? AND s.user_locked=1", (r["chapter_id"],))}
+            for r in rows(conn, "SELECT DISTINCT chapter_id FROM nar_spans WHERE book_id=? AND user_locked=1", (book_id,))}
+    cast = S.Cast(known)
+    plans = []
+    ch_s = settings.chunking
+    for chrow, ci in pairs:
+        ch = res.chapters[ci]
+        auto_title = ch.title == "Opening" or bool(re.fullmatch(r"Section \d+", ch.title))
+        title = ch.title if (ch_s.speak_chapter_titles and ch.title and not auto_title) else None
+        plans.append((chrow, S.analyze_chapter(ch.readable(), title, cast, ns.attribution_threshold, ns.auto_character_tracking, locked.get(chrow["id"]))))
+    with ctx.db.tx() as conn:
+        ids = C.sync_cast(conn, book_id, cast)
+        narrator_id = C.ensure_narrator(conn, book_id)
+        for chrow, st in plans:
+            persist_structure(conn, book_id, book["uid"], chrow["id"], chrow["idx"], st, ids, narrator_id)
+        flagged = scalar(conn, 'SELECT COUNT(*) FROM nar_spans WHERE book_id=? AND needs_review=1', (book_id,), 0)
+        set_stage(conn, book_id, "structure", "done", {"chapters": len(plans), "seconds": round(time.time() - t0, 3), "spans": sum(len(p.spans) for _c, p in plans),
+                                                        "characters": len([e for e in cast.entries.values() if e.kind != "narrator"]), "review": flagged})
+        set_stage(conn, book_id, "characters", "done", {"characters": len(ids)})
+    return {"seconds": round(time.time() - t0, 3), "review": flagged}
+
+
+# ------------------------------------------------------------------- generation plan
+
+
+@dataclass
+class Plan:
+    voice: VoiceSpec
+    voice_id: int
+    instruct: str | None
+    delivery_applied: bool
+    delivery_reason: str
+    gen_key: str
+    character_id: int | None
+    direction: dict | None
+    text: str
+    voice_kind: str = "preset"
+
+
+def spoken_text(seg: dict) -> str:
+    return (seg.get("override_text") or seg.get("narration_text") or seg.get("original_text") or "").strip()
+
+
+def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
+    """Everything that determines how a segment sounds: voice, delivery instruction and the cache key."""
+    ns = book_ns(ctx, book)
+    voice_id = None
+    vv = None
+    if seg.get("voice_override_id"):
+        v = row(conn, "SELECT * FROM voices WHERE id=?", (seg["voice_override_id"],))
+        if v:
+            vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],))
+            voice_id = v["id"]
+    if vv is None and seg.get("character_id"):
+        ch = row(conn, "SELECT voice_id, voice_version_id FROM characters WHERE id=? AND archived=0", (seg["character_id"],))
+        if ch and ch["voice_id"]:
+            v = row(conn, "SELECT * FROM voices WHERE id=? AND archived=0", (ch["voice_id"],))
+            if v:
+                vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (ch["voice_version_id"] or v["current_version_id"],))
+                voice_id = v["id"]
+    if vv is None:
+        v = row(conn, "SELECT * FROM voices WHERE id=?", (book["voice_id"],))
+        vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (book["voice_version_id"],))
+        if not v or not vv:
+            raise ValueError("book has no narrator voice assigned")
+        voice_id = v["id"]
+    spec = VoiceSpec.from_rows(v, vv)
+    final = None
+    info = {"applied": False, "reason": "delivery guidance is off for this book"}
+    delivery = None
+    if ns.director_enabled:
+        d = row(conn, "SELECT final_json FROM directions WHERE segment_id=?", (seg["id"],))
+        if d:
+            final = loads(d["final_json"], None)
+            delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery)
+        else:
+            info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
+    text = spoken_text(seg)
+    instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
+    snap = loads(book["settings_json"], {}).get("models", {})
+    key = short_hash(dumps({
+        "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
+        "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
+        "r": snap.get("repetition_penalty")}), 20)
+    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"])
+
+
+def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = None, include_approved: bool = False) -> list[int]:
+    """Segments whose rendered take no longer matches the plan (voice or delivery changed) go back to
+    pending; unchanged ones are untouched. -> ids of segments reset."""
+    book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    reset = []
+    sql = """SELECT s.*, a.gen_key AS sel_key FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id
+             WHERE s.book_id=? AND s.status IN ('passed','flagged'""" + (",'approved'" if include_approved else "") + ")"
+    for s in rows(conn, sql, (book_id,)):
+        if only_ids is not None and s["id"] not in only_ids:
+            continue
+        if not s["sel_key"]:
+            continue
+        if plan_for_segment(conn, ctx, s, book).gen_key != s["sel_key"]:
+            conn.execute("UPDATE segments SET round=round+1, attempts_used=0, status='pending', selected_attempt_id=NULL, flag_reason=NULL, updated_at=? WHERE id=?",
+                         (now(), s["id"]))
+            conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (s["chapter_id"],))
+            conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
+                         (s["id"], "regenerate", dumps({"note": "voice or delivery changed"}), "system", now()))
+            reset.append(s["id"])
+    if reset:
+        from .. import services as SV
+
+        SV._revoke(conn, ctx, book_id, f"{len(reset)} segment(s) changed voice or delivery")
+    return reset
+
+
+# ------------------------------------------------------------------------ manual edits
+
+
+def _seg_chapter(conn, segment_id: int):
+    s = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+    if not s:
+        raise _err("Segment not found", 404)
+    if s["src_start"] is None:
+        raise _err("This segment was not produced by semantic segmentation, so its boundaries cannot be edited.", 409)
+    return s, row(conn, "SELECT * FROM chapters WHERE id=?", (s["chapter_id"],)), row(conn, "SELECT * FROM books WHERE id=?", (s["book_id"],))
+
+
+def edit_boundary(ctx, segment_id: int, op: str, offset: int | None = None, actor: str = "operator") -> dict:
+    """op = split (cut inside the segment at ``offset``), merge_next (join with the following segment),
+    move_end (move the boundary after this segment to ``offset``)."""
+    settings = ctx.settings()
+    with ctx.db.tx() as conn:
+        s, ch, book = _seg_chapter(conn, segment_id)
+        if row(conn, "SELECT id FROM jobs WHERE book_id=? AND kind='book' AND status='running'", (book["id"],)):
+            raise _err("Pause the running job before editing segment boundaries.", 409)
+        ct = row(conn, "SELECT text FROM chapter_text WHERE chapter_id=?", (ch["id"],))["text"]
+
+        def snap(pos: int, lo: int, hi: int) -> int:
+            """Nearest word start strictly inside (lo, hi)."""
+            pos = max(lo + 1, min(hi - 1, pos))
+
+            def is_start(p: int) -> bool:
+                return lo < p < hi and ct[p - 1].isspace() and not ct[p].isspace()
+
+            for d in range(0, hi - lo):
+                for p in (pos - d, pos + d):
+                    if is_start(p):
+                        return p
+            return pos
+
+        if op == "split" and s["kind"] == "heading":
+            raise _err("A heading is spoken as one piece and cannot be split.", 409)
+        if op == "split":
+            if offset is None:
+                raise _err("offset is required", 422)
+            at = snap(int(offset), s["src_start"], s["src_end"])
+            if not s["src_start"] < at < s["src_end"] or not ct[s["src_start"]:at].strip() or not ct[at:s["src_end"]].strip():
+                raise _err("Choose a split point inside the segment text.", 422)
+            conn.execute("INSERT OR IGNORE INTO seg_edits(book_id, chapter_id, kind, offset, actor, created_at) VALUES (?,?,?,?,?,?)", (book["id"], ch["id"], "cut", at, actor, now()))
+            conn.execute("DELETE FROM seg_edits WHERE chapter_id=? AND kind='join' AND offset=?", (ch["id"], at))
+        elif op in ("merge_next", "move_end"):
+            nxt = row(conn, "SELECT * FROM segments WHERE chapter_id=? AND idx>? ORDER BY idx LIMIT 1", (ch["id"], s["idx"]))
+            if not nxt:
+                raise _err("There is no following segment in this chapter.", 409)
+            boundary = nxt["src_start"]
+            if op == "merge_next":
+                if nxt["kind"] == "heading" or s["kind"] == "heading" or nxt["scene_idx"] != s["scene_idx"]:
+                    raise _err("A heading or a scene break cannot be merged across.", 409)
+                if nxt["src_end"] - s["src_start"] > 1200:
+                    raise _err("The merged segment would exceed 1200 characters.", 422)
+                conn.execute("DELETE FROM seg_edits WHERE chapter_id=? AND kind='cut' AND offset=?", (ch["id"], boundary))
+                conn.execute("INSERT OR IGNORE INTO seg_edits(book_id, chapter_id, kind, offset, actor, created_at) VALUES (?,?,?,?,?,?)", (book["id"], ch["id"], "join", boundary, actor, now()))
+            else:
+                if offset is None:
+                    raise _err("offset is required", 422)
+                at = snap(int(offset), s["src_start"], nxt["src_end"])
+                if not s["src_start"] < at < nxt["src_end"]:
+                    raise _err("The new boundary must stay between the two segments' text.", 422)
+                # a new cut at the chosen word, and a join across the old boundary so the text on either side re-attaches
+                conn.execute("DELETE FROM seg_edits WHERE chapter_id=? AND offset IN (?, ?)", (ch["id"], boundary, at))
+                conn.execute("INSERT INTO seg_edits(book_id, chapter_id, kind, offset, actor, created_at) VALUES (?,?,?,?,?,?)", (book["id"], ch["id"], "cut", at, actor, now()))
+                if at != boundary:
+                    conn.execute("INSERT INTO seg_edits(book_id, chapter_id, kind, offset, actor, created_at) VALUES (?,?,?,?,?,?)", (book["id"], ch["id"], "join", boundary, actor, now()))
+        else:
+            raise _err("op must be split, merge_next or move_end", 422)
+        ctx.audit(conn, "segment", s["sid"], f"boundary_{op}", {"offset": offset}, actor)
+        res = resegment_chapter(ctx, conn, book, ch, book_ns(ctx, book), settings)
+        from ..worker import refresh_book_state
+
+        refresh_book_state(conn, book["id"])
+    return {k: v for k, v in res.items()} | {"book_id": book["id"]}
+
+
+# --------------------------------------------------------------------------- inspection
+
+
+def _nbr_direction(conn, seg: dict | None) -> dict | None:
+    if not seg:
+        return None
+    d = row(conn, "SELECT final_json FROM directions WHERE segment_id=?", (seg["id"],))
+    return {"sid": seg["sid"], "id": seg["id"], "text": seg["original_text"][:120], "final": loads(d["final_json"], None) if d else None,
+            "speaker_id": seg["character_id"], "status": seg["status"]}
+
+
+def inspect_segment(ctx, segment_id: int) -> dict:
+    with ctx.db.session() as conn:
+        s = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not s:
+            raise _err("Segment not found", 404)
+        book = row(conn, "SELECT * FROM books WHERE id=?", (s["book_id"],))
+        ns = book_ns(ctx, book)
+        ch = row(conn, "SELECT id, idx, title FROM chapters WHERE id=?", (s["chapter_id"],))
+        out: dict = {"segment_id": s["id"], "sid": s["sid"], "semantic": s["src_start"] is not None, "chapter": ch, "scene": s["scene_idx"],
+                     "status": s["status"], "needs_review": bool(s["needs_review"]), "review_reason": s["review_reason"], "span_kind": s["span_kind"],
+                     "boundary_manual": bool(s["boundary_manual"]), "src_start": s["src_start"], "src_end": s["src_end"],
+                     "original_text": s["original_text"], "spoken_text": spoken_text(s), "override_text": s["override_text"]}
+        if s["src_start"] is not None:
+            ct = row(conn, "SELECT text, meta_json FROM chapter_text WHERE chapter_id=?", (s["chapter_id"],))
+            meta = loads(ct["meta_json"], {})
+            out["context"] = W.context_window(ct["text"], s["src_start"], s["src_end"], ns.context_before_chars, ns.context_after_chars, meta.get("scene_starts"))
+            out["perspective"] = meta.get("perspective")
+            out["spans"] = [{"id": r["id"], "start": r["start"], "end": r["end"], "kind": r["kind"], "speaker_id": r["speaker_id"], "attribution": r["attribution"],
+                             "confidence": r["confidence"], "needs_review": bool(r["needs_review"]), "evidence": r["evidence"], "candidates": loads(r["candidates_json"], []),
+                             "locked": bool(r["user_locked"]), "text": ct["text"][r["start"]:r["end"]]}
+                            for r in rows(conn, 'SELECT * FROM nar_spans WHERE chapter_id=? AND "end">? AND start<? ORDER BY start', (s["chapter_id"], s["src_start"], s["src_end"]))]
+        plan = plan_for_segment(conn, ctx, s, book)
+        char = C.get_character(conn, s["character_id"]) if s["character_id"] else None
+        v = row(conn, "SELECT id, name, kind FROM voices WHERE id=?", (plan.voice_id,))
+        out["speaker"] = {"character_id": s["character_id"], "name": char["name"] if char else None, "kind": char["kind"] if char else None}
+        out["voice"] = {"id": v["id"], "name": v["name"], "kind": v["kind"], "model_id": plan.voice.model_id, "override": bool(s["voice_override_id"])}
+        d = row(conn, "SELECT * FROM directions WHERE segment_id=?", (segment_id,))
+        out["direction"] = None if not d else {
+            "source": d["source"], "raw": loads(d["raw_json"], {}), "smoothed": loads(d["smoothed_json"], {}), "user": loads(d["user_json"], {}),
+            "final": loads(d["final_json"], {}), "smoothing_note": d["smoothing_note"], "needs_review": bool(d["needs_review"]), "stale": bool(d["stale"]),
+            "updated_at": d["updated_at"]}
+        out["delivery"] = {"instruct": plan.instruct, "applied": plan.delivery_applied, "reason": plan.delivery_reason, "gen_key": plan.gen_key,
+                           "spoken_text_sent_to_tts": plan.text}
+        prev = row(conn, "SELECT * FROM segments WHERE chapter_id=? AND idx<? ORDER BY idx DESC LIMIT 1", (s["chapter_id"], s["idx"]))
+        nxt = row(conn, "SELECT * FROM segments WHERE chapter_id=? AND idx>? ORDER BY idx LIMIT 1", (s["chapter_id"], s["idx"]))
+        out["previous"], out["next"] = _nbr_direction(conn, prev), _nbr_direction(conn, nxt)
+        out["history"] = rows(conn, "SELECT source, payload_json, actor, created_at FROM direction_log WHERE segment_id=? ORDER BY id DESC LIMIT 20", (segment_id,))
+        for h in out["history"]:
+            h["payload"] = loads(h.pop("payload_json"), {})
+        out["attempts"] = [{"id": a["id"], "round": a["round"], "attempt_no": a["attempt_no"], "status": a["status"], "passed": a["passed"], "wer": a["wer"],
+                            "gen_key": a["gen_key"], "instruct_used": a["instruct_used"], "delivery_applied": a["delivery_applied"],
+                            "asr_skipped": bool(a["asr_skipped"]), "current": a["gen_key"] == plan.gen_key, "selected": a["id"] == s["selected_attempt_id"],
+                            "created_at": a["created_at"], "duration_s": a["duration_s"]}
+                           for a in rows(conn, "SELECT * FROM attempts WHERE segment_id=? ORDER BY id DESC", (segment_id,))]
+        out["settings"] = {"context_before_chars": ns.context_before_chars, "context_after_chars": ns.context_after_chars, "max_segment_chars": ns.max_segment_chars}
+    return out
+
+
+def set_segment_narrative(ctx, segment_id: int, patch: dict, actor: str = "operator") -> dict:
+    """Manual overrides on one segment: speaker, voice profile, emotion/intensity/pacing/delivery.
+    Overrides are kept across re-analysis. Only this segment is regenerated; downstream continuity is
+    recomputed from stored directions without new LLM calls."""
+    from . import analysis as A
+
+    changed_dir = False
+    with ctx.db.tx() as conn:
+        s = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not s:
+            raise _err("Segment not found", 404)
+        book = row(conn, "SELECT * FROM books WHERE id=?", (s["book_id"],))
+        sets, details = {}, {}
+        if "character_id" in patch:
+            cid = patch["character_id"]
+            if cid:
+                ch = row(conn, "SELECT * FROM characters WHERE id=? AND book_id=? AND archived=0", (cid, s["book_id"]))
+                if not ch:
+                    raise _err("Character not found in this book", 404)
+                if s["src_start"] is not None:  # lock the underlying dialogue spans to the confirmed speaker
+                    conn.execute("""UPDATE nar_spans SET speaker_id=?, attribution='user', confidence=1, needs_review=0, user_locked=1, evidence='confirmed by the user'
+                                    WHERE chapter_id=? AND kind='dialogue' AND start>=? AND "end"<=?""", (cid, s["chapter_id"], s["src_start"], s["src_end"]))
+                sets.update({"character_id": cid, "needs_review": 0, "review_reason": None})
+            else:
+                sets.update({"character_id": None})
+            details["character_id"] = cid
+        if "voice_id" in patch:
+            vid = patch["voice_id"] or None
+            if vid and not row(conn, "SELECT id FROM voices WHERE id=? AND archived=0", (vid,)):
+                raise _err("Voice not found", 404)
+            sets["voice_override_id"] = vid
+            details["voice_id"] = vid
+        user = {}
+        d = row(conn, "SELECT * FROM directions WHERE segment_id=?", (segment_id,))
+        if d:
+            user = loads(d["user_json"], {})
+        for k in ("emotion", "intensity", "pacing", "delivery", "tension"):
+            if k in patch:
+                v = patch[k]
+                if v in (None, ""):
+                    user.pop(k, None)
+                else:
+                    from . import vocab as V
+
+                    if k == "emotion" and v not in V.EMOTIONS:
+                        raise _err(f"emotion must be one of: {', '.join(V.EMOTIONS)}", 422)
+                    if k == "pacing" and v not in V.PACINGS:
+                        raise _err(f"pacing must be one of: {', '.join(V.PACINGS)}", 422)
+                    if k in ("intensity", "tension"):
+                        v = V.clamp_intensity(int(v))
+                    if k == "delivery":
+                        v = " ".join(str(v).split())[:240]
+                    user[k] = v
+                details[k] = v
+                changed_dir = True
+        if sets:
+            conn.execute(f"UPDATE segments SET {', '.join(k + '=?' for k in sets)}, updated_at=? WHERE id=?", (*sets.values(), now(), segment_id))
+        if changed_dir:
+            A.store_user_direction(conn, ctx, s, book, user, actor)
+        ctx.audit(conn, "segment", s["sid"], "narrative_edit", details, actor)
+    # a voice or speaker change can alter how neighbouring text is cut; re-reconcile the chapter
+    if "character_id" in patch and s["src_start"] is not None:
+        resegment_book(ctx, s["book_id"], [s["chapter_id"]])
+    if changed_dir:
+        A.recompute_from(ctx, s["book_id"], segment_id)
+    with ctx.db.tx() as conn:
+        reset = invalidate_changed(conn, ctx, s["book_id"], [segment_id], include_approved=True)
+        seg_now = row(conn, "SELECT status FROM segments WHERE id=?", (segment_id,))
+    if reset:
+        from ..services import enqueue_book
+
+        try:
+            enqueue_book(ctx, s["book_id"], front=True)
+        except Exception:
+            pass
+    return {"ok": True, "segment_id": segment_id, "regenerating": bool(reset), "status": seg_now["status"] if seg_now else None}
+
+
+def update_character(ctx, character_id: int, patch: dict, actor: str = "operator") -> dict:
+    with ctx.db.tx() as conn:
+        c0 = C.get_character(conn, character_id)
+        book_id = c0["book_id"]
+        c, voice_changed = C.apply_patch(ctx, conn, character_id, patch, actor)
+        affected = scalar(conn, "SELECT COUNT(*) FROM segments WHERE character_id=?", (character_id,), 0)
+    renamed = ("name" in patch or "aliases" in patch)
+    out = {"character": c, "voice_changed": voice_changed, "segments": affected, "reset": []}
+    if voice_changed and affected:
+        r = resegment_book(ctx, book_id)
+        with ctx.db.tx() as conn:
+            out["reset"] = invalidate_changed(conn, ctx, book_id)
+        out["resegmented"] = {"created": r["created"], "retired": r["retired"], "kept": r["kept"]}
+        if out["reset"]:
+            from ..services import enqueue_book
+
+            try:
+                enqueue_book(ctx, book_id, front=True)
+            except Exception:
+                pass
+    if renamed and not voice_changed:
+        pass
+    return out
+
+
+def merge_characters(ctx, src_id: int, dst_id: int, actor: str = "operator") -> dict:
+    with ctx.db.tx() as conn:
+        book_id = C.get_character(conn, src_id)["book_id"]
+        dst = C.merge_into(ctx, conn, src_id, dst_id, actor)
+    r = resegment_book(ctx, book_id)
+    with ctx.db.tx() as conn:
+        reset = invalidate_changed(conn, ctx, book_id)
+    return {"character": dst, "reset": reset, "resegmented": {"created": r["created"], "retired": r["retired"], "kept": r["kept"]}}
+
+
+def accept_guess(ctx, span_or_segment_id: int, character_id: int, actor: str = "operator") -> dict:
+    return set_segment_narrative(ctx, span_or_segment_id, {"character_id": character_id}, actor)
+
+
+def narrative_status(ctx, book_id: int) -> dict:
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not b:
+            raise _err("Book not found", 404)
+        ns = book_ns(ctx, b)
+        stages = {r["stage"]: {"status": r["status"], "started_at": r["started_at"], "finished_at": r["finished_at"], "error": r["error"],
+                               "stats": loads(r["stats_json"], {})} for r in rows(conn, "SELECT * FROM analysis_stages WHERE book_id=?", (book_id,))}
+        total = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=?", (book_id,), 0)
+        semantic = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND src_start IS NOT NULL", (book_id,), 0)
+        directed = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=?", (book_id,), 0)
+        stale = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND stale=1", (book_id,), 0)
+        review = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND needs_review=1", (book_id,), 0)
+        dreview = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND needs_review=1", (book_id,), 0)
+        job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
+        cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
+        chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
+    if job:
+        job["result"] = loads(job.pop("result_json"), None)
+    return {"semantic": semantic > 0, "segments": total, "semantic_segments": semantic, "directed": directed, "stale": stale,
+            "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
+            "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
+                         "semantic_segmentation": ns.semantic_segmentation}}
+__STUDIO_EOF_07e3bd8e8640__
+cat > "$DEST/studio/narrative/structure.py" <<'__STUDIO_EOF_e99ef7430c0a__'
+"""Pass 1 - manuscript structure and speaker analysis.
+
+Deterministic parsing of one chapter into paragraphs, scenes and dialogue/narration spans with
+exact character offsets into the chapter's *canonical text* (readable blocks, whitespace
+normalised, joined by a blank line). Speaker attribution looks at the tags and beats around a
+quote, at the quote-continuation convention across paragraphs, and at the turn-taking of a
+conversation. It never falls back to "the most recently mentioned character": a line with no
+evidence is left unattributed and flagged for review. A local LLM can later resolve the
+flagged spans (see ``store``); this module is the evidence-based first pass.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from . import vocab as V
+
+NARRATOR_NAME = "Narrator"
+_WS = re.compile(r"\s+")
+
+
+def normalize_ws(text: str) -> str:
+    return _WS.sub(" ", text).strip()
+
+
+# ----------------------------------------------------------------------------- data classes
+
+
+@dataclass
+class KnownCharacter:
+    name: str
+    aliases: list[str] = field(default_factory=list)
+    gender: str = ""
+    kind: str = "character"
+    id: int | None = None
+
+
+@dataclass
+class Para:
+    idx: int
+    kind: str  # heading | paragraph
+    start: int
+    end: int
+    text: str
+    scene_idx: int
+
+
+@dataclass
+class Span:
+    para_idx: int
+    idx: int
+    start: int
+    end: int
+    kind: str  # narration | dialogue | heading
+    text: str
+    scene_idx: int
+    speaker: str | None = None
+    attribution: str = "none"  # explicit | beat | pronoun | alternation | continuation | user | none
+    confidence: float = 0.0
+    needs_review: bool = False
+    evidence: str = ""
+    candidates: list[str] = field(default_factory=list)
+    cues: dict = field(default_factory=dict)
+    closed: bool = True
+    user_locked: bool = False
+    is_tag: bool = False  # a short narration tag ("she said.") attached to the dialogue before or after it
+    tag_speaker: str | None = None
+
+
+@dataclass
+class ChapterStructure:
+    text: str
+    paragraphs: list[Para]
+    spans: list[Span]
+    scenes: int
+    perspective: str
+    warnings: list[str]
+    tension: list[float]
+    tension_shifts: list[dict]
+
+
+# ----------------------------------------------------------------------------------- cast
+
+
+@dataclass
+class Entry:
+    name: str
+    aliases: set[str] = field(default_factory=set)
+    gender: str = ""
+    kind: str = "character"
+    id: int | None = None
+    discovered: bool = False
+    known: bool = False  # came from the database (user-curated or earlier chapters)
+
+
+def _tokens(raw: str) -> tuple[str, ...]:
+    toks = [t for t in re.findall(r"[A-Za-z][A-Za-z'’\-]*", raw.lower())]
+    while toks and toks[0] in V.TITLES and len(toks) > 1:
+        toks.pop(0)
+    return tuple(toks)
+
+
+def title_gender(raw: str) -> str:
+    m = re.match(r"\s*([A-Za-z]+)\.?\s", raw)
+    return V.TITLE_GENDER.get(m.group(1).lower(), "") if m else ""
+
+
+class Cast:
+    """Characters seen so far in a manuscript, with alias resolution that refuses to guess."""
+
+    def __init__(self, known: list[KnownCharacter] | None = None):
+        self.entries: dict[str, Entry] = {}
+        for k in known or []:
+            e = Entry(name=k.name, aliases=set(k.aliases), gender=k.gender, kind=k.kind, id=k.id, known=True)
+            self.entries[k.name] = e
+        if not any(e.kind == "narrator" for e in self.entries.values()):
+            self.entries[NARRATOR_NAME] = Entry(name=NARRATOR_NAME, kind="narrator", known=True)
+
+    def narrator(self) -> Entry:
+        return next(e for e in self.entries.values() if e.kind == "narrator")
+
+    def _keys(self, e: Entry) -> list[tuple[str, ...]]:
+        return [t for t in (_tokens(e.name), *(_tokens(a) for a in e.aliases)) if t]
+
+    def resolve(self, raw: str) -> Entry | None:
+        toks = _tokens(raw)
+        if not toks:
+            return None
+        exact = [e for e in self.entries.values() if e.kind != "narrator" and toks in self._keys(e)]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+        part = [e for e in self.entries.values() if e.kind != "narrator" and any(set(toks) <= set(k) for k in self._keys(e))]
+        return part[0] if len(part) == 1 else None
+
+    def add(self, raw: str) -> Entry:
+        cur = self.resolve(raw)
+        if cur is None:  # a longer form of a name already discovered: "Elena" + "Elena Marsh"
+            toks0 = _tokens(raw)
+            ext = [e for e in self.entries.values() if e.kind != "narrator" and not e.known and _tokens(e.name) and set(_tokens(e.name)) <= set(toks0)]
+            cur = ext[0] if len(ext) == 1 else None
+        clean =" ".join(w for w in re.findall(r"[A-Za-z][A-Za-z'’\-]*\.?", raw))
+        toks = _tokens(raw)
+        g = title_gender(raw)
+        if cur:
+            if g and not cur.gender:
+                cur.gender = g
+            if len(toks) > len(_tokens(cur.name)) and not cur.known and set(_tokens(cur.name)) <= set(toks):
+                del self.entries[cur.name]
+                cur.aliases.add(cur.name)
+                cur.name = " ".join(w.capitalize() for w in toks)
+                self.entries[cur.name] = cur
+            return cur
+        name = " ".join(w.capitalize() if not w.isupper() else w for w in (clean.split() if clean else raw.split()))
+        # a leading title stays out of the canonical name ("Dr. Hale" -> "Hale") but remains an alias
+        words = name.split()
+        if len(words) > 1 and words[0].lower().rstrip(".") in V.TITLES:
+            alias = name
+            name = " ".join(words[1:])
+        else:
+            alias = ""
+        e = Entry(name=name, gender=g, discovered=True)
+        if alias:
+            e.aliases.add(alias)
+        self.entries[name] = e
+        return e
+
+
+# ----------------------------------------------------------------------------- text build
+
+
+def build_chapter_text(blocks, title: str | None = None) -> tuple[str, list[Para], int]:
+    """Canonical chapter text and its paragraphs. Scene breaks and headings start a new scene."""
+    parts: list[tuple[str, str, int]] = []
+    scene = 0
+    seen_content = False
+    if title:
+        parts.append(("heading", normalize_ws(title), scene))
+        seen_content = True
+    for b in blocks:
+        if b.kind == "scene_break":
+            if seen_content:
+                scene += 1
+            continue
+        text = normalize_ws(b.text)
+        if not text:
+            continue
+        if b.kind == "heading" and seen_content and parts and parts[-1][0] != "heading":
+            scene += 1
+        parts.append((b.kind if b.kind in ("heading", "paragraph") else "paragraph", text, scene))
+        seen_content = True
+    paras: list[Para] = []
+    pos = 0
+    out = []
+    for i, (kind, text, sc) in enumerate(parts):
+        if i:
+            pos += 2
+        paras.append(Para(i, kind, pos, pos + len(text), text, sc))
+        out.append(text)
+        pos += len(text)
+    return "\n\n".join(out), paras, (scene + 1 if parts else 0)
+
+
+# ------------------------------------------------------------------------------ quotes
+
+_OPENERS = "“\""
+_CLOSERS = "”\""
+
+
+def _find_quotes(text: str) -> list[tuple[int, int, bool]]:
+    out: list[tuple[int, int, bool]] = []
+    open_at: int | None = None
+    for i, c in enumerate(text):
+        if open_at is None:
+            if c in _OPENERS:
+                open_at = i
+        elif c in _CLOSERS:
+            out.append((open_at, i + 1, True))
+            open_at = None
+        elif c == "“":
+            out.append((open_at, i, False))
+            open_at = i
+    if open_at is not None:
+        out.append((open_at, len(text), False))
+    return out
+
+
+def _is_dialogue(text: str, s: int, e: int, closed: bool) -> bool:
+    inner = text[s + 1:e - 1 if closed else e]
+    words = len(inner.split())
+    before = text[:s].rstrip()
+    at_start = not before
+    if at_start or (before and before[-1] in ",:.!?—-"):
+        return True
+    if words >= 4 or re.search(r"[,.!?…]\s*$", inner):
+        return True
+    return False  # a short quoted phrase inside a sentence: scare quotes, a title, a coined term
+
+
+def _split_spans(para: Para, base_idx: int) -> list[Span]:
+    text, off = para.text, para.start
+    cuts: list[tuple[int, int, str, bool]] = []
+    for s, e, closed in _find_quotes(text):
+        if _is_dialogue(text, s, e, closed):
+            cuts.append((s, e, "dialogue", closed))
+    spans: list[Span] = []
+    pos = 0
+
+    def push(a: int, b: int, kind: str, closed: bool = True):
+        while a < b and text[a].isspace():
+            a += 1
+        while b > a and text[b - 1].isspace():
+            b -= 1
+        if b > a:
+            spans.append(Span(para.idx, base_idx + len(spans), off + a, off + b, kind, text[a:b], para.scene_idx, closed=closed))
+
+    for s, e, kind, closed in cuts:
+        push(pos, s, "narration")
+        push(s, e, kind, closed)
+        pos = e
+    push(pos, len(text), "narration")
+    return spans
+
+
+# -------------------------------------------------------------------------------- tags
+
+_TITLE_RE = r"(?:(?:" + "|".join(t.capitalize() for t in V.TITLES) + r")\.?\s+)"
+_NAME_TOKEN = r"[A-Z][A-Za-z'’\-]+"
+_NAME = rf"(?:{_TITLE_RE})?{_NAME_TOKEN}(?:\s+{_NAME_TOKEN}){{0,2}}"
+_DESCR = r"[Tt]he\s+[a-z]+(?:\s+[a-z]+)?"
+_PRON = r"(?i:he|she|they|i)"
+_SUBJ = rf"(?P<s>{_PRON}\b|{_NAME}|{_DESCR})"
+_VERBS = rf"(?:{V.SPEECH_VERBS})"
+_ADV = r"(?:[a-z]+ly\s+)?"
+_LEAD = r"^[\s,.:;—–\-]*"
+
+POST_TAG = re.compile(_LEAD + _SUBJ + r"\s+" + _ADV + rf"(?P<v>{_VERBS})\b")
+POST_INV = re.compile(_LEAD + rf"(?P<v>{_VERBS})\s+(?P<s>{_PRON}\b|{_NAME}|{_DESCR})")
+PRE_TAG = re.compile(_SUBJ + r"\s+" + _ADV + rf"(?P<v>{_VERBS})\s*[,:]?\s*$")
+PRE_INV = re.compile(rf"(?P<v>{_VERBS})\s+(?P<s>{_PRON}\b|{_NAME}|{_DESCR})\s*[,:]?\s*$")
+BEAT_START = re.compile(_LEAD + rf"(?P<s>{_NAME})\s+[a-z]")
+PRON_BEAT = re.compile(_LEAD + r"(?P<s>(?i:he|she))\s+[a-z]")
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _plausible_name(subj: str) -> bool:
+    toks = re.findall(r"[A-Za-z][A-Za-z'’\-]*", subj)
+    toks = [t for t in toks if t.lower() not in V.TITLES]
+    return bool(toks) and all(t.lower() not in V.NOT_NAMES for t in toks) and all(t[0].isupper() for t in toks)
+
+
+@dataclass
+class _Tag:
+    subject: str
+    verb: str | None
+    kind: str  # explicit | beat
+    adverb: str | None = None
+    text: str = ""
+
+
+def _tag_from_post(post: str, cast: Cast) -> _Tag | None:
+    m = POST_TAG.match(post) or POST_INV.match(post)
+    if m:
+        adv = re.search(r"\b([a-z]+ly)\s+" + m.group("v"), post[:m.end()])
+        return _Tag(m.group("s").strip(), m.group("v"), "explicit", adv.group(1) if adv else None, post[:m.end()])
+    m = BEAT_START.match(post)
+    if m and cast.resolve(m.group("s")):
+        return _Tag(m.group("s").strip(), None, "beat", None, post[:m.end()])
+    m = PRON_BEAT.match(post)
+    if m:
+        return _Tag(m.group("s").strip(), None, "beat", None, post[:m.end()])
+    return None
+
+
+def _tag_from_pre(pre: str, cast: Cast) -> _Tag | None:
+    pre = pre.strip()
+    last = _SENT_SPLIT.split(pre)[-1] if pre else ""
+    m = PRE_TAG.search(last) or PRE_INV.search(last)
+    if m:
+        adv = re.search(r"\b([a-z]+ly)\s+" + m.group("v"), last)
+        return _Tag(m.group("s").strip(), m.group("v"), "explicit", adv.group(1) if adv else None, last)
+    m = re.match(rf"^\s*(?P<s>{_NAME})\s+[a-z]", last)
+    if m and cast.resolve(m.group("s")):
+        return _Tag(m.group("s").strip(), None, "beat", None, last)
+    m = re.match(r"^\s*(?P<s>(?i:he|she))\s+[a-z]", last)
+    if m:
+        return _Tag(m.group("s").strip(), None, "beat", None, last)
+    return None
+
+
+# --------------------------------------------------------------------------------- cues
+
+
+def span_cues(span_text: str, tag_text: str = "", verb: str | None = None, adverb: str | None = None) -> dict:
+    scores = V.cue_scores(span_text)
+    for emo, sc in V.cue_scores(tag_text).items():
+        scores[emo] = scores.get(emo, 0.0) + 0.5 * sc
+    pace, delta, explicit, evidence = "normal", 0.0, False, []
+    if verb and verb in V.VERB_COLOUR:
+        emo, d, p = V.VERB_COLOUR[verb]
+        if emo:
+            scores[emo] = scores.get(emo, 0.0) + 1.6
+        delta += d
+        pace = p or pace
+        explicit = True
+        evidence.append(f"speech verb '{verb}'")
+    if adverb and adverb in V.ADVERB_COLOUR:
+        emo, d = V.ADVERB_COLOUR[adverb]
+        scores[emo] = scores.get(emo, 0.0) + 1.4
+        delta += d
+        explicit = True
+        evidence.append(f"adverb '{adverb}'")
+    if not scores:
+        emo, inten = ("neutral", 1)
+    else:
+        emo = max(scores, key=lambda k: scores[k])
+        top = scores[emo]
+        if top >= 2.0:
+            explicit = True
+        inten = V.clamp_intensity(1 + top * 1.1 + delta)
+        if verb in ("whispered", "murmured") and emo == "neutral":
+            emo = "calm"
+        if span_text.count("!") >= 2:
+            inten = V.clamp_intensity(inten + 1)
+        for stem, e2 in V.CUE_STEMS:
+            if e2 == emo and re.search(r"\b" + re.escape(stem), span_text.lower()):
+                evidence.append(f"word '{stem}…' ({emo})")
+                break
+    if pace == "normal":
+        if span_text.count("…") + span_text.count("...") >= 1 and emo in ("sadness", "grief", "resignation", "fear"):
+            pace = "slow"
+        elif inten >= 4 and emo in ("anger", "fear", "excitement", "anxiety"):
+            pace = "brisk"
+        elif emo in ("sadness", "grief", "resignation"):
+            pace = "measured"
+    return {"emotion": emo, "intensity": inten, "pace": pace, "tension": V.tension_score(span_text + " " + tag_text),
+            "explicit": explicit, "evidence": evidence[:4]}
+
+
+# ------------------------------------------------------------------------- the analysis
+
+
+@dataclass
+class _Hist:
+    para: int
+    speaker: str
+    conf: float
+
+
+def _run(blocks, title: str | None, cast: Cast, threshold: float, track: bool,
+         locked: dict[tuple[int, int], str] | None, first_person: bool | None) -> ChapterStructure:
+    text, paras, scenes = build_chapter_text(blocks, title)
+    warnings: list[str] = []
+    spans: list[Span] = []
+    for p in paras:
+        if p.kind == "heading":
+            spans.append(Span(p.idx, len(spans), p.start, p.end, "heading", p.text, p.scene_idx, speaker=None, attribution="none"))
+            continue
+        for sp in _split_spans(p, len(spans)):
+            sp.idx = len(spans)
+            spans.append(sp)
+
+    # narrator perspective: share of first-person pronouns in narration
+    narr = " ".join(s.text for s in spans if s.kind == "narration")
+    words = re.findall(r"[A-Za-z']+", narr)
+    fp = sum(1 for w in words if w.lower() in ("i", "my", "me", "myself", "i'm", "i've", "i'd", "i'll"))
+    perspective = "first" if (first_person if first_person is not None else (words and fp / len(words) >= 0.015)) else "third"
+    narrator = cast.narrator()
+
+    by_para: dict[int, list[Span]] = {}
+    for s in spans:
+        by_para.setdefault(s.para_idx, []).append(s)
+
+    hist: dict[int, list[_Hist]] = {}  # scene -> attributed dialogue so far
+    participants: dict[int, dict[str, Entry]] = {}  # scene -> entries in play
+    prev_open: Span | None = None  # last dialogue span of the previous paragraph if it was left unclosed
+
+    def note(scene: int, e: Entry):
+        if e.kind != "narrator":
+            participants.setdefault(scene, {})[e.name] = e
+
+    def mentions(scene: int, ptext: str):
+        for e in list(cast.entries.values()):
+            if e.kind == "narrator":
+                continue
+            for nm in {e.name, *e.aliases}:
+                if nm and re.search(r"\b" + re.escape(nm) + r"\b", ptext):
+                    note(scene, e)
+                    break
+
+    def resolve_subject(sub: str, scene: int, via_verb: bool) -> tuple[Entry | None, str, float, list[str]]:
+        """-> (entry, attribution, confidence, candidates)"""
+        low = sub.lower()
+        if low == "i":
+            if perspective == "first":
+                return narrator, "explicit", 0.9, []
+            return None, "none", 0.0, []
+        if low in ("he", "she", "they"):
+            g = {"he": "male", "she": "female"}.get(low, "")
+            pool = [e for e in participants.get(scene, {}).values()]
+            if not g:
+                return None, "none", 0.0, [e.name for e in pool]
+            match = [e for e in pool if e.gender == g]
+            unknown = [e for e in pool if not e.gender]
+            if len(match) == 1 and not unknown:
+                return match[0], "pronoun", 0.72, []
+            return None, "none", 0.0, [e.name for e in match + unknown]
+        if low.startswith("the "):
+            e = cast.resolve(sub)
+            return (e, "explicit", 0.9, []) if e else (None, "none", 0.0, [sub])
+        e = cast.resolve(sub)
+        if e:
+            return e, "explicit", 0.95, []
+        if track and via_verb and _plausible_name(sub):
+            e = cast.add(sub)
+            return e, "explicit", 0.9, []
+        return None, "none", 0.0, [sub]
+
+    for p in paras:
+        if p.kind == "heading":
+            continue
+        ps = by_para.get(p.idx, [])
+        mentions(p.scene_idx, p.text)
+        consumed: set[int] = set()
+        for k, sp in enumerate(ps):
+            if sp.kind != "dialogue":
+                continue
+            nxt = ps[k + 1] if k + 1 < len(ps) else None
+            prv = ps[k - 1] if k > 0 else None
+            post_tag = _tag_from_post(nxt.text, cast) if nxt is not None and nxt.kind == "narration" else None
+            pre_tag = (_tag_from_pre(prv.text, cast) if prv is not None and prv.kind == "narration" and id(prv) not in consumed else None)
+            tag, tag_src = (post_tag, nxt) if post_tag else (pre_tag, prv)
+            if post_tag and pre_tag and post_tag.kind == "beat" and pre_tag.kind == "explicit":
+                tag, tag_src = pre_tag, prv
+            ent: Entry | None = None
+            if tag:
+                ent, how, conf, cands = resolve_subject(tag.subject, p.scene_idx, via_verb=tag.verb is not None)
+                if ent is not None:
+                    sp.attribution = "beat" if tag.kind == "beat" else how
+                    if tag.kind == "beat":
+                        sp.confidence = min(conf, 0.62) if tag.subject.lower() in ("he", "she") else 0.8
+                    else:
+                        sp.confidence = conf
+                    sp.evidence = f"{tag.text.strip()!r}"[:160]
+                    consumed.add(id(tag_src))
+                    if tag.verb and tag_src is not None and len(tag_src.text) <= 70:
+                        tag_src.is_tag, tag_src.tag_speaker = True, ent.name
+                    sp.cues = span_cues(sp.text, tag_src.text if tag_src is not None else "", tag.verb, tag.adverb)
+                else:
+                    sp.candidates = cands
+                    sp.evidence = f"tag names '{tag.subject}' but it does not identify a single known character"
+                    if tag.verb:
+                        consumed.add(id(tag_src))
+                    sp.cues = span_cues(sp.text, tag_src.text if tag_src is not None else "", tag.verb, tag.adverb)
+            if ent is None and not tag and prv is not None:
+                # a later quote in the same paragraph, after a tag: `"A," she said, "b."`
+                before = prv if prv.kind == "dialogue" else (ps[k - 2] if k >= 2 and id(prv) in consumed and ps[k - 2].kind == "dialogue" else None)
+                if before is not None and before.speaker:
+                    ent = cast.entries.get(before.speaker)
+                    if ent:
+                        sp.attribution, sp.confidence = "continuation", round(before.confidence * 0.95, 3)
+                        sp.evidence = "continues the same speech within the paragraph"
+            if ent is None and not tag:
+                # same speech continued in the next paragraph (opening quote repeated, previous quote left open)
+                if prev_open is not None and k == 0 and sp.start == p.start and prev_open.speaker:
+                    ent = cast.entries.get(prev_open.speaker)
+                    if ent:
+                        sp.attribution, sp.confidence = "continuation", round(prev_open.confidence * 0.95, 3)
+                        sp.evidence = "unclosed quote in the previous paragraph continues here"
+            if ent is None and not tag:
+                h = hist.get(p.scene_idx, [])
+                if len(h) >= 2 and h[-1].speaker != h[-2].speaker and p.idx - h[-1].para <= 2 and p.idx != h[-1].para:
+                    cand = h[-2].speaker
+                    conf = round(min(0.8, min(h[-1].conf, h[-2].conf) * 0.85), 3)
+                    ent = cast.entries.get(cand)
+                    if ent:
+                        sp.attribution, sp.confidence = "alternation", conf
+                        sp.evidence = f"turn-taking between {h[-2].speaker} and {h[-1].speaker}"
+                        sp.candidates = [h[-2].speaker, h[-1].speaker]
+                else:
+                    sp.evidence = sp.evidence or "no speaker tag, beat or conversation pattern identifies the speaker"
+                    sp.candidates = [e.name for e in participants.get(p.scene_idx, {}).values()][:6]
+                if not sp.cues:
+                    sp.cues = span_cues(sp.text)
+            if ent is not None and sp.confidence >= threshold:
+                sp.speaker = ent.name
+                note(p.scene_idx, ent)
+                h = hist.setdefault(p.scene_idx, [])
+                if not (h and h[-1].para == p.idx and h[-1].speaker == ent.name):
+                    h.append(_Hist(p.idx, ent.name, sp.confidence))
+                if not sp.cues:
+                    sp.cues = span_cues(sp.text)
+            else:
+                if ent is not None:
+                    sp.candidates = [ent.name] + [c for c in sp.candidates if c != ent.name]
+                    sp.evidence += f" (confidence {sp.confidence:.2f} is below the {threshold:.2f} threshold)"
+                sp.speaker = None
+                sp.needs_review = True
+                sp.confidence = sp.confidence if ent is not None else 0.0
+                if not sp.cues:
+                    sp.cues = span_cues(sp.text)
+        # narration spans: cues from their own text
+        for sp in ps:
+            if sp.kind == "narration":
+                sp.cues = span_cues(sp.text)
+                sp.speaker = narrator.name
+                sp.attribution = "explicit"
+                sp.confidence = 1.0
+        # open-quote carry to the next paragraph
+        dl = [s for s in ps if s.kind == "dialogue"]
+        prev_open = dl[-1] if dl and not dl[-1].closed else None
+        if prev_open is not None:
+            nxt_p = paras[p.idx + 1] if p.idx + 1 < len(paras) else None
+            if nxt_p is None or not nxt_p.text.startswith(tuple(_OPENERS)):
+                warnings.append(f"Paragraph {p.idx}: a quotation is opened but never closed.")
+                prev_open = None
+    for s in spans:
+        if s.kind == "heading":
+            s.cues = {"emotion": "neutral", "intensity": 1, "pace": "measured", "tension": 0.0, "explicit": False, "evidence": []}
+            s.speaker, s.attribution, s.confidence = narrator.name, "explicit", 1.0
+
+    # locked (user-confirmed) attributions survive re-analysis
+    if locked:
+        for s in spans:
+            nm = locked.get((s.start, s.end))
+            if nm and s.kind == "dialogue":
+                ent = cast.entries.get(nm)
+                if ent:
+                    s.speaker, s.attribution, s.confidence, s.needs_review, s.user_locked = ent.name, "user", 1.0, False, True
+                    s.evidence = "confirmed by the user"
+
+    # emotional transitions between consecutive spans of the same scene
+    prev: Span | None = None
+    for s in spans:
+        shift = 0.0
+        if prev is not None and prev.scene_idx == s.scene_idx and s.kind != "heading" and prev.kind != "heading":
+            a, b = prev.cues, s.cues
+            fam = V.FAMILIES.get(a.get("emotion", "neutral")) != V.FAMILIES.get(b.get("emotion", "neutral"))
+            d = abs(int(b.get("intensity", 1)) - int(a.get("intensity", 1)))
+            if (fam and max(a.get("intensity", 1), b.get("intensity", 1)) >= 3) or d >= 2:
+                shift = round(min(1.0, 0.5 * (d / 4) + (0.5 if fam else 0.0)), 2)
+        s.cues["shift"] = shift
+        prev = s
+
+    # tension profile per paragraph and the notable jumps in it
+    tension = [V.tension_score(p.text) for p in paras]
+    shifts = []
+    for i in range(1, len(tension)):
+        base = sum(tension[max(0, i - 3):i]) / len(tension[max(0, i - 3):i])
+        if abs(tension[i] - base) >= 2.0:
+            shifts.append({"para": i, "start": paras[i].start, "from": round(base, 2), "to": tension[i]})
+    return ChapterStructure(text, paras, spans, scenes, perspective, warnings, tension, shifts)
+
+
+_PRON_F = re.compile(r"\b(she|her|hers|herself)\b", re.I)
+_PRON_M = re.compile(r"\b(he|him|his|himself)\b", re.I)
+
+
+def _outside_quotes(text: str) -> str:
+    out, last = [], 0
+    for s, e, _c in _find_quotes(text):
+        out.append(text[last:s])
+        last = e
+    out.append(text[last:])
+    return " ".join(out)
+
+
+def enrich_cast(cast: Cast, text: str) -> None:
+    """Learn full names ("Elena" -> "Elena Marsh") and genders (from titles and from pronouns that
+    share a sentence with exactly one named character) from the chapter text."""
+    narration = _outside_quotes(text)
+    for e in list(cast.entries.values()):
+        if e.kind == "narrator" or e.known or len(_tokens(e.name)) != 1:
+            continue
+        found: dict[str, int] = {}
+        for m in re.finditer(rf"\b{re.escape(e.name)}\s+({_NAME_TOKEN})\b", narration):
+            sur = m.group(1)
+            if sur.lower() not in V.NOT_NAMES and sur.lower() not in V.TITLES:
+                found[sur] = found.get(sur, 0) + 1
+        if found:
+            best = max(found, key=lambda k: found[k])
+            if all(best.lower() not in _tokens(o.name) for o in cast.entries.values() if o is not e):
+                cast.add(f"{e.name} {best}")
+    votes: dict[str, dict[str, int]] = {}
+    for sent in _SENT_SPLIT.split(narration):
+        present = []
+        for e in cast.entries.values():
+            if e.kind == "narrator":
+                continue
+            for nm in {e.name, *e.aliases}:
+                m = re.search(r"\b" + re.escape(nm) + r"\b", sent)
+                if m:
+                    present.append((e, m.end()))
+                    break
+        if len(present) != 1:
+            continue
+        e, end = present[0]
+        tail = sent[end:]
+        f, m_ = bool(_PRON_F.search(tail)), bool(_PRON_M.search(tail))
+        if f != m_:
+            votes.setdefault(e.name, {"female": 0, "male": 0})["female" if f else "male"] += 1
+    for name, v in votes.items():
+        e = cast.entries.get(name)
+        if e is not None and not e.gender and not e.known:
+            top = max(v, key=lambda k: v[k])
+            if v[top] >= 1 and v["female" if top == "male" else "male"] == 0:
+                e.gender = top
+
+
+def analyze_chapter(blocks, title: str | None, cast: Cast, threshold: float = 0.6, track: bool = True,
+                    locked: dict[tuple[int, int], str] | None = None, first_person: bool | None = None) -> ChapterStructure:
+    """Two runs over the chapter: the first discovers names (and learns surnames and genders),
+    the second attributes every quote with that knowledge available from the first line."""
+    res = _run(blocks, title, cast, threshold, track, locked, first_person)
+    enrich_cast(cast, res.text)
+    return _run(blocks, title, cast, threshold, track, locked, first_person)
+__STUDIO_EOF_e99ef7430c0a__
+cat > "$DEST/studio/narrative/vocab.py" <<'__STUDIO_EOF_7443afaba3bf__'
+"""Controlled vocabulary shared by the structure pass, the Director and the delivery layer."""
+from __future__ import annotations
+
+import re
+
+EMOTIONS = (
+    "neutral", "calm", "joy", "excitement", "tenderness", "sadness", "grief", "fear", "anxiety",
+    "anger", "surprise", "disgust", "determination", "humor", "resignation",
+)
+PACINGS = ("slow", "measured", "normal", "brisk", "fast")
+INTENSITY_MIN, INTENSITY_MAX = 1, 5
+
+# How each emotion is phrased for a TTS instruction (kept short and concrete).
+EMOTION_PHRASES = {
+    "neutral": "in a neutral, natural narrative tone",
+    "calm": "calmly and evenly",
+    "joy": "warmly, with audible joy",
+    "excitement": "with eager excitement",
+    "tenderness": "tenderly and gently",
+    "sadness": "with sadness",
+    "grief": "with deep grief, voice heavy",
+    "fear": "fearfully, breath tight",
+    "anxiety": "anxiously, slightly unsteady",
+    "anger": "angrily, with edge",
+    "surprise": "with surprise",
+    "disgust": "with disgust",
+    "determination": "with firm determination",
+    "humor": "with dry, light humor",
+    "resignation": "with weary resignation",
+}
+INTENSITY_ADVERB = {1: "very slightly", 2: "slightly", 3: "moderately", 4: "strongly", 5: "intensely"}
+PACING_PHRASES = {"slow": "slow pace", "measured": "measured pace", "normal": "natural pace", "brisk": "brisk pace", "fast": "fast pace"}
+
+# Related emotions: a move inside a family is a smooth shift, a move across families is a jump.
+FAMILIES = {
+    "neutral": "flat", "calm": "flat", "resignation": "low", "sadness": "low", "grief": "low", "tenderness": "warm", "joy": "warm",
+    "humor": "warm", "excitement": "high", "surprise": "high", "determination": "high", "anger": "hot", "disgust": "hot",
+    "fear": "tense", "anxiety": "tense",
+}
+
+SPEECH_VERBS = (
+    "said|asked|replied|answered|whispered|shouted|yelled|cried|called|murmured|muttered|snapped|sighed|laughed|exclaimed|demanded|"
+    "insisted|added|continued|began|suggested|offered|warned|breathed|growled|hissed|snarled|sobbed|stammered|stuttered|pleaded|begged|"
+    "announced|declared|remarked|observed|explained|objected|protested|groaned|gasped|scoffed|sneered|barked|thundered|bellowed|"
+    "screamed|shrieked|roared|whimpered|croaked|rasped|chuckled|interrupted|agreed|admitted|conceded|stated|noted|mused|wondered|"
+    "ventured|prompted|urged|cautioned|retorted|countered|sniffed|panted|wailed"
+)
+
+TITLES = ("mr", "mrs", "ms", "miss", "dr", "prof", "professor", "captain", "capt", "sir", "lady", "lord", "madam", "madame", "mister",
+          "detective", "sergeant", "sgt", "officer", "father", "mother", "uncle", "aunt", "king", "queen", "prince", "princess", "judge")
+TITLE_GENDER = {"mr": "male", "mrs": "female", "ms": "female", "miss": "female", "sir": "male", "lady": "female", "lord": "male",
+                "madam": "female", "madame": "female", "mister": "male", "father": "male", "mother": "female", "uncle": "male",
+                "aunt": "female", "king": "male", "queen": "female", "prince": "male", "princess": "female"}
+
+NOT_NAMES = {
+    "the", "a", "an", "then", "and", "but", "or", "so", "yet", "when", "as", "if", "it", "there", "this", "that", "these", "those", "his",
+    "her", "their", "my", "our", "your", "its", "after", "before", "while", "once", "now", "just", "still", "even", "only", "suddenly",
+    "finally", "later", "meanwhile", "perhaps", "maybe", "again", "also", "however", "instead", "outside", "inside", "somewhere", "everyone",
+    "someone", "nobody", "anyone", "everything", "something", "nothing", "what", "who", "why", "how", "where", "which", "here", "yes", "no",
+    "oh", "well", "chapter", "he", "she", "they", "i", "we", "you", "one", "two", "three", "with", "from", "into", "for", "not", "do",
+    "did", "does", "was", "were", "is", "are", "had", "have", "has", "be", "been", "very", "all", "some", "any", "each", "both", "such",
+}
+
+# --------------------------------------------------------------------------- lexical cues
+# word stem -> (emotion, strength 1-3). Matched on word starts, so "furious" and "furiously" both hit.
+_CUE_WORDS = {
+    "joy": "happy joy delight laugh smil grin cheer glad beam giggl rejoic elat thrill",
+    "excitement": "excit eager thrilled rush racing burst bounc cheer wild",
+    "tenderness": "gentl soft tender caress cradl kiss embrac fond sweet",
+    "sadness": "sad tear cry cried weep sorrow lonely miss mourn sob heartbr melanchol",
+    "grief": "grief griev dead death died funeral coffin buried loss lost gone widow bereav",
+    "fear": "afraid fear terror terrif scared frighten dread panic horror trembl shak cower",
+    "anxiety": "nervous anxious worr uneasy tense fidget apprehens restless doubt",
+    "anger": "anger angry furious rage fury snarl glare slam fume hate seeth livid outrag",
+    "surprise": "surpris shock stunn gasp astonish startl amaz stared",
+    "disgust": "disgust revolt repuls sicken loath vile",
+    "determination": "determin resolv vow swore firm steel refus insist",
+    "humor": "joke jest wry smirk chuckl teas amus quip",
+    "resignation": "sigh weary tired resign shrug given up",
+    "calm": "calm quiet still peace serene steady",
+}
+CUE_STEMS: list[tuple[str, str]] = []
+for _emo, _words in _CUE_WORDS.items():
+    for _w in _words.split():
+        CUE_STEMS.append((_w, _emo))
+
+# Speech-verb colouring: verb -> (emotion or None, intensity delta, pacing or None)
+VERB_COLOUR = {
+    "whispered": (None, -1, "slow"), "murmured": (None, -1, "slow"), "breathed": ("tenderness", -1, "slow"),
+    "shouted": ("excitement", 2, "fast"), "yelled": ("excitement", 2, "fast"), "screamed": ("fear", 3, "fast"), "shrieked": ("fear", 3, "fast"),
+    "roared": ("anger", 3, "fast"), "bellowed": ("anger", 3, "fast"), "thundered": ("anger", 3, "brisk"), "barked": ("anger", 2, "brisk"),
+    "snapped": ("anger", 1, "brisk"), "growled": ("anger", 1, "measured"), "hissed": ("anger", 1, "brisk"), "snarled": ("anger", 2, "brisk"),
+    "sobbed": ("sadness", 2, "slow"), "wailed": ("grief", 3, "slow"), "whimpered": ("fear", 1, "slow"), "pleaded": ("fear", 1, "brisk"),
+    "begged": ("fear", 2, "brisk"), "sighed": ("resignation", 0, "slow"), "laughed": ("joy", 1, "brisk"), "chuckled": ("humor", 0, "normal"),
+    "gasped": ("surprise", 1, "brisk"), "exclaimed": ("excitement", 1, "brisk"), "stammered": ("anxiety", 1, "measured"),
+    "stuttered": ("anxiety", 1, "measured"), "scoffed": ("disgust", 0, "normal"), "sneered": ("disgust", 1, "normal"),
+    "groaned": ("sadness", 0, "slow"), "croaked": (None, 0, "slow"), "panted": ("fear", 1, "fast"),
+}
+ADVERB_COLOUR = {
+    "angrily": ("anger", 1), "sadly": ("sadness", 1), "happily": ("joy", 1), "fearfully": ("fear", 1), "nervously": ("anxiety", 1),
+    "gently": ("tenderness", 1), "softly": ("tenderness", 0), "coldly": ("disgust", 0), "bitterly": ("anger", 1), "wearily": ("resignation", 1),
+    "excitedly": ("excitement", 1), "quietly": ("calm", 0), "firmly": ("determination", 1), "tearfully": ("sadness", 2), "furiously": ("anger", 2),
+    "warmly": ("tenderness", 0), "sharply": ("anger", 1), "wryly": ("humor", 0), "desperately": ("fear", 2), "calmly": ("calm", 0),
+}
+TENSION_WORDS = "danger threat gun knife blood scream run chase trap deadly kill death dark silence footsteps hunted trembl panic fight hurry now quickly".split()
+
+_WORD = re.compile(r"[A-Za-z']+")
+
+
+def cue_scores(text: str) -> dict[str, float]:
+    """Raw per-emotion evidence in a piece of text (word-stem hits, exclamations)."""
+    scores: dict[str, float] = {}
+    low = text.lower()
+    for w in _WORD.findall(low):
+        for stem, emo in CUE_STEMS:
+            if w.startswith(stem):
+                scores[emo] = scores.get(emo, 0.0) + 1.0
+                break
+    ex = low.count("!")
+    if ex:
+        scores["excitement"] = scores.get("excitement", 0.0) + 0.4 * min(ex, 3)
+    return scores
+
+
+def tension_score(text: str) -> float:
+    """0..5 narrative tension estimate from lexical and rhythmic evidence."""
+    words = _WORD.findall(text.lower())
+    if not words:
+        return 0.0
+    hits = sum(1 for w in words if any(w.startswith(t) for t in TENSION_WORDS))
+    sentences = max(1, len(re.findall(r"[.!?]+", text)))
+    avg_len = len(words) / sentences
+    score = hits * 1.2 + text.count("!") * 0.5 + text.count("?") * 0.2 + (1.0 if avg_len < 7 and sentences >= 3 else 0.0)
+    return round(min(5.0, score), 2)
+
+
+def clamp_intensity(v: float | int) -> int:
+    return int(max(INTENSITY_MIN, min(INTENSITY_MAX, round(v))))
+__STUDIO_EOF_7443afaba3bf__
+cat > "$DEST/studio/narrative/voicecheck.py" <<'__STUDIO_EOF_fe02edb77aa8__'
+"""Acoustic voice-consistency measurement across independently generated segments.
+
+Each segment is synthesised on its own, and a designed or cloned voice is not guaranteed to sound
+the same every time. This module measures that drift with two simple, transparent features per
+segment - median fundamental frequency (autocorrelation pitch tracker on voiced frames) and
+spectral centroid - and reports their spread per voice. It describes *acoustic* similarity only:
+it is not speaker verification and says nothing about emotional quality.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+
+def _frames(x: np.ndarray, size: int, hop: int):
+    for i in range(0, max(0, len(x) - size), hop):
+        yield x[i:i + size]
+
+
+def f0_median(audio: np.ndarray, sr: int, fmin: float = 70.0, fmax: float = 400.0) -> float | None:
+    """Median pitch in Hz over voiced frames, or None when nothing is clearly voiced."""
+    x = np.asarray(audio, dtype=np.float64)
+    if x.size < sr // 4:
+        return None
+    size, hop = int(0.04 * sr), int(0.02 * sr)
+    lo, hi = int(sr / fmax), int(sr / fmin)
+    peak = float(np.max(np.abs(x))) or 1.0
+    f0s = []
+    for fr in _frames(x, size, hop):
+        if np.sqrt(np.mean(fr ** 2)) < 0.05 * peak:
+            continue
+        fr = fr - np.mean(fr)
+        ac = np.correlate(fr, fr, mode="full")[len(fr) - 1:]
+        if ac[0] <= 0:
+            continue
+        ac = ac / ac[0]
+        seg = ac[lo:hi]
+        if seg.size == 0:
+            continue
+        k = int(np.argmax(seg))
+        if seg[k] >= 0.45:
+            f0s.append(sr / (lo + k))
+    return float(np.median(f0s)) if len(f0s) >= 5 else None
+
+
+def spectral_centroid(audio: np.ndarray, sr: int) -> float:
+    x = np.asarray(audio, dtype=np.float64)
+    if x.size == 0:
+        return 0.0
+    spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+    freqs = np.fft.rfftfreq(len(x), 1.0 / sr)
+    return float((spec * freqs).sum() / (spec.sum() or 1.0))
+
+
+def consistency(items: list[tuple[str, np.ndarray, int]]) -> dict:
+    """items = [(voice label, audio, sample rate)] -> per voice: segment count, median f0 mean/std/CV, centroid mean/CV."""
+    by: dict[str, list[tuple[float | None, float]]] = {}
+    for label, audio, sr in items:
+        by.setdefault(label, []).append((f0_median(audio, sr), spectral_centroid(audio, sr)))
+    out = {}
+    for label, vals in by.items():
+        f0 = np.array([v[0] for v in vals if v[0] is not None])
+        cen = np.array([v[1] for v in vals])
+        out[label] = {
+            "segments": len(vals), "voiced_segments": int(f0.size),
+            "f0_mean_hz": round(float(f0.mean()), 1) if f0.size else None,
+            "f0_cv": round(float(f0.std() / f0.mean()), 3) if f0.size > 1 and f0.mean() else None,
+            "centroid_mean_hz": round(float(cen.mean()), 1) if cen.size else None,
+            "centroid_cv": round(float(cen.std() / cen.mean()), 3) if cen.size > 1 and cen.mean() else None,
+        }
+    return out
+__STUDIO_EOF_fe02edb77aa8__
+cat > "$DEST/studio/narrative/windows.py" <<'__STUDIO_EOF_35783594c7c7__'
+"""The two independent windows around a segment.
+
+* The **narration window** is the only text ever handed to the TTS engine: the segment's own
+  words (whitespace-normalised), never metadata, instructions or neighbouring text.
+* The **narrative context window** is surrounding manuscript text for analysis only. It is
+  clipped to the chapter, snapped to sentence starts/ends, and annotated with scene breaks.
+"""
+from __future__ import annotations
+
+import re
+
+SCENE_MARK = "[scene break]"
+_SENT = re.compile(r"(?<=[.!?”\"])\s+")
+
+
+def narration_window(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _snap_start(text: str, lo: int, limit: int = 240) -> int:
+    """Move a window start forward to a paragraph or sentence start (never mid-sentence if one is near)."""
+    if lo <= 0:
+        return 0
+    seg = text[lo:lo + limit]
+    m = re.search(r"\n\n", seg)
+    if m:
+        return lo + m.end()
+    m = _SENT.search(seg)
+    if m:
+        return lo + m.end()
+    m = re.search(r"\s", seg)
+    return lo + m.end() if m else lo
+
+
+def _snap_end(text: str, hi: int, limit: int = 240) -> int:
+    if hi >= len(text):
+        return len(text)
+    lo = max(0, hi - limit)
+    seg = text[lo:hi]
+    cut = max(seg.rfind("\n\n"), -1)
+    best = lo + cut if cut >= 0 else -1
+    for m in _SENT.finditer(seg):
+        best = max(best, lo + m.start())
+    if best > lo:
+        return best
+    k = seg.rfind(" ")
+    return lo + k if k > 0 else hi
+
+
+def context_window(chapter_text: str, start: int, end: int, before: int, after: int, scene_starts: list[int] | None = None) -> dict:
+    """Surrounding context for ``chapter_text[start:end]``. ``scene_starts`` are the offsets at which
+    a new scene begins (used to mark scene breaks inside the window)."""
+    b0 = _snap_start(chapter_text, max(0, start - before)) if before > 0 else start
+    b0 = min(b0, start)
+    a1 = _snap_end(chapter_text, min(len(chapter_text), end + after)) if after > 0 else end
+    a1 = max(a1, end)
+    marks = sorted(s for s in (scene_starts or []) if s > 0)
+
+    def annotate(lo: int, hi: int) -> str:
+        out, pos = [], lo
+        for s in marks:
+            if lo < s < hi:
+                out.append(chapter_text[pos:s].rstrip())
+                out.append(SCENE_MARK)
+                pos = s
+        out.append(chapter_text[pos:hi])
+        return "\n\n".join(x for x in out if x.strip())
+
+    return {
+        "before": annotate(b0, start).strip() if before > 0 else "",
+        "after": annotate(end, a1).strip() if after > 0 else "",
+        "chapter_start": b0 <= 0 and start - before <= 0,
+        "chapter_end": a1 >= len(chapter_text),
+        "scene_break_before": any(b0 < s <= start for s in marks),
+        "scene_break_after": any(end < s < a1 for s in marks),
+        "before_chars": start - b0,
+        "after_chars": a1 - end,
+    }
+__STUDIO_EOF_35783594c7c7__
 cat > "$DEST/studio/normalize.py" <<'__STUDIO_EOF_591464a9ef33__'
 """Text normalisation.
 
@@ -4613,7 +8147,7 @@ def _epub_toc_labels(zf: zipfile.ZipFile, manifest: dict, toc_id: str | None) ->
             pass
     return labels
 __STUDIO_EOF_1b54c58a2a23__
-cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_ee3d75cb5bf2__'
+cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_5a45663174ae__'
 """Per-segment attempt lifecycle: synthesize -> transcribe -> QA -> score -> retry/flag.
 
 Budget rules (crash-safe):
@@ -4637,6 +8171,7 @@ from .align import evaluate
 from .config import STORAGE_CATEGORIES
 from .db import row, rows
 from .engines import EngineUnavailable, SynthParams, VoiceSpec, max_tokens_for
+from .narrative import store as N_store
 from .util import atomic_write_text, dumps, loads, now, short_hash
 
 log = logging.getLogger("studio.pipeline")
@@ -4789,6 +8324,28 @@ def attempt_params(snapshot: dict, sid: str, rnd: int, attempt_no: int, text: st
     )
 
 
+def reusable_take(conn, book: dict, seg: dict, gen_key: str) -> dict | None:
+    """An earlier passing take of this very segment made with identical text, voice, delivery and model
+    parameters (e.g. after a voice change is reverted). A user-requested regeneration never reuses a take."""
+    last = row(conn, "SELECT action, actor FROM review_actions WHERE segment_id=? ORDER BY id DESC LIMIT 1", (seg["id"],))
+    if last and last["action"] == "regenerate" and last["actor"] != "system":
+        return None
+    for a in rows(conn, """SELECT * FROM attempts WHERE segment_id=? AND status='done' AND passed=1 AND gen_key=? AND wav_path IS NOT NULL
+                          AND fingerprint=? ORDER BY id DESC""", (seg["id"], gen_key, book["synth_fingerprint"])):
+        if resolve_take(book, a) is not None:
+            return a
+    return None
+
+
+def verify_this(qa: dict, ns, seg: dict) -> bool:
+    """Whether Whisper checks this segment: the book's ASR switch, then the narrative verification mode."""
+    if not qa.get("enable_asr", True) or ns.verify_mode == "off":
+        return False
+    if ns.verify_mode == "sample":
+        return int(short_hash(f"{seg['sid']}:{seg['round']}", 6), 16) % 1000 < ns.verify_sample_rate * 1000
+    return True
+
+
 def score_attempt(wer: float | None, issues: list[dict]) -> float:
     s = (wer or 0.0) * 100.0
     for i in issues:
@@ -4823,11 +8380,23 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         chapter = row(conn, "SELECT * FROM chapters WHERE id=?", (seg["chapter_id"],))
         snapshot = loads(book["settings_json"], {})
         qa = snapshot.get("qa", {})
-        voice = voice_spec(conn, book)
+        plan = N_store.plan_for_segment(conn, ctx, seg, book)
+        voice = plan.voice
+        ns = N_store.book_ns(ctx, book)
         wpm = calibrated_wpm(conn, book["id"], qa.get("words_per_minute", 155.0))
+        reusable = reusable_take(conn, book, seg, plan.gen_key)
     check_storage(book)
     max_attempts = int(qa.get("max_attempts", 3))
     text = spoken_text(seg)
+    if reusable is not None:
+        with db.tx() as conn:
+            conn.execute("UPDATE segments SET status='passed', selected_attempt_id=?, flag_reason=NULL, attempts_used=0, updated_at=? WHERE id=?",
+                         (reusable["id"], now(), segment_id))
+            place_takes(conn, book, segment_id)
+            conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
+                         (segment_id, "cache_reuse", dumps({"attempt_id": reusable["id"], "gen_key": plan.gen_key}), "system", now()))
+        return "passed"
+    verify = verify_this(qa, ns, seg)
 
     while True:
         with db.tx() as conn:
@@ -4835,13 +8404,14 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             if seg["attempts_used"] >= max_attempts:
                 break
             attempt_no = seg["attempts_used"] + 1
-            params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, book.get("instructions", ""))
+            params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, plan.instruct or "")
             cur = conn.execute(
                 """INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id,
-                       fingerprint, seed, temperature, text_spoken, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (segment_id, seg["round"], attempt_no, "in_progress", tts.name, voice.model_id, voice.version_id,
-                 book["synth_fingerprint"], params.seed, params.temperature, text, now()),
+                 book["synth_fingerprint"], params.seed, params.temperature, text, now(), plan.gen_key, plan.instruct,
+                 1 if plan.delivery_applied else 0, plan.voice_id, 0 if verify else 1),
             )
             attempt_id = cur.lastrowid
             conn.execute("UPDATE segments SET status='synthesizing', attempts_used=?, updated_at=? WHERE id=?",
@@ -4882,7 +8452,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
         acoustic = A.analyze(audio_arr, sr, A.expected_duration(text, wpm), qa)
         issues = list(acoustic["issues"])
         asr_out, ev = None, None
-        if qa.get("enable_asr", True):
+        if verify:
             try:
                 asr_out = asr.transcribe(seg_path)
             except EngineUnavailable as exc:
@@ -4903,7 +8473,8 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             if ev["wer"] > qa.get("wer_threshold", 0.12) and (ev["ref_tokens"] >= 10 or errors >= 2):
                 issues.append({"severity": "error", "kind": "wer", "message": f"Word error rate {ev['wer'] * 100:.1f}% exceeds {qa.get('wer_threshold', 0.12) * 100:.0f}%", "at_s": None, "source": "asr"})
         else:
-            issues.append({"severity": "info", "kind": "asr_disabled", "message": "ASR verification disabled for this book - listen manually.", "at_s": None, "source": "settings"})
+            why = "ASR verification disabled for this book" if not qa.get("enable_asr", True) else "Whisper verification skipped by the verification setting (sampling/off)"
+            issues.append({"severity": "info", "kind": "asr_disabled", "message": f"{why} - listen manually.", "at_s": None, "source": "settings"})
         wer = ev["wer"] if ev else None
         passed = not any(i["severity"] == "error" for i in issues)
         score = score_attempt(wer, issues)
@@ -4969,7 +8540,7 @@ def recover_interrupted(conn) -> dict:
 
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
-__STUDIO_EOF_ee3d75cb5bf2__
+__STUDIO_EOF_5a45663174ae__
 cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_0c3b6d21e950__'
 """Reference-voice lab: sample scripts to read aloud and an objective quality report for a recording.
 
@@ -5298,7 +8869,7 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_5c7f622586db__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_be92893f7637__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_a8dde92edb17__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -5314,6 +8885,8 @@ from pathlib import Path
 from . import audio as A
 from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
+from .narrative import cast as N_cast
+from .narrative import store as N_store
 from .config import (CATEGORY_LABELS, ENGLISH_SPEAKERS, PRESET_SPEAKERS, STORAGE_CATEGORIES, Settings, book_snapshot,
                      merge_patch, synth_fingerprint)
 from .db import row, rows, scalar
@@ -5836,26 +9409,40 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
     instructions = str(meta.get("instructions") or "").strip()[:1000]
     fp = synth_fingerprint(snap, vv, instructions)
     ch_s = s.chunking
+    ns = s.narrative
+    semantic = ns.semantic_segmentation
+    nar_plans, nar_cast, nar_seconds = (N_store.prepare_import(res, include, s, ns) if semantic else ([], None, 0.0))
     with ctx.db.tx() as conn:
         bid = conn.execute(
             """INSERT INTO books(uid, title, author, narrator_credit, publisher, year, description, language, genre, voice_id, voice_version_id,
-                   instructions, settings_json, synth_fingerprint, storage_json, state, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'imported', ?, ?)""",
+                   instructions, settings_json, synth_fingerprint, storage_json, state, narrative_json, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'imported', ?, ?, ?)""",
             (uid, title, str(meta.get("author") or preview.get("author") or "")[:300], str(meta.get("narrator_credit") or voice["name"])[:200],
              str(meta.get("publisher") or "")[:200], str(meta.get("year") or "")[:20], str(meta.get("description") or "")[:4000],
              str(meta.get("language") or s.models.language)[:40], str(meta.get("genre") or "Audiobook")[:60], voice["id"], vv["id"],
-             instructions, dumps(snap), fp, dumps(storage), now(), now()),
+             instructions, dumps(snap), fp, dumps(storage), dumps({"semantic_segmentation": True} if semantic else {}), now(), now()),
         ).lastrowid
         manifest = {"format": res.format, "warnings": res.warnings, "chapters": []}
         total_segments = 0
+        if semantic:
+            char_ids = N_cast.sync_cast(conn, bid, nar_cast, 1)
+            narrator_id = N_cast.ensure_narrator(conn, bid)
+            book_row = {"id": bid, "uid": uid, "narrative_json": dumps({"semantic_segmentation": True})}
         for out_idx, ci in enumerate(include, start=1):
             ch = res.chapters[ci]
+            words = ch.words()
+            if semantic:
+                plan = nar_plans[out_idx - 1]
+                chid = conn.execute("INSERT INTO chapters(book_id, idx, title, source_ref, word_count, segment_count, est_duration_s) VALUES (?,?,?,?,?,?,?)",
+                                    (bid, out_idx, ch.title, ch.source, words, 0, words * 60.0 / s.qa.words_per_minute)).lastrowid
+                N_store.persist_structure(conn, bid, uid, chid, out_idx, plan.struct, char_ids, narrator_id)
+                total_segments += N_store.resegment_chapter(ctx, conn, book_row, {"id": chid, "idx": out_idx}, ns, s)["segments"]
+                continue
             segs = build_segments(ch.readable(), ch_s.min_chars, ch_s.max_chars, ch_s.merge_short_paragraphs)
             auto_title = ch.title == "Opening" or bool(re.fullmatch(r"Section \d+", ch.title))
             if ch_s.speak_chapter_titles and ch.title and not auto_title:
                 from .chunker import Segment
                 segs.insert(0, Segment(ch.title, "heading", -1, "heading"))
-            words = ch.words()
             chid = conn.execute("INSERT INTO chapters(book_id, idx, title, source_ref, word_count, segment_count, est_duration_s) VALUES (?,?,?,?,?,?,?)",
                                 (bid, out_idx, ch.title, ch.source, words, len(segs), words * 60.0 / s.qa.words_per_minute)).lastrowid
             for n, sg in enumerate(segs, start=1):
@@ -5864,6 +9451,12 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
                                 VALUES (?,?,?,?,?,?,?,?,?, 'pending', ?)""",
                              (f"{uid}-c{out_idx:03d}-s{n:04d}", bid, chid, n, sg.para_idx, sg.kind, sg.pause_kind, sg.text, narr or sg.text, now()))
             total_segments += len(segs)
+        if semantic:
+            review = scalar(conn, "SELECT COUNT(*) FROM nar_spans WHERE book_id=? AND needs_review=1", (bid,), 0)
+            N_store.set_stage(conn, bid, "structure", "done", {"seconds": round(nar_seconds, 3), "chapters": len(nar_plans), "review": review,
+                                                                "spans": sum(len(p.struct.spans) for p in nar_plans)})
+            N_store.set_stage(conn, bid, "characters", "done", {"characters": len(char_ids) - 1})
+            N_store.set_stage(conn, bid, "segmentation", "done", {"segments": total_segments})
         for i, ch in enumerate(res.chapters):
             manifest["chapters"].append({"index": i, "title": ch.title, "source": ch.source, "narrated": i in include,
                                          "excluded_reason": None if i in include else (ch.include_reason or "Excluded by operator"),
@@ -5959,8 +9552,9 @@ def get_book(ctx, book_id: int) -> dict:
         out["release"] = active_release(conn, book_id)
         out["release_check"] = release_check_conn(conn, b)
         out["logs"] = rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE book_id=? AND level<>'debug' ORDER BY id DESC LIMIT 40", (book_id,))
-        out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export') ORDER BY id DESC LIMIT 10", (book_id,))
-        return out
+        out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export','analyze') ORDER BY id DESC LIMIT 10", (book_id,))
+    out["narrative"] = N_store.narrative_status(ctx, book_id)
+    return out
 
 
 def update_book_meta(ctx, book_id: int, patch: dict) -> dict:
@@ -6136,7 +9730,7 @@ def list_queue(ctx) -> dict:
                              ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, j.position, j.id""",
                     (now() - 7 * 86400,))
         utility = rows(conn, """SELECT j.id, j.kind, j.status, j.error, j.book_id, b.title, j.created_at, j.finished_at, j.payload_json
-                                FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview')
+                                FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview','analyze')
                                 ORDER BY j.id DESC LIMIT 15""")
         per_seg = _segment_seconds(conn)
         stats = _book_stats(conn, [j["book_id"] for j in jobs if j["book_id"]]) if jobs else {}
@@ -6258,6 +9852,17 @@ def job_logs(ctx, job_id: int, limit: int = 300) -> list[dict]:
         return rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE job_id=? ORDER BY id DESC LIMIT ?", (job_id, limit))
 
 
+def preview_segment(ctx, segment_id: int, seed: int | None = None) -> dict:
+    """Queue a preview of one segment rendered with its own voice and delivery (not saved as a take)."""
+    with ctx.db.tx() as conn:
+        seg = row(conn, "SELECT id, book_id FROM segments WHERE id=?", (segment_id,))
+        if not seg:
+            raise ServiceError("Segment not found", 404)
+        jid = conn.execute("INSERT INTO jobs(kind, book_id, payload_json, status, position, created_at, updated_at) VALUES ('preview',?,?, 'queued', 0, ?, ?)",
+                           (seg["book_id"], dumps({"segment_id": segment_id, "seed": seed if seed is not None else 1234}), now(), now())).lastrowid
+    return get_job(ctx, jid)
+
+
 def enqueue_utility(ctx, book_id: int, kind: str, payload: dict | None = None) -> dict:
     if kind not in ("assemble", "export"):
         raise ServiceError("unknown job kind", 422)
@@ -6285,6 +9890,8 @@ FILTERS = {
     "approved": "s.status='approved'",
     "pending": "s.status IN ('pending','synthesizing')",
     "overridden": "s.override_text IS NOT NULL",
+    "speaker_review": "s.needs_review=1",
+    "direction_review": "EXISTS (SELECT 1 FROM directions d WHERE d.segment_id=s.id AND (d.needs_review=1 OR d.stale=1))",
     "noted": "s.note IS NOT NULL AND s.note<>''",
 }
 
@@ -6305,7 +9912,7 @@ def list_segments(ctx, book_id: int, chapter_id: int | None, flt: str, after: in
         total = scalar(conn, f"SELECT COUNT(*) FROM segments s WHERE {' AND '.join(where)}", params, 0)
         page_where = where + (["s.id > ?"] if after else [])
         items = rows(conn, f"""SELECT s.id, s.sid, s.chapter_id, s.idx, s.kind, s.status, s.original_text, s.override_text, s.attempts_used, s.round,
-                                     s.flag_reason, s.note, a.wer, a.duration_s, a.id AS attempt_id, c.idx AS chapter_idx
+                                     s.flag_reason, s.note, s.character_id, s.needs_review, s.span_kind, s.scene_idx, s.src_start, a.wer, a.duration_s, a.id AS attempt_id, c.idx AS chapter_idx
                               FROM segments s JOIN chapters c ON c.id=s.chapter_id LEFT JOIN attempts a ON a.id=s.selected_attempt_id
                               WHERE {' AND '.join(page_where)} ORDER BY s.id LIMIT ?""", params + ([after] if after else []) + [limit + 1])
     more = len(items) > limit
@@ -6368,6 +9975,8 @@ def approve_segment(ctx, segment_id: int, note: str | None = None, actor: str = 
         att = row(conn, "SELECT * FROM attempts WHERE id=?", (s["selected_attempt_id"],))
         if att["fingerprint"] != b["synth_fingerprint"]:
             raise ServiceError("The selected take uses outdated narrator settings; regenerate instead.", 409)
+        if att["gen_key"] and att["gen_key"] != N_store.plan_for_segment(conn, ctx, s, b).gen_key:
+            raise ServiceError("The selected take no longer matches this segment's voice or delivery; regenerate instead.", 409)
         conn.execute("UPDATE segments SET status='approved', note=COALESCE(?, note), updated_at=? WHERE id=?", ((note or None), now(), segment_id))
         _review(conn, ctx, s, "approve", {"attempt_id": s["selected_attempt_id"], "previous_status": s["status"], "note": note}, actor)
         refresh_book_state(conn, s["book_id"])
@@ -6411,6 +10020,8 @@ def select_take(ctx, segment_id: int, attempt_id: int) -> dict:
             raise ServiceError("That take has no playable audio.", 409)
         if a["fingerprint"] != b["synth_fingerprint"]:
             raise ServiceError("That take was rendered with different narrator settings and cannot be used in this book.", 409)
+        if a["gen_key"] and a["gen_key"] != N_store.plan_for_segment(conn, ctx, s, b).gen_key:
+            raise ServiceError("That take was rendered with a different voice, delivery or spoken text than this segment now uses; regenerate instead.", 409)
         if s["status"] in ("pending", "synthesizing"):
             raise ServiceError("Wait for the segment to finish generating.", 409)
         status = "passed" if a["passed"] else "flagged"
@@ -6599,7 +10210,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_be92893f7637__
+__STUDIO_EOF_a8dde92edb17__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -7465,7 +11076,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_aab33f582b9e__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_0d5dd79d09fa__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -8186,6 +11797,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     def api_seg_note(segment_id: int, req: NoteReq):
         return S.set_note(ctx, segment_id, req.note)
 
+    from .narrative_api import register as register_narrative
+
+    register_narrative(app, ctx)
+
     # ------------------------------------------------------------------ media
     def _book(conn, book_id):
         b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
@@ -8326,8 +11941,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_aab33f582b9e__
-cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5068e44bfe07__'
+__STUDIO_EOF_0d5dd79d09fa__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_1b41532eb324__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
 from __future__ import annotations
@@ -8352,6 +11967,7 @@ USER_RE = re.compile(r"^[A-Za-z0-9_.-]{2,40}$")
 # Paths only an administrator may use (settings, storage, process control, user management).
 ADMIN_RULES = [
     ("PUT", re.compile(r"^/api/settings$")),
+    ("PUT", re.compile(r"^/api/books/\d+/narrative/settings$")),
     ("GET", re.compile(r"^/api/storage$")),
     ("GET", re.compile(r"^/api/storage/browse$")),
     ("POST", re.compile(r"^/api/storage/")),
@@ -8507,7 +12123,7 @@ class LoginLimiter:
 def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-__STUDIO_EOF_5068e44bfe07__
+__STUDIO_EOF_1b41532eb324__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -8617,6 +12233,236 @@ def ensure_inside(path: Path, roots: list[Path]) -> Path:
             return rp
     raise PermissionError("path outside registered storage")
 __STUDIO_EOF_5578c285b43a__
+cat > "$DEST/studio/web/narrative_api.py" <<'__STUDIO_EOF_51ac6d84b25c__'
+"""HTTP API for semantic segmentation, the Narrative Director and the character directory.
+
+Thin endpoints only: the logic lives in ``studio.narrative``. Inference (LLM, TTS) never runs in a
+request; anything slow is queued as an ``analyze`` or ``preview`` job for the worker.
+"""
+from __future__ import annotations
+
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .. import services as S
+from ..db import row, rows
+from ..narrative import analysis as AN
+from ..narrative import cast as C
+from ..narrative import store as ST
+from ..narrative import vocab as V
+from ..util import dumps, loads, now
+
+
+class _Req(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class AnalyzeReq(_Req):
+    stages: Optional[list[str]] = Field(None, max_length=10)
+    rebuild: bool = False
+    confirm: bool = False
+
+
+class OverridesReq(_Req):
+    overrides: dict = Field(default_factory=dict)
+
+
+class SegNarrativeReq(_Req):
+    character_id: Optional[int] = None
+    voice_id: Optional[int] = None
+    emotion: Optional[str] = Field(None, max_length=20)
+    intensity: Optional[int] = Field(None, ge=1, le=5)
+    tension: Optional[int] = Field(None, ge=1, le=5)
+    pacing: Optional[str] = Field(None, max_length=20)
+    delivery: Optional[str] = Field(None, max_length=240)
+
+
+class BoundaryReq(_Req):
+    op: Literal["split", "merge_next", "move_end"]
+    offset: Optional[int] = Field(None, ge=0)
+
+
+class SegPreviewReq(_Req):
+    seed: Optional[int] = Field(None, ge=0, le=2**31)
+
+
+class CharCreateReq(_Req):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class CharPatchReq(_Req):
+    name: Optional[str] = Field(None, max_length=80)
+    aliases: Optional[list[str]] = Field(None, max_length=30)
+    gender: Optional[str] = Field(None, max_length=10)
+    voice_id: Optional[int] = None
+    voice_description: Optional[str] = Field(None, max_length=600)
+    accent: Optional[str] = Field(None, max_length=200)
+    speech_pattern: Optional[str] = Field(None, max_length=600)
+    personality: Optional[str] = Field(None, max_length=600)
+    description: Optional[str] = Field(None, max_length=600)
+    delivery_pref: Optional[str] = Field(None, max_length=300)
+    relationships: Optional[list[dict]] = Field(None, max_length=30)
+
+
+class MergeReq(_Req):
+    into_id: int
+
+
+class NoteReq(_Req):
+    text: str = Field(min_length=3, max_length=600)
+    character_id: Optional[int] = None
+    chapter_idx: Optional[int] = None
+
+
+def register(app, ctx) -> None:
+    @app.get("/api/narrative/vocabulary")
+    def api_vocab():
+        return {"emotions": list(V.EMOTIONS), "pacings": list(V.PACINGS), "intensity": [V.INTENSITY_MIN, V.INTENSITY_MAX]}
+
+    @app.get("/api/books/{book_id}/narrative")
+    def api_narrative(book_id: int):
+        return ST.narrative_status(ctx, book_id)
+
+    @app.get("/api/books/{book_id}/narrative/settings")
+    def api_narrative_settings(book_id: int):
+        return ST.get_book_settings(ctx, book_id)
+
+    @app.put("/api/books/{book_id}/narrative/settings")
+    def api_narrative_settings_put(book_id: int, req: OverridesReq):
+        return ST.set_book_overrides(ctx, book_id, req.overrides)
+
+    @app.post("/api/books/{book_id}/analyze")
+    def api_analyze(book_id: int, req: AnalyzeReq):
+        return AN.enqueue(ctx, book_id, req.stages, req.rebuild, req.confirm)
+
+    @app.post("/api/books/{book_id}/resegment")
+    def api_resegment(book_id: int):
+        with ctx.db.session() as conn:
+            if not row(conn, "SELECT 1 FROM chapter_text WHERE book_id=? LIMIT 1", (book_id,)):
+                raise S.ServiceError("This book was not imported with semantic segmentation.", 409)
+        r = ST.resegment_book(ctx, book_id)
+        with ctx.db.tx() as conn:
+            reset = ST.invalidate_changed(conn, ctx, book_id)
+        return {**{k: v for k, v in r.items() if k != "ids"}, "audio_reset": len(reset)}
+
+    @app.post("/api/books/{book_id}/continuity/recompute")
+    def api_recompute(book_id: int):
+        with ctx.db.session() as conn:
+            first = row(conn, """SELECT d.segment_id FROM directions d JOIN segments s ON s.id=d.segment_id JOIN chapters c ON c.id=s.chapter_id
+                                 WHERE d.book_id=? ORDER BY c.idx, s.idx LIMIT 1""", (book_id,))
+        if not first:
+            raise S.ServiceError("No directions exist yet; run the analysis first.", 409)
+        return AN.recompute_from(ctx, book_id, first["segment_id"])
+
+    @app.get("/api/books/{book_id}/narrative/metadata")
+    def api_narrative_metadata(book_id: int):
+        return narrative_metadata(ctx, book_id)
+
+    # --------------------------------------------------------------- characters
+    @app.get("/api/books/{book_id}/characters")
+    def api_characters(book_id: int):
+        with ctx.db.session() as conn:
+            if not row(conn, "SELECT 1 FROM books WHERE id=?", (book_id,)):
+                raise S.ServiceError("Book not found", 404)
+            chars = C.list_characters(conn, book_id)
+            voices = rows(conn, "SELECT id, name, kind FROM voices WHERE archived=0 ORDER BY name")
+        return {"characters": chars, "voices": voices}
+
+    @app.post("/api/books/{book_id}/characters")
+    def api_character_create(book_id: int, req: CharCreateReq):
+        return C.create_character(ctx, book_id, req.name)
+
+    @app.patch("/api/characters/{character_id}")
+    def api_character_patch(character_id: int, req: CharPatchReq):
+        return ST.update_character(ctx, character_id, req.model_dump(exclude_unset=True))
+
+    @app.post("/api/characters/{character_id}/merge")
+    def api_character_merge(character_id: int, req: MergeReq):
+        return ST.merge_characters(ctx, character_id, req.into_id)
+
+    @app.get("/api/books/{book_id}/notes")
+    def api_notes(book_id: int, kind: Optional[str] = None):
+        with ctx.db.session() as conn:
+            q = "SELECT * FROM story_notes WHERE book_id=?" + (" AND kind=?" if kind else "") + " ORDER BY chapter_idx, scene_idx, id"
+            out = rows(conn, q, (book_id, kind) if kind else (book_id,))
+        for n in out:
+            n["refs"] = loads(n.pop("refs_json"), [])
+        return {"notes": out}
+
+    @app.post("/api/books/{book_id}/notes")
+    def api_note_add(book_id: int, req: NoteReq):
+        with ctx.db.tx() as conn:
+            if not row(conn, "SELECT 1 FROM books WHERE id=?", (book_id,)):
+                raise S.ServiceError("Book not found", 404)
+            nid = conn.execute("""INSERT INTO story_notes(book_id, chapter_idx, kind, character_id, text, source, confidence, confirmed, created_at)
+                                  VALUES (?,?,?,?,?,?,?,?,?)""", (book_id, req.chapter_idx, "fact", req.character_id, " ".join(req.text.split()), "user", 1.0, 1, now())).lastrowid
+            ctx.audit(conn, "story_note", nid, "create", {"text": req.text})
+        return {"id": nid}
+
+    @app.delete("/api/notes/{note_id}")
+    def api_note_delete(note_id: int):
+        with ctx.db.tx() as conn:
+            if not conn.execute("DELETE FROM story_notes WHERE id=?", (note_id,)).rowcount:
+                raise S.ServiceError("Note not found", 404)
+            ctx.audit(conn, "story_note", note_id, "delete")
+        return {"ok": True}
+
+    # ----------------------------------------------------------------- segments
+    @app.get("/api/segments/{segment_id}/inspect")
+    def api_inspect(segment_id: int):
+        return ST.inspect_segment(ctx, segment_id)
+
+    @app.patch("/api/segments/{segment_id}/narrative")
+    def api_seg_narrative(segment_id: int, req: SegNarrativeReq):
+        return ST.set_segment_narrative(ctx, segment_id, req.model_dump(exclude_unset=True))
+
+    @app.post("/api/segments/{segment_id}/boundary")
+    def api_seg_boundary(segment_id: int, req: BoundaryReq):
+        res = ST.edit_boundary(ctx, segment_id, req.op, req.offset)
+        out = {k: v for k, v in res.items() if k != "ids"}
+        if res["created"] or res["retired"]:
+            out["recompute"] = AN.recompute_from(ctx, res["book_id"], res["ids"][0]) if res["ids"] and _has_direction(ctx, res["book_id"]) else None
+        return out
+
+    @app.post("/api/segments/{segment_id}/preview")
+    def api_seg_preview(segment_id: int, req: SegPreviewReq):
+        return S.preview_segment(ctx, segment_id, req.seed)
+
+    @app.post("/api/segments/{segment_id}/redirect")
+    def api_seg_redirect(segment_id: int):
+        with ctx.db.tx() as conn:
+            s = row(conn, "SELECT id, book_id FROM segments WHERE id=?", (segment_id,))
+            if not s:
+                raise S.ServiceError("Segment not found", 404)
+            conn.execute("UPDATE directions SET stale=1 WHERE segment_id=?", (segment_id,))
+        return AN.enqueue(ctx, s["book_id"], ["director"])
+
+
+def _has_direction(ctx, book_id: int) -> bool:
+    with ctx.db.session() as conn:
+        return bool(row(conn, "SELECT 1 FROM directions WHERE book_id=? LIMIT 1", (book_id,)))
+
+
+def narrative_metadata(ctx, book_id: int) -> dict:
+    """Machine-readable record of how every segment was cut, voiced and directed (for export/audit)."""
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not b:
+            raise S.ServiceError("Book not found", 404)
+        chars = {c["id"]: c for c in C.list_characters(conn, book_id, include_archived=True)}
+        segs = rows(conn, """SELECT s.*, c.idx AS ch_idx, a.duration_s, a.gen_key AS take_key, a.instruct_used, a.wer
+                             FROM segments s JOIN chapters c ON c.id=s.chapter_id LEFT JOIN attempts a ON a.id=s.selected_attempt_id
+                             WHERE s.book_id=? ORDER BY c.idx, s.idx""", (book_id,))
+        dirs = {d["segment_id"]: loads(d["final_json"], {}) for d in rows(conn, "SELECT segment_id, final_json FROM directions WHERE book_id=?", (book_id,))}
+    return {
+        "book": {"id": b["id"], "title": b["title"], "uid": b["uid"]}, "generated_at": now(),
+        "characters": [{"id": c["id"], "name": c["name"], "kind": c["kind"], "aliases": c["aliases"], "voice": c["voice"], "gender": c["gender"]} for c in chars.values() if not c["archived"]],
+        "segments": [{"sid": s["sid"], "chapter": s["ch_idx"], "scene": s["scene_idx"], "src_start": s["src_start"], "src_end": s["src_end"], "kind": s["span_kind"],
+                      "speaker": chars[s["character_id"]]["name"] if s["character_id"] in chars else None, "needs_review": bool(s["needs_review"]),
+                      "status": s["status"], "duration_s": s["duration_s"], "wer": s["wer"], "direction": dirs.get(s["id"]), "instruct": s["instruct_used"]} for s in segs],
+    }
+__STUDIO_EOF_51ac6d84b25c__
 cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_234b5211d211__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
 mutating requests (CSRF), session authentication with admin-only routes, strict headers.
@@ -8730,7 +12576,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_234b5211d211__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_6f1faee0beee__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_7f1c06c278c8__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -8850,7 +12696,7 @@ main:focus { outline: none; }
 .feed li.lvl-warning { color: var(--warn); } .feed li.lvl-error { color: var(--bad); }
 
 /* ---------------------------------------------------------------- tables */
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap { position: relative; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table { width: 100%; border-collapse: collapse; }
 .table th, .table td { text-align: left; padding: .55rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 .table th { font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 650; }
@@ -9101,7 +12947,42 @@ body.signed-out .shell { grid-template-columns: 1fr; }
   #chpw { display: none; }
   .topbar-status { max-width: 34vw; }
 }
-__STUDIO_EOF_6f1faee0beee__
+
+/* ---------------------------------------------------------------- narrative */
+.stage-list { list-style: none; margin: .5rem 0 1rem; padding: 0; display: grid; gap: .45rem; }
+.stage-list li { padding: .45rem .7rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.stage-name { font-weight: 600; margin-right: .4rem; }
+.ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .6rem; margin-bottom: .8rem; }
+.ov-row { border: 1px solid var(--border); border-radius: 8px; padding: .5rem .6rem; background: var(--surface-2); }
+.ov-row.on { border-color: var(--accent); background: var(--accent-soft); }
+.ov-check { font-size: .8rem; color: var(--muted); }
+.chip { display: inline-block; padding: 0 .5rem; border-radius: 999px; background: var(--neutral-bg); font-size: .8rem; }
+.badge.prov { font-weight: 500; margin: 0 .2rem .2rem 0; }
+.prov-cell { max-width: 22rem; }
+.char-table select { max-width: 14rem; }
+.inline-form { display: flex; gap: .6rem; align-items: flex-end; flex-wrap: wrap; margin-top: .6rem; }
+.inline-form label { display: grid; gap: .2rem; }
+.notes { list-style: none; padding: 0; margin: .4rem 0; }
+.notes li { padding: .4rem 0; border-bottom: 1px dashed var(--border); }
+.ctx-block { border-left: 4px solid var(--border); background: var(--surface-2); padding: .3rem .8rem; margin: .5rem 0; border-radius: 4px; color: var(--muted); font-size: .9rem; max-height: 14rem; overflow-y: auto; }
+.ctx-block p { margin: .2rem 0; white-space: pre-line; }
+.ctx-label { font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: var(--info); }
+.seg-own { border-left: 4px solid var(--accent); padding-left: .8rem; margin: .5rem 0; }
+.ms-text.word-pick { line-height: 2.1; }
+.wd { font: inherit; border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--text); border-radius: 4px; padding: 0 .2rem; cursor: pointer; }
+.wd:hover, .wd:focus-visible { background: var(--accent); color: var(--accent-ink); }
+.span-review td { background: var(--warn-bg); }
+.span-text { max-width: 22rem; overflow-wrap: anywhere; }
+.dir-table th[scope="row"] { text-align: left; white-space: nowrap; }
+.dir-table .final-row td, .dir-table .final-row th { background: var(--info-bg); }
+.dir-nbrs { display: grid; gap: .5rem; margin-top: .8rem; }
+.dir-nbr { border: 1px solid var(--border); border-radius: 8px; padding: .4rem .6rem; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.spoken { white-space: pre-wrap; overflow-wrap: anywhere; display: block; }
+.btn.disabled { opacity: .5; pointer-events: none; }
+.preview-out { margin-top: .5rem; }
+@media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } .ov-grid { grid-template-columns: 1fr; } }
+__STUDIO_EOF_7f1c06c278c8__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 <!doctype html>
 <html lang="en">
@@ -9152,7 +13033,7 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
 </html>
 __STUDIO_EOF_393bc3f275fb__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_e0da28d55f1c__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_d500a2f4e475__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
@@ -9163,8 +13044,10 @@ import * as review from "./views/review.js";
 import * as book from "./views/book.js";
 import * as settings from "./views/settings.js";
 import * as about from "./views/about.js";
+import * as narrative from "./views/narrative.js";
+import * as inspector from "./views/inspector.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector };
 let cleanup = null;
 let currentKey = "";
 
@@ -9174,7 +13057,7 @@ async function route() {
   const key = location.hash;
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const active = a.dataset.nav === name || (name === "book" && a.dataset.nav === "library");
+    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
     a.classList.toggle("active", active);
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
@@ -9341,7 +13224,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_e0da28d55f1c__
+__STUDIO_EOF_d500a2f4e475__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -9753,9 +13636,21 @@ export async function render(view) {
   return () => view.removeEventListener("click", onClick);
 }
 __STUDIO_EOF_dcc55ea8f77a__
-cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_ccb124670dd0__'
+cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_3798855b0bab__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
 import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
+
+function narrativeCard(b, id) {
+  const n = b.narrative;
+  if (!n) return "";
+  return html`<section class="card" aria-labelledby="nar-sum-h"><h2 id="nar-sum-h">Narrative analysis</h2>
+    ${n.semantic
+      ? html`<p class="small">Semantic segmentation: <strong>${n.characters}</strong> character(s) · <strong>${n.directed}</strong>/${n.segments} segments directed ·
+          ${n.needs_review ? html`<a class="warn-text" href="#/review/${id}?filter=speaker_review"><strong>${n.needs_review}</strong> line(s) need a speaker</a>` : html`<span class="good-text">no speaker flags</span>`}
+          ${n.direction_review ? html` · <a class="warn-text" href="#/review/${id}?filter=direction_review">${n.direction_review} direction(s) to review</a>` : ""}</p>`
+      : html`<p class="small muted">This book uses the classic segmenter. Convert it to get speaker analysis, a character directory and the Narrative Director.</p>`}
+    <a class="btn" href="#/narrative/${id}">Open narrative page</a></section>`;
+}
 
 export async function render(view, parts) {
   const id = Number(parts[0]);
@@ -9783,6 +13678,7 @@ export async function render(view, parts) {
     </div>
     ${b.last_error ? html`<div class="callout bad small"><strong>Last error:</strong> ${b.last_error}</div>` : ""}
 
+    ${narrativeCard(b, id)}
     <section class="card" aria-labelledby="ch-h"><h2 id="ch-h">Chapters</h2>
       <div class="form-actions"><button class="btn" data-act="assemble" ${busyJob ? html`disabled` : ""}>Assemble chapter masters (WAV + MP3)</button>
         ${busyJob ? html`<span class="small muted"><span class="spinner" aria-hidden="true"></span> ${busyJob.kind} job #${busyJob.id} ${busyJob.status}…</span>` : ""}
@@ -9968,7 +13864,286 @@ export async function render(view, parts) {
   }, 3000);
   return () => { off(); view.removeEventListener("click", onClick); };
 }
-__STUDIO_EOF_ccb124670dd0__
+__STUDIO_EOF_3798855b0bab__
+cat > "$DEST/studio/web/static/js/views/inspector.js" <<'__STUDIO_EOF_6ed178130836__'
+// Segment Inspector: text, context windows, speakers, direction, delivery sent to the engine, boundaries, takes.
+import { get, post, patch, html, setHTML, badge, fmtDate, fmtDuration, toast, busy, confirmDialog, onState, player, qs, navigate } from "../ui.js";
+
+const DIR_FIELDS = [["emotion", "Emotion"], ["intensity", "Intensity"], ["pacing", "Pacing"], ["tension", "Tension"], ["delivery", "Delivery note"]];
+
+function dirCell(d, k) { return d && d[k] !== undefined && d[k] !== "" ? String(d[k]) : "–"; }
+
+function stateLine(n, label) {
+  if (!n) return html`<div class="dir-nbr"><strong>${label}</strong> <span class="muted small">none in this chapter</span></div>`;
+  const f = n.final;
+  return html`<div class="dir-nbr"><strong>${label}</strong> <a href="#/inspect/${n.id}"><code>${n.sid}</code></a> ${badge(n.status)}
+    ${f ? html`<span class="badge tone-info">${f.emotion} ${f.intensity}/5</span> <span class="badge tone-neutral">${f.pacing}</span>` : html`<span class="muted small">no direction yet</span>`}
+    <div class="small muted">${n.text}</div></div>`;
+}
+
+export async function render(view, parts) {
+  const sid = Number(parts[0]);
+  const vocab = await get("/api/narrative/vocabulary");
+  const st = { ins: null, det: null, chars: [], voices: [], mode: null, preview: null, bookId: null };
+
+  async function load() {
+    st.ins = await get(`/api/segments/${sid}/inspect`);
+    st.det = await get(`/api/segments/${sid}`);
+    st.bookId = st.det.book.id;
+    const c = await get(`/api/books/${st.bookId}/characters`);
+    st.chars = c.characters; st.voices = c.voices;
+  }
+  const charName = (cid) => (st.chars.find((c) => c.id === cid) || {}).name || (cid ? "?" : null);
+
+  function words(i) {
+    const out = []; const re = /\S+/g; let m;
+    while ((m = re.exec(i.original_text))) out.push([m[0], i.src_start + m.index]);
+    return out;
+  }
+
+  function textBlock(i) {
+    if (!i.semantic) return html`<p class="ms-text">${i.original_text}</p>`;
+    if (!st.mode) return html`<p class="ms-text">${i.original_text}</p>`;
+    return html`<p class="ms-text word-pick" aria-label="Choose a word">${words(i).map(([w, off], k) => (k === 0
+      ? html`<span>${w}</span> ` : html`<button type="button" class="wd" data-act="pick" data-off="${off}">${w}</button> `))}</p>`;
+  }
+
+  function spansTable(i) {
+    if (!i.spans || !i.spans.length) return "";
+    return html`<section><h3>Speakers in this segment</h3><div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Text</th><th scope="col">Kind</th>
+      <th scope="col">Speaker</th><th scope="col">How decided</th><th scope="col"><span class="sr-only">Assign</span></th></tr></thead><tbody>
+      ${i.spans.map((sp) => html`<tr class="${sp.needs_review ? "span-review" : ""}">
+        <td class="small span-text">${sp.text.length > 90 ? sp.text.slice(0, 90) + "…" : sp.text}</td>
+        <td><span class="badge tone-${sp.kind === "dialogue" ? "info" : "neutral"}">${sp.kind}</span></td>
+        <td>${sp.kind !== "dialogue" ? html`<span class="muted small">narrator</span>` : (sp.speaker_id && !sp.needs_review ? html`<strong>${charName(sp.speaker_id) || "?"}</strong>` : html`<span class="badge tone-warn">not established</span>`)}</td>
+        <td class="small">${sp.kind === "dialogue" ? html`${sp.attribution} · ${Math.round(sp.confidence * 100)}%${sp.locked ? html` <span class="badge tone-good">confirmed</span>` : ""}
+          <div class="muted">${sp.evidence}</div>
+          ${sp.candidates.length ? html`<div>Candidates: ${sp.candidates.map((c) => { const ch = st.chars.find((x) => x.name === c); return ch ? html`<button class="btn small ghost" data-act="assign" data-char="${ch.id}">Assign ${c}</button> ` : html`<span class="chip">${c}</span> `; })}</div>` : ""}` : ""}</td>
+        <td></td></tr>`)}</tbody></table></div>
+      <form id="assign-form" class="inline-form"><label>Assign every line in this segment to
+        <select name="character_id">${st.chars.filter((c) => c.kind !== "narrator").map((c) => html`<option value="${c.id}" ${i.speaker.character_id === c.id ? html`selected` : ""}>${c.name}</option>`)}</select></label>
+        <button class="btn small" type="submit">Assign &amp; lock</button></form>
+      <p class="small muted">An assignment you make is locked: re-analysis never overwrites it.</p></section>`;
+  }
+
+  function directionPanel(i) {
+    const d = i.direction;
+    const voiceOpts = st.voices;
+    const fin = d ? d.final : null;
+    return html`<section><h3>Narrative direction ${d ? html`<span class="badge tone-neutral">${d.source}</span>${d.stale ? html` <span class="badge tone-warn">stale</span>` : ""}${d.needs_review ? html` <span class="badge tone-warn">review</span>` : ""}` : ""}</h3>
+      ${d ? html`<div class="table-wrap"><table class="table compact dir-table"><thead><tr><th scope="col"></th>${DIR_FIELDS.map(([, l]) => html`<th scope="col">${l}</th>`)}</tr></thead><tbody>
+        <tr><th scope="row">Raw (Director)</th>${DIR_FIELDS.map(([k]) => html`<td>${dirCell(d.raw, k)}</td>`)}</tr>
+        <tr><th scope="row">After continuity</th>${DIR_FIELDS.map(([k]) => html`<td>${k === "delivery" ? "–" : dirCell(d.smoothed, k)}</td>`)}</tr>
+        <tr><th scope="row">Your override</th>${DIR_FIELDS.map(([k]) => html`<td>${dirCell(d.user, k)}</td>`)}</tr>
+        <tr class="final-row"><th scope="row">Final</th>${DIR_FIELDS.map(([k]) => html`<td><strong>${dirCell(d.final, k)}</strong></td>`)}</tr></tbody></table></div>
+        <p class="small"><strong>Continuity:</strong> ${d.smoothing_note || "–"}</p>
+        ${d.raw.confidence ? html`<p class="small muted">Confidence — speaker ${Math.round((d.raw.confidence.speaker || 0) * 100)}%, emotion ${Math.round((d.raw.confidence.emotion || 0) * 100)}%, overall ${Math.round((d.raw.confidence.overall || 0) * 100)}%</p>` : ""}
+        ${d.raw.ambiguity ? html`<div class="callout warn small"><strong>Ambiguity:</strong> ${d.raw.ambiguity}</div>` : ""}
+        <div class="two-col">
+          <div><h4>Facts <span class="small muted">(quoted from the manuscript)</span></h4>${(d.raw.facts || []).length ? html`<ul class="small">${d.raw.facts.map((f) => html`<li>“${f}”</li>`)}</ul>` : html`<p class="small muted">none</p>`}</div>
+          <div><h4>Inferences <span class="small muted">(interpretation)</span></h4>${(d.raw.inferences || []).length ? html`<ul class="small">${d.raw.inferences.map((f) => html`<li>${f}</li>`)}</ul>` : html`<p class="small muted">none</p>`}</div></div>
+        ${(d.raw.notes || []).length ? html`<ul class="small warn-text">${d.raw.notes.map((n) => html`<li>${n}</li>`)}</ul>` : ""}`
+      : html`<p class="muted small">No direction yet. The Narrative Director may be off for this book, or the analysis has not reached this segment. You can still set one by hand below.</p>`}
+      <form id="dir-form" class="form"><div class="form-grid">
+        <label>Emotion<select name="emotion"><option value="">(no override)</option>${vocab.emotions.map((e) => html`<option ${fin && d.user.emotion === e ? html`selected` : ""}>${e}</option>`)}</select></label>
+        <label>Intensity (1–5)<input type="number" name="intensity" min="1" max="5" value="${d && d.user.intensity ? d.user.intensity : ""}"></label>
+        <label>Tension (1–5)<input type="number" name="tension" min="1" max="5" value="${d && d.user.tension ? d.user.tension : ""}"></label>
+        <label>Pacing<select name="pacing"><option value="">(no override)</option>${vocab.pacings.map((e) => html`<option ${d && d.user.pacing === e ? html`selected` : ""}>${e}</option>`)}</select></label></div>
+        <label>Delivery note (max 240 chars)<input name="delivery" maxlength="240" value="${d && d.user.delivery ? d.user.delivery : ""}" placeholder="e.g. voice breaking, barely above a whisper"></label>
+        <div class="form-actions"><button class="btn primary" type="submit">Save override &amp; regenerate this segment</button>
+          <button class="btn ghost" type="button" data-act="clear-dir" ${d && Object.keys(d.user).length ? "" : html`disabled`}>Clear overrides</button>
+          <button class="btn ghost" type="button" data-act="redirect">Re-run Director for this segment</button></div></form>
+      <div class="dir-nbrs">${stateLine(i.previous, "Previous")}${stateLine(i.next, "Next")}</div>
+      ${d && d.history && d.history.length ? "" : ""}
+    </section>`;
+  }
+
+  function deliveryPanel(i) {
+    const v = i.voice;
+    return html`<section><h3>What is sent to the engine</h3>
+      <dl class="kv small"><dt>Voice</dt><dd>${v.name} (${v.kind}) <code>${v.model_id}</code>${v.override ? html` <span class="badge tone-info">segment override</span>` : ""}</dd>
+        <dt>Instruction</dt><dd>${i.delivery.instruct ? html`<code>${i.delivery.instruct}</code>` : html`<span class="muted">none</span>`}
+          ${i.delivery.applied ? html` <span class="badge tone-good">applied</span>` : html` <span class="badge tone-neutral">not applied</span>`}
+          <div class="muted">${i.delivery.reason}</div></dd>
+        <dt>Spoken text</dt><dd><code class="spoken">${i.delivery.spoken_text_sent_to_tts}</code>
+          <div class="muted">Exactly this string is given to the TTS engine. Context text and instructions are never part of it.</div></dd>
+        <dt>Generation key</dt><dd><code>${i.delivery.gen_key}</code></dd></dl>
+      <form id="voice-form" class="inline-form"><label>Voice profile for this segment
+        <select name="voice_id"><option value="">Use the character's voice (or the book narrator)</option>
+          ${st.voices.map((x) => html`<option value="${x.id}" ${v.override && v.id === x.id ? html`selected` : ""}>${x.name} (${x.kind})</option>`)}</select></label>
+        <button class="btn small" type="submit">Apply</button></form></section>`;
+  }
+
+  function takes(i, d) {
+    const byId = Object.fromEntries(d.attempts.map((a) => [a.id, a]));
+    const busyState = i.status === "pending" || i.status === "synthesizing";
+    return html`<section><h3>Generation history (${i.attempts.length})</h3>
+      <div class="table-wrap"><table class="table compact takes"><thead><tr><th scope="col">Take</th><th scope="col">Matches current settings?</th><th scope="col">Instruction used</th>
+        <th scope="col">WER</th><th scope="col">Audio</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>
+        ${i.attempts.map((a) => { const full = byId[a.id] || {}; return html`<tr class="${a.selected ? "selected-take" : ""}">
+          <td>${a.round}.${a.attempt_no}${a.selected ? html` <span class="badge tone-good">selected</span>` : ""}<div class="small muted">${a.status}${a.passed ? " ✓" : ""} · ${a.duration_s ? fmtDuration(a.duration_s) : "–"}</div></td>
+          <td>${a.gen_key ? html`<span class="badge tone-${a.current ? "good" : "warn"}">${a.current ? "current" : "outdated"}</span>` : html`<span class="muted small">legacy take</span>`}
+            ${a.asr_skipped ? html` <span class="badge tone-neutral" title="Whisper verification was skipped for this take by the verification setting">ASR skipped</span>` : ""}</td>
+          <td class="small">${a.instruct_used ? html`<code>${a.instruct_used}</code>` : html`<span class="muted">none</span>`}
+            ${a.delivery_applied === 0 && a.instruct_used === null ? "" : ""}</td>
+          <td>${a.wer === null || a.wer === undefined ? "–" : (a.wer * 100).toFixed(1) + "%"}</td>
+          <td>${full.playable ? player(`/media/attempt/${a.id}`, `Take ${a.round}.${a.attempt_no}`, "mini") : html`<span class="muted small">–</span>`}</td>
+          <td>${!a.selected && full.playable && full.fingerprint_ok && a.status === "done" && !busyState && (a.current || !a.gen_key) ? html`<button class="btn small" data-act="select" data-attempt="${a.id}">Use this take</button>` : ""}</td></tr>`; })}
+      </tbody></table></div><p class="small muted">Play two takes one after the other to compare them. A take marked “outdated” was made with a different voice, delivery or text than this segment uses now.</p></section>`;
+  }
+
+  function previewPanel() {
+    const p = st.preview;
+    return html`<section><h3>Preview</h3>
+      <p class="small muted">Renders this segment once with its own voice and delivery. Nothing is added to its takes.</p>
+      <button class="btn" data-act="preview" ${p && p.pending ? html`disabled` : ""}>Preview this segment</button>
+      ${p && p.pending ? html` <span class="small muted"><span class="spinner" aria-hidden="true"></span> job #${p.job} on the worker…</span>` : ""}
+      ${p && p.error ? html`<div class="small err">${p.error}</div>` : ""}
+      ${p && p.result ? html`<div class="preview-out">${player(`/media/preview/${p.job}`, "Segment preview")}
+        <div class="small muted">${p.result.engine} · ${p.result.duration_s}s ${p.result.note ? html`· <strong>${p.result.note}</strong>` : ""}
+          <br>Instruction: ${p.result.instruct ? html`<code>${p.result.instruct}</code>` : "none"} (${p.result.delivery_applied ? "applied" : p.result.delivery_reason})</div></div>` : ""}</section>`;
+  }
+
+  function paint() {
+    const i = st.ins, d = st.det, s = d.segment;
+    const busyState = i.status === "pending" || i.status === "synthesizing";
+    setHTML(view, html`<div class="page-head"><h1>Segment <code>${i.sid}</code></h1>
+      <div class="head-actions"><a class="btn" href="#/review/${st.bookId}?seg=${sid}">Review view</a><a class="btn" href="#/narrative/${st.bookId}">Narrative page</a>
+        <a class="btn ghost ${d.prev_id ? "" : "disabled"}" ${d.prev_id ? html`href="#/inspect/${d.prev_id}"` : ""} aria-label="Previous segment">← Prev</a>
+        <a class="btn ghost ${d.next_id ? "" : "disabled"}" ${d.next_id ? html`href="#/inspect/${d.next_id}"` : ""} aria-label="Next segment">Next →</a></div></div>
+    <section class="card">
+      <div class="seg-badges">${badge(i.status)} <span class="badge tone-neutral">chapter ${i.chapter.idx}: ${i.chapter.title}</span> <span class="badge tone-neutral">scene ${i.scene + 1}</span>
+        <span class="badge tone-neutral">${i.span_kind}</span>
+        ${i.needs_review ? html`<span class="badge tone-warn">speaker needs review</span>` : ""}${i.boundary_manual ? html`<span class="badge tone-info">manual boundary</span>` : ""}
+        <span class="badge tone-neutral">speaker: ${i.speaker.name || "not established"}</span></div>
+      ${i.review_reason ? html`<div class="callout warn small"><strong>Why review:</strong> ${i.review_reason}</div>` : ""}
+      ${!i.semantic ? html`<div class="callout info small">This segment was cut by the classic segmenter: it has no source offsets, speaker analysis or boundary editing.
+        <a href="#/narrative/${st.bookId}">Convert the book</a> to use them.</div>` : ""}
+      ${s.flag_reason ? html`<div class="callout warn small"><strong>QA flag:</strong> ${s.flag_reason}</div>` : ""}
+
+      <h3>Manuscript text <span class="small muted">(immutable)</span></h3>
+      ${i.context ? html`<div class="ctx-block ctx-before" aria-label="Context before (analysis only)"><div class="ctx-label">Context before — analysis only, never spoken ${i.context.chapter_start ? "· chapter start" : ""}${i.context.scene_break_before ? " · includes a scene break" : ""}</div>
+        <p>${i.context.before || "—"}</p></div>` : ""}
+      <div class="seg-own">${textBlock(i)}</div>
+      ${i.context ? html`<div class="ctx-block ctx-after" aria-label="Context after (analysis only)"><div class="ctx-label">Context after — analysis only, never spoken ${i.context.chapter_end ? "· chapter end" : ""}${i.context.scene_break_after ? " · includes a scene break" : ""}</div>
+        <p>${i.context.after || "—"}</p></div>
+        <p class="small muted">Context windows: ${i.settings.context_before_chars} characters before and ${i.settings.context_after_chars} after (Settings → Narrative). Shown here: ${i.context.before_chars} / ${i.context.after_chars}.</p>` : ""}
+
+      ${i.semantic ? html`<div class="form-actions boundary-actions" role="group" aria-label="Segment boundaries">
+        <button class="btn small ${st.mode === "split" ? "primary" : ""}" data-act="mode" data-mode="split" aria-pressed="${st.mode === "split"}">Split at a word…</button>
+        <button class="btn small ${st.mode === "move_end" ? "primary" : ""}" data-act="mode" data-mode="move_end" aria-pressed="${st.mode === "move_end"}">Move the end earlier…</button>
+        <button class="btn small" data-act="merge">Merge with next segment</button>
+        ${st.mode ? html`<span class="small">Click the first word of the <strong>${st.mode === "split" ? "new second segment" : "text that moves to the next segment"}</strong>.</span>` : ""}</div>
+        <p class="small muted">Only the segments whose text range changes are regenerated; neighbours keep their audio and their directions.</p>` : ""}
+    </section>
+    <div class="grid-2">
+      <section class="card">${spansTable(i)}${deliveryPanel(i)}</section>
+      <section class="card">${directionPanel(i)}</section></div>
+    <section class="card">
+      <div class="action-bar">
+        <button class="btn primary" data-act="approve" ${i.status === "passed" || i.status === "flagged" ? "" : html`disabled`}>Approve</button>
+        <button class="btn" data-act="regenerate" ${busyState ? html`disabled` : ""}>Regenerate</button>
+        ${busyState ? html`<span class="small muted"><span class="spinner" aria-hidden="true"></span> queued for generation</span>` : ""}
+        <a class="btn ghost" href="#/review/${st.bookId}?seg=${sid}">Edit spoken text &amp; notes in the review view</a></div>
+      ${previewPanel()}
+      ${takes(i, d)}
+      ${i.history.length ? html`<details><summary>Direction history (${i.history.length})</summary><ol class="feed small">${i.history.map((h) => html`<li>${fmtDate(h.created_at)} · <strong>${h.source}</strong> by ${h.actor}
+        ${h.payload && h.payload.final ? html`→ ${h.payload.final.emotion} ${h.payload.final.intensity}/5, ${h.payload.final.pacing}` : ""}${h.payload && h.payload.note ? html` <span class="muted">(${h.payload.note})</span>` : ""}</li>`)}</ol></details>` : ""}
+    </section>`);
+  }
+
+  async function reload() { await load(); paint(); }
+
+  async function goToOffset(chapterId, off) {
+    let after = null;
+    for (let n = 0; n < 20; n++) {
+      const r = await get(`/api/books/${st.bookId}/segments` + qs({ chapter_id: chapterId, limit: 200, after }));
+      const hit = r.items.find((x) => x.src_start !== null && x.src_start <= off && off < x.src_end) || null;
+      if (hit) { navigate(`#/inspect/${hit.id}`); return; }
+      if (!r.next) break;
+      after = r.next;
+    }
+    navigate(`#/review/${st.bookId}`);
+  }
+
+  async function patchNarr(body, msg) {
+    const r = await busy(null, () => patch(`/api/segments/${sid}/narrative`, body), msg);
+    if (r.regenerating) toast("Only this segment was reset and queued for regeneration.", "info", 6000);
+    await reload();
+  }
+
+  async function act(name, t) {
+    const i = st.ins;
+    if (name === "mode") { st.mode = st.mode === t.dataset.mode ? null : t.dataset.mode; paint(); return; }
+    if (name === "pick") {
+      const off = Number(t.dataset.off), op = st.mode; st.mode = null;
+      const label = op === "split" ? "Split here?" : "Move the end of this segment here?";
+      if (!(await confirmDialog(label, "This changes only this segment's boundary. The affected segments are re-cut and queued for regeneration; the rest of the book is untouched.", "Apply"))) { paint(); return; }
+      const r = await busy(t, () => post(`/api/segments/${sid}/boundary`, { op, offset: off }));
+      toast(`Re-cut: ${r.kept} unchanged, ${r.created} new, ${r.retired} retired.`, "success", 7000);
+      await goToOffset(i.chapter.id, off);
+      return;
+    }
+    if (name === "merge") {
+      if (!(await confirmDialog("Merge with the next segment?", "The two segments become one (up to 1200 characters). Their audio is regenerated as one segment.", "Merge"))) return;
+      const r = await busy(t, () => post(`/api/segments/${sid}/boundary`, { op: "merge_next" }));
+      toast(`Merged: ${r.created} new, ${r.retired} retired.`, "success", 7000);
+      await goToOffset(i.chapter.id, i.src_start);
+      return;
+    }
+    if (name === "assign") { await patchNarr({ character_id: Number(t.dataset.char) }, "Speaker assigned and locked"); return; }
+    if (name === "clear-dir") { await patchNarr({ emotion: null, intensity: null, tension: null, pacing: null, delivery: null }, "Overrides cleared"); return; }
+    if (name === "redirect") { await busy(t, () => post(`/api/segments/${sid}/redirect`), "Director re-run queued (runs on the worker)"); return; }
+    if (name === "approve") { await busy(t, () => post(`/api/segments/${sid}/approve`, { note: null }), "Segment approved"); await reload(); return; }
+    if (name === "regenerate") { await busy(t, () => post(`/api/segments/${sid}/regenerate`, { note: null }), "Queued for regeneration"); await reload(); return; }
+    if (name === "select") { await busy(t, () => post(`/api/segments/${sid}/select-take`, { attempt_id: Number(t.dataset.attempt) }), "Take selected"); await reload(); return; }
+    if (name === "preview") {
+      const job = await busy(t, () => post(`/api/segments/${sid}/preview`, {}));
+      st.preview = { job: job.id, pending: true }; paint();
+      for (let n = 0; n < 180 && st.preview && st.preview.job === job.id; n++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        if (!view.isConnected || !view.querySelector(".preview-out, [data-act=preview]")) return;
+        const j = await get(`/api/jobs/${job.id}`);
+        if (j.status === "completed") { st.preview = { job: job.id, result: j.result }; paint(); return; }
+        if (["failed", "cancelled"].includes(j.status)) { st.preview = { job: job.id, error: j.error || j.status }; paint(); return; }
+      }
+    }
+  }
+
+  async function onClick(e) {
+    const t = e.target.closest("[data-act]"); if (!t || !view.contains(t)) return;
+    try { await act(t.dataset.act, t); } catch { /* toast shown */ }
+  }
+  async function onSubmit(e) {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      if (e.target.id === "dir-form") {
+        const body = {};
+        ["emotion", "pacing", "delivery"].forEach((k) => { body[k] = fd.get(k) || null; });
+        ["intensity", "tension"].forEach((k) => { body[k] = fd.get(k) ? Number(fd.get(k)) : null; });
+        await patchNarr(body, "Override saved");
+      } else if (e.target.id === "voice-form") {
+        await patchNarr({ voice_id: fd.get("voice_id") ? Number(fd.get("voice_id")) : null }, "Voice profile updated");
+      } else if (e.target.id === "assign-form") {
+        await patchNarr({ character_id: Number(fd.get("character_id")) }, "Speaker assigned and locked");
+      }
+    } catch { /* toast shown */ }
+  }
+
+  await load();
+  paint();
+  view.addEventListener("click", onClick);
+  view.addEventListener("submit", onSubmit);
+  const off = onState(async () => {
+    const ae = document.activeElement;
+    if (ae && view.contains(ae) && ["input", "textarea", "select"].includes(ae.tagName.toLowerCase())) return;
+    if ([...view.querySelectorAll("audio")].some((x) => !x.paused) || st.mode || (st.preview && st.preview.pending)) return;
+    try { await reload(); } catch { /* transient */ }
+  }, 3000);
+  return () => { st.preview = null; off(); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); };
+}
+__STUDIO_EOF_6ed178130836__
 cat > "$DEST/studio/web/static/js/views/library.js" <<'__STUDIO_EOF_1cc0e786616e__'
 // Multi-manuscript library: upload, import preview, metadata + narrator, add to queue.
 import { api, get, post, html, setHTML, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState } from "../ui.js";
@@ -10155,6 +14330,349 @@ export async function render(view) {
   return () => { off(); view.removeEventListener("click", onClick); };
 }
 __STUDIO_EOF_1cc0e786616e__
+cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_607416cd4762__'
+// Shared description of the narrative settings, used by the global Settings page and the per-book overrides editor.
+import { html } from "../ui.js";
+
+// [path, label, type, options]  (path may be nested: delivery.x / llm.x)
+export const NARRATIVE_FIELDS = [
+  ["Segmentation", [
+    ["semantic_segmentation", "Intelligent semantic segmentation (two-pass: structure and speakers, then segments)", "bool"],
+    ["max_segment_chars", "Maximum narration segment length (a ceiling, not a target)", "number", { min: 80, max: 1200 }],
+    ["min_segment_chars", "Avoid fragments shorter than (characters)", "number", { min: 0, max: 600 }],
+    ["tags_with_speaker", "Let a character voice read short tags such as “she said.” (fewer tiny segments)", "bool"],
+    ["emotion_sensitivity", "Emotion detection sensitivity (0–1; also controls splitting at emotional turns)", "number", { min: 0, max: 1, step: 0.05 }]]],
+  ["Speakers & characters", [
+    ["attribution_threshold", "Speaker attribution confidence threshold (below it a line is flagged for review)", "number", { min: 0, max: 1, step: 0.05 }],
+    ["auto_character_tracking", "Discover characters automatically", "bool"],
+    ["chapter_summaries", "Build chapter and scene summaries (verbatim sentences; never invented)", "bool"]]],
+  ["Context windows (analysis only — never spoken)", [
+    ["context_before_chars", "Previous context (characters)", "number", { min: 0, max: 8000 }],
+    ["context_after_chars", "Following context (characters)", "number", { min: 0, max: 8000 }]]],
+  ["Narrative Director & continuity", [
+    ["director_enabled", "Enable the Narrative Director (requires semantic segmentation)", "bool"],
+    ["director_lookahead", "Directions prepared ahead of synthesis (segments per batch)", "number", { min: 1, max: 200 }],
+    ["continuity_smoothing", "Cross-segment continuity smoothing", "bool"],
+    ["smoothing_strength", "Smoothing strength (0 = off … 1 = strong)", "number", { min: 0, max: 1, step: 0.05 }],
+    ["reset_scope", "Reset delivery state at", "select", { options: [["none", "never"], ["scene", "every scene break"], ["chapter", "every chapter start (fade at scene breaks)"]] }],
+    ["cascade_limit", "Most segments recomputed after one manual edit", "number", { min: 1, max: 500 }]]],
+  ["Whisper verification", [
+    ["verify_mode", "Verify generated audio with Whisper", "select", { options: [["every", "every segment"], ["sample", "a sample"], ["off", "never"]] }],
+    ["verify_sample_rate", "Share of segments verified in sample mode (0–1)", "number", { min: 0, max: 1, step: 0.05 }]]],
+  ["Delivery instructions per Qwen3-TTS model", [
+    ["delivery.custom_voice", "CustomVoice (preset speakers) — emotion/style instruction", "select", { options: [["instruct", "send as instruct"], ["off", "off"]] }],
+    ["delivery.voice_design", "VoiceDesign — instruction is the voice description itself", "select", { options: [["append", "append delivery to the description"], ["off", "off"]] }],
+    ["delivery.max_instruct_chars", "Longest instruction sent to a model (characters)", "number", { min: 40, max: 400 }]]],
+  ["Local LLM (OpenAI-compatible endpoint)", [
+    ["llm.provider", "Provider", "select", { options: [["none", "none (rules engine only)"], ["openai_compatible", "OpenAI-compatible server"]] }],
+    ["llm.base_url", "Base URL (e.g. http://127.0.0.1:1234/v1)", "text"],
+    ["llm.model", "Model name", "text"],
+    ["llm.api_key_env", "Environment variable that holds the API key (leave blank if none)", "text"],
+    ["llm.timeout_s", "Request timeout (s)", "number", { min: 5, max: 1800 }],
+    ["llm.temperature", "Temperature", "number", { min: 0, max: 1.5, step: 0.05 }],
+    ["llm.max_tokens", "Maximum reply tokens", "number", { min: 100, max: 8000 }]]],
+];
+
+export const getPath = (obj, path) => path.split(".").reduce((o, k) => (o === undefined || o === null ? undefined : o[k]), obj);
+
+export function setPath(obj, path, value) {
+  const keys = path.split(".");
+  let o = obj;
+  keys.slice(0, -1).forEach((k) => { o = o[k] = o[k] || {}; });
+  o[keys[keys.length - 1]] = value;
+}
+
+/** One input for a field; `prefix` namespaces the form control names. */
+export function narrativeInput(prefix, [path, label, type, opt = {}], val) {
+  const name = `${prefix}${path}`;
+  if (type === "bool") return html`<label class="check"><input type="checkbox" name="${name}" ${val ? html`checked` : ""}> ${label}</label>`;
+  if (type === "select") return html`<label>${label}<select name="${name}">${opt.options.map(([v, l]) => html`<option value="${v}" ${v === val ? html`selected` : ""}>${l}</option>`)}</select></label>`;
+  if (type === "text") return html`<label>${label}<input name="${name}" value="${val ?? ""}" spellcheck="false" autocomplete="off"></label>`;
+  return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}"></label>`;
+}
+
+/** Read a control's value back with the right type; undefined when blank. */
+export function readInput(form, prefix, [path, , type]) {
+  const el = form.elements[`${prefix}${path}`];
+  if (!el) return undefined;
+  if (type === "bool") return el.checked;
+  if (el.value === "") return type === "text" ? "" : undefined;
+  if (type === "number") return Number(el.value);
+  return el.value.trim();
+}
+
+export const allFields = () => NARRATIVE_FIELDS.flatMap(([, fields]) => fields);
+__STUDIO_EOF_607416cd4762__
+cat > "$DEST/studio/web/static/js/views/narrative.js" <<'__STUDIO_EOF_c628a052087f__'
+// Narrative page for one book: analysis stages, project-level overrides, character directory, story notes.
+import { get, post, put, patch, api, html, setHTML, badge, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, ApiError } from "../ui.js";
+import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
+
+const STAGES = [
+  ["structure", "1 · Structure & speakers (Pass 1)"], ["attribution", "2 · LLM attribution of flagged lines"], ["characters", "3 · Characters"],
+  ["summaries", "4 · Chapter & scene summaries"], ["segmentation", "5 · Segmentation (Pass 2)"], ["director", "6 · Narrative Director"], ["continuity", "7 · Continuity"],
+];
+const STAGE_TONE = { done: "good", running: "info", error: "bad", skipped: "neutral", pending: "neutral" };
+const GENDERS = [["", "unknown"], ["female", "female"], ["male", "male"], ["neutral", "neutral"]];
+const EDIT_FIELDS = [["accent", "Accent"], ["speech_pattern", "Speech pattern"], ["personality", "Personality"], ["description", "Description"],
+  ["voice_description", "Voice description"], ["delivery_pref", "Delivery preference (e.g. “speaks softly”)"]];
+
+function statsText(stats) {
+  const keep = Object.entries(stats || {}).filter(([, v]) => typeof v !== "object");
+  return keep.map(([k, v]) => `${k.replace(/_/g, " ")}: ${typeof v === "number" && !Number.isInteger(v) ? v.toFixed(2) : v}`).join(" · ");
+}
+
+function provBadges(c) {
+  const p = c.prov || {};
+  const fields = Object.keys(p).filter((k) => k !== "name" && k !== "aliases");
+  if (!fields.length) return "";
+  return html`${fields.map((f) => html`<span class="badge prov tone-${p[f].confirmed ? "good" : "neutral"}" title="${f}: ${p[f].source}, confidence ${Math.round(p[f].confidence * 100)}%${p[f].confirmed ? ", confirmed" : ", inferred"}">${f} · ${p[f].source}${p[f].confirmed ? " ✓" : ""}</span>`)}`;
+}
+
+function resultText(r) {
+  const bits = [];
+  if (r.segments !== undefined) bits.push(`${r.segments} segment(s) use this character`);
+  if (r.resegmented) bits.push(`re-cut: ${r.resegmented.kept} kept, ${r.resegmented.created} new, ${r.resegmented.retired} retired`);
+  if (r.reset) bits.push(`${r.reset.length} rendered segment(s) queued for regeneration`);
+  return bits.join(" · ");
+}
+
+export async function render(view, parts) {
+  const id = Number(parts[0]);
+  const book = await get(`/api/books/${id}`);
+  const vocab = await get("/api/narrative/vocabulary");
+  let status = await get(`/api/books/${id}/narrative`);
+  let bset = await get(`/api/books/${id}/narrative/settings`);
+  let chars = await get(`/api/books/${id}/characters`);
+  let notes = (await get(`/api/books/${id}/notes`)).notes;
+
+  setHTML(view, html`<div class="page-head"><h1>Narrative: ${book.title}</h1>
+    <div class="head-actions"><a class="btn" href="#/book/${id}">Book page</a><a class="btn" href="#/review/${id}">Review audio</a></div></div>
+    <div id="nar-status"></div><div id="nar-over"></div><div id="nar-chars"></div><div id="nar-notes"></div>`);
+  const $ = (sel) => view.querySelector(sel);
+
+  // ------------------------------------------------------------------ status
+  function paintStatus() {
+    const s = status, job = s.job, active = job && ["queued", "running", "paused"].includes(job.status);
+    setHTML($("#nar-status"), html`<section class="card" aria-labelledby="st-h"><h2 id="st-h">Analysis pipeline</h2>
+      ${s.semantic ? "" : html`<div class="callout info"><strong>This book uses the classic segmenter.</strong> Speaker analysis, characters, the Narrative Director and the
+        segment inspector's boundary editing need semantic segmentation (source offsets and speaker attribution).
+        <div class="form-actions"><button class="btn primary" data-act="convert">Convert to semantic segmentation…</button></div></div>`}
+      <div class="stats compact">
+        <div class="stat"><div class="stat-value">${s.semantic_segments}/${s.segments}</div><div class="stat-label">segments with source offsets</div></div>
+        <div class="stat ${s.needs_review ? "warn" : "good"}"><div class="stat-value">${s.needs_review}</div><div class="stat-label"><a href="#/review/${id}?filter=speaker_review">speaker needs review</a></div></div>
+        <div class="stat"><div class="stat-value">${s.directed}</div><div class="stat-label">segments directed</div></div>
+        <div class="stat ${s.direction_review ? "warn" : ""}"><div class="stat-value">${s.direction_review}</div><div class="stat-label"><a href="#/review/${id}?filter=direction_review">direction needs review</a></div></div>
+        <div class="stat ${s.stale ? "warn" : ""}"><div class="stat-value">${s.stale}</div><div class="stat-label">stale directions</div></div>
+        <div class="stat"><div class="stat-value">${s.characters}</div><div class="stat-label">characters</div></div>
+      </div>
+      <p class="small muted">Director: ${s.settings.director_enabled ? html`<strong>on</strong>` : "off"} · engine: ${s.settings.llm === "none" || !s.settings.model ? "deterministic rules (no LLM)" : html`LLM <code>${s.settings.model}</code>`}
+        · cache: ${s.director_cache ? `${s.director_cache.n} entries, ${s.director_cache.hits} hits` : "–"}</p>
+      <ol class="stage-list">${STAGES.map(([k, label]) => {
+        const st = s.stages[k] || { status: "pending", stats: {} };
+        return html`<li><span class="stage-name">${label}</span> <span class="badge tone-${STAGE_TONE[st.status] || "neutral"}">${st.status}</span>
+          ${st.finished_at ? html`<span class="small muted">${fmtAgo(st.finished_at)}</span>` : ""}
+          ${st.error ? html`<div class="small err">${st.error}</div>` : ""}
+          ${statsText(st.stats) ? html`<div class="small muted">${statsText(st.stats)}</div>` : ""}</li>`;
+      })}</ol>
+      ${job ? html`<p class="small">Latest analysis job #${job.id}: ${badge(job.status)} ${job.error ? html`<span class="err">${job.error}</span>` : ""} <span class="muted">${fmtAgo(job.updated_at)}</span>
+        ${active ? html`<span class="spinner" aria-hidden="true"></span> runs on the worker between narration steps (see <a href="#/queue">Queue</a>)` : ""}</p>` : ""}
+      <div class="form-actions">
+        <button class="btn primary" data-act="analyze" ${active || !s.semantic ? html`disabled` : ""}>Run analysis</button>
+        <button class="btn" data-act="rebuild" ${active || !s.semantic ? html`disabled` : ""} title="Parse the stored manuscript again; characters, locked speakers and manual edits are kept">Re-run structure analysis…</button>
+        <button class="btn" data-act="recompute" ${s.directed ? "" : html`disabled`} title="Re-run smoothing from stored directions; no LLM calls">Recompute continuity</button>
+        <button class="btn" data-act="reseg" ${s.semantic ? "" : html`disabled`} title="Pass 2 again; unchanged segments keep their audio">Re-segment</button>
+        <a class="btn ghost" href="/api/books/${id}/narrative/metadata" target="_blank" rel="noopener">Segment metadata (JSON)</a>
+      </div>
+      <p class="small muted">Run analysis prepares speaker resolution, summaries, segments and directions. It runs on the GPU worker as a queued job and never changes the manuscript.</p>
+    </section>`);
+  }
+
+  // --------------------------------------------------------------- overrides
+  function paintOverrides() {
+    const eff = bset.effective, ov = bset.overrides, def = bset.defaults;
+    setHTML($("#nar-over"), html`<section class="card" aria-labelledby="ov-h"><h2 id="ov-h">Project settings for this book</h2>
+      <p class="small muted">Tick “override” to use a value for this book only; unticked fields follow the global defaults in
+        <a href="#/settings">Settings</a>. Changing the overrides is an administrator action.</p>
+      <form id="ov-form" class="form"><div class="ov-grid">
+        ${NARRATIVE_FIELDS.flatMap(([, fields]) => fields).filter((f) => f[0] !== "semantic_segmentation").map((f) => {
+          const has = getPath(ov, f[0]) !== undefined;
+          return html`<div class="ov-row ${has ? "on" : ""}"><label class="check ov-check"><input type="checkbox" name="ov:${f[0]}" ${has ? html`checked` : ""}> override</label>
+            ${narrativeInput("val:", f, getPath(eff, f[0]))}<div class="small muted">default: ${String(getPath(def, f[0]))}</div></div>`;
+        })}</div>
+        <button class="btn" type="submit">Save project settings</button></form></section>`);
+  }
+
+  async function saveOverrides(form, btn) {
+    const patchObj = {};
+    for (const f of allFields().filter((x) => x[0] !== "semantic_segmentation")) {
+      const on = form.elements[`ov:${f[0]}`].checked;
+      const v = readInput(form, "val:", f);
+      const was = getPath(bset.overrides, f[0]) !== undefined;
+      if (on && v !== undefined) setPath(patchObj, f[0], v);
+      else if (was) setPath(patchObj, f[0], null); // remove an override that exists; do not send empty groups
+    }
+    try {
+      bset = await busy(btn, () => put(`/api/books/${id}/narrative/settings`, { overrides: patchObj }), "Project settings saved");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) toast("Only an administrator can change a project's narrative settings.", "error", 9000);
+    }
+    status = await get(`/api/books/${id}/narrative`);
+    paintOverrides(); paintStatus();
+  }
+
+  // -------------------------------------------------------------- characters
+  const charName = (cid) => (chars.characters.find((c) => c.id === cid) || {}).name || "?";
+
+  function paintChars() {
+    const list = chars.characters;
+    setHTML($("#nar-chars"), html`<section class="card" aria-labelledby="ch-h"><h2 id="ch-h">Characters (${list.filter((c) => c.kind !== "narrator").length})</h2>
+      <p class="small muted">Characters keep one identity across chapters. Things you set here are confirmed and are never overwritten by analysis. Assigning a different voice re-cuts only the
+        segments that character speaks in and regenerates only the audio that actually changes.</p>
+      <div class="table-wrap"><table class="table compact char-table"><thead><tr><th scope="col">Character</th><th scope="col">Aliases</th><th scope="col">Gender</th>
+        <th scope="col">Voice</th><th scope="col">Lines</th><th scope="col">Provenance</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+        <tbody>${list.map((c) => html`<tr data-char="${c.id}">
+          <td><strong>${c.name}</strong> ${c.kind === "narrator" ? html`<span class="badge tone-info">narrator</span>` : ""}
+            ${c.first_chapter ? html`<div class="small muted">first seen: chapter ${c.first_chapter}</div>` : ""}</td>
+          <td class="small">${c.aliases.length ? c.aliases.map((a) => html`<span class="chip">${a}</span> `) : html`<span class="muted">–</span>`}</td>
+          <td class="small">${c.gender || html`<span class="muted">unknown</span>`}</td>
+          <td>${c.kind === "narrator" ? html`<span class="small">book narrator</span>`
+            : html`<label class="sr-only" for="v-${c.id}">Voice for ${c.name}</label><select id="v-${c.id}" data-voice="${c.id}"><option value="">Book narrator voice</option>
+              ${chars.voices.map((v) => html`<option value="${v.id}" ${c.voice && c.voice.id === v.id ? html`selected` : ""}>${v.name} (${v.kind})</option>`)}</select>`}</td>
+          <td class="small">${c.segments} segment(s)${c.review_count ? html`<div class="warn-text">${c.review_count} to review</div>` : ""}</td>
+          <td class="small prov-cell">${provBadges(c)}</td>
+          <td class="nowrap">${c.kind === "narrator" ? "" : html`<button class="btn small" data-act="char-edit" data-id="${c.id}">Edit</button>
+            <button class="btn small ghost" data-act="char-merge" data-id="${c.id}">Merge…</button>`}</td></tr>`)}</tbody></table></div>
+      <form id="char-new" class="inline-form"><label>New character <input name="name" maxlength="80" required placeholder="Name"></label><button class="btn small" type="submit">Add</button></form>
+    </section>`);
+  }
+
+  async function reloadChars() {
+    chars = await get(`/api/books/${id}/characters`);
+    status = await get(`/api/books/${id}/narrative`);
+    paintChars(); paintStatus();
+  }
+
+  async function editChar(cid) {
+    const c = chars.characters.find((x) => x.id === cid);
+    const res = await dialog({ title: `Edit ${c.name}`, form: true, buttons: [{ label: "Save", value: "save", kind: "primary" }], body: html`
+      <label>Name <input name="name" maxlength="80" value="${c.name}" required></label>
+      <label>Aliases (comma separated: other names, titles, nicknames)<input name="aliases" value="${c.aliases.join(", ")}"></label>
+      <label>Gender (used to resolve “he said / she said”)<select name="gender">${GENDERS.map(([v, l]) => html`<option value="${v}" ${v === c.gender ? html`selected` : ""}>${l}</option>`)}</select></label>
+      ${EDIT_FIELDS.map(([k, l]) => html`<label>${l}<input name="${k}" maxlength="600" value="${c[k] || ""}"></label>`)}` });
+    if (!res) return;
+    const d = res.data, body = {};
+    if (d.name.trim() !== c.name) body.name = d.name.trim();
+    const aliases = d.aliases.split(",").map((x) => x.trim()).filter(Boolean);
+    if (aliases.join("|") !== c.aliases.join("|")) body.aliases = aliases;
+    if (d.gender !== c.gender) body.gender = d.gender;
+    EDIT_FIELDS.forEach(([k]) => { if ((d[k] || "") !== (c[k] || "")) body[k] = d[k]; });
+    if (!Object.keys(body).length) return;
+    const r = await busy(null, () => patch(`/api/characters/${cid}`, body), "Character saved (confirmed)");
+    if (r.voice_changed) toast(resultText(r), "info", 8000);
+    await reloadChars();
+  }
+
+  async function mergeChar(cid) {
+    const c = chars.characters.find((x) => x.id === cid);
+    const others = chars.characters.filter((x) => x.id !== cid && x.kind !== "narrator");
+    if (!others.length) { toast("There is no other character to merge into.", "info"); return; }
+    const res = await dialog({ title: `Merge ${c.name} into…`, form: true, buttons: [{ label: "Merge", value: "merge", kind: "danger" }], body: html`
+      <p class="small">All of ${c.name}'s lines move to the character you choose, and “${c.name}” becomes an alias so the same person is recognised in later chapters.</p>
+      <label>Merge into <select name="into">${others.map((o) => html`<option value="${o.id}">${o.name}</option>`)}</select></label>` });
+    if (!res) return;
+    const into = Number(res.data.into);
+    if (!(await confirmDialog("Merge characters?", `Merge “${c.name}” into “${charName(into)}”? Segments that change voice are regenerated; others keep their audio.`, "Merge", true))) return;
+    const r = await busy(null, () => post(`/api/characters/${cid}/merge`, { into_id: into }), "Characters merged");
+    toast(resultText(r), "info", 8000);
+    await reloadChars();
+  }
+
+  // ------------------------------------------------------------------- notes
+  function paintNotes() {
+    const sums = notes.filter((n) => n.kind === "summary"), facts = notes.filter((n) => n.kind !== "summary");
+    setHTML($("#nar-notes"), html`<section class="card" aria-labelledby="nt-h"><h2 id="nt-h">Story notes</h2>
+      <p class="small muted">Facts you add here are treated as confirmed and given to the Director. Summaries are made of sentences copied word for word from the chapter
+        (<em>extractive</em>); an LLM summary, if present, is only an unconfirmed interpretation and is rejected if it names anything that is not in the chapter.</p>
+      <h3>Facts (${facts.length})</h3>
+      ${facts.length ? html`<ul class="notes">${facts.map((n) => html`<li>${n.text} <span class="badge tone-${n.confirmed ? "good" : "neutral"}">${n.source}${n.confirmed ? " ✓" : ""}</span>
+        ${n.character_id ? html`<span class="small muted">· ${charName(n.character_id)}</span>` : ""}
+        <button class="btn small ghost danger" data-act="note-del" data-id="${n.id}" aria-label="Delete note">Delete</button></li>`)}</ul>` : html`<p class="muted small">None yet.</p>`}
+      <form id="note-new" class="form"><label>Add a story fact (e.g. “Elena is Hale's former patient”)<input name="text" minlength="3" maxlength="600" required></label>
+        <label>About <select name="character_id"><option value="">the story in general</option>${chars.characters.filter((c) => c.kind !== "narrator").map((c) => html`<option value="${c.id}">${c.name}</option>`)}</select></label>
+        <button class="btn small" type="submit">Add fact</button></form>
+      <details><summary>Chapter and scene summaries (${sums.length})</summary>
+        <ul class="notes">${sums.map((n) => html`<li><strong>Chapter ${n.chapter_idx}${n.scene_idx === null || n.scene_idx === undefined ? "" : `, scene ${n.scene_idx + 1}`}</strong>
+          <span class="badge tone-${n.source === "extractive" ? "good" : "warn"}">${n.source === "extractive" ? "extractive — verbatim sentences" : "LLM summary — inferred, unconfirmed"}</span>
+          <div class="small">${n.text}</div></li>`)}</ul></details>
+    </section>`);
+  }
+
+  // ------------------------------------------------------------------- events
+  async function runAnalysis(body, btn, okMsg) {
+    try {
+      await busy(btn, () => post(`/api/books/${id}/analyze`, body), okMsg);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.details && e.details.rendered_segments !== undefined) {
+        if (await confirmDialog("Re-cut this book?", e.message, "Convert & regenerate", true))
+          await busy(btn, () => post(`/api/books/${id}/analyze`, { ...body, confirm: true }), "Conversion queued");
+      }
+    }
+    status = await get(`/api/books/${id}/narrative`);
+    paintStatus();
+  }
+
+  async function onClick(e) {
+    const t = e.target.closest("[data-act]"); if (!t || !view.contains(t)) return;
+    const a = t.dataset.act;
+    try {
+      if (a === "analyze") await runAnalysis({}, t, "Analysis queued");
+      else if (a === "convert") await runAnalysis({ rebuild: true }, t, "Conversion queued");
+      else if (a === "rebuild") { if (await confirmDialog("Re-run structure analysis?", "The stored manuscript is parsed again. Characters, speakers you confirmed and boundary edits are kept; segments whose text range is unchanged keep their audio.", "Re-run")) await runAnalysis({ rebuild: true }, t, "Analysis queued"); }
+      else if (a === "recompute") { const r = await busy(t, () => post(`/api/books/${id}/continuity/recompute`)); toast(`Recomputed ${r.recomputed} direction(s); ${r.changed.length} changed, ${r.audio_reset.length} segment(s) queued for regeneration.`, "success", 8000); status = await get(`/api/books/${id}/narrative`); paintStatus(); }
+      else if (a === "reseg") { const r = await busy(t, () => post(`/api/books/${id}/resegment`)); toast(`Re-segmented: ${r.kept} unchanged, ${r.created} new, ${r.retired} retired; ${r.audio_reset} regenerating.`, "success", 8000); status = await get(`/api/books/${id}/narrative`); paintStatus(); }
+      else if (a === "char-edit") await editChar(Number(t.dataset.id));
+      else if (a === "char-merge") await mergeChar(Number(t.dataset.id));
+      else if (a === "note-del") { await busy(t, () => api("DELETE", `/api/notes/${t.dataset.id}`), "Note deleted"); notes = (await get(`/api/books/${id}/notes`)).notes; paintNotes(); }
+    } catch (err) { /* toast shown by busy() */ }
+  }
+
+  async function onChange(e) {
+    const sel = e.target.closest("select[data-voice]"); if (!sel) return;
+    const cid = Number(sel.dataset.voice);
+    try {
+      const r = await busy(sel, () => patch(`/api/characters/${cid}`, { voice_id: sel.value ? Number(sel.value) : null }), "Voice assigned");
+      if (r.voice_changed) toast(resultText(r) || "Voice assigned", "info", 9000);
+    } catch { /* toast shown */ }
+    await reloadChars();
+  }
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    try {
+      if (e.target.id === "ov-form") await saveOverrides(e.target, e.submitter);
+      else if (e.target.id === "char-new") {
+        await busy(e.submitter, () => post(`/api/books/${id}/characters`, { name: new FormData(e.target).get("name") }), "Character added");
+        await reloadChars();
+      } else if (e.target.id === "note-new") {
+        const fd = new FormData(e.target);
+        await busy(e.submitter, () => post(`/api/books/${id}/notes`, { text: fd.get("text"), character_id: fd.get("character_id") ? Number(fd.get("character_id")) : null }), "Fact added");
+        notes = (await get(`/api/books/${id}/notes`)).notes; paintNotes();
+      }
+    } catch { /* toast shown */ }
+  }
+
+  paintStatus(); paintOverrides(); paintChars(); paintNotes();
+  view.addEventListener("click", onClick);
+  view.addEventListener("change", onChange);
+  view.addEventListener("submit", onSubmit);
+  const off = onState(async () => {
+    try { status = await get(`/api/books/${id}/narrative`); paintStatus(); } catch { /* transient */ }
+  }, 3000);
+  return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
+}
+export { toastError };
+__STUDIO_EOF_c628a052087f__
 cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_9c7fd7b52f5f__'
 // Overview & progress dashboard.
 import { get, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, fmtDate, onState, toastError } from "../ui.js";
@@ -10240,7 +14758,7 @@ export async function render(view) {
   }, 2000);
 }
 __STUDIO_EOF_9c7fd7b52f5f__
-cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_2ff497a0e606__'
+cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_0cc4435bf1c8__'
 // Durable FIFO queue: reorder (drag or keyboard buttons), pause/resume/retry/cancel, logs, estimates.
 import { get, post, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, toast, busy, onState, confirmDialog } from "../ui.js";
 
@@ -10300,9 +14818,9 @@ export async function render(view) {
         ${active.length ? html`<ol class="qlist" id="qlist">${active.map((j) => jobRow(j, tp, j.status !== "running"))}</ol>`
           : html`<p class="muted">Nothing queued. Add books from the <a href="#/library">Library</a>.</p>`}
       </section>
-      <section class="card" aria-labelledby="util-h"><h2 id="util-h">Assembly, export &amp; preview jobs</h2>
+      <section class="card" aria-labelledby="util-h"><h2 id="util-h">Assembly, export, preview &amp; analysis jobs</h2>
         ${data.utility.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Job</th><th scope="col">Book</th><th scope="col">Status</th><th scope="col">When</th></tr></thead>
-          <tbody>${data.utility.map((u) => html`<tr><td>#${u.id} ${u.kind}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td><td>${u.title || "–"}</td>
+          <tbody>${data.utility.map((u) => html`<tr><td>#${u.id} ${u.kind === "analyze" ? "Narrative analysis" : u.kind}${u.kind === "preview" && u.payload && u.payload.segment_id ? " (segment)" : ""}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td><td>${u.title || "–"}</td>
           <td>${badge(u.status)}${u.error ? html`<div class="small err">${u.error}</div>` : ""}</td><td class="small">${fmtAgo(u.finished_at || u.created_at)}</td></tr>`)}</tbody></table></div>`
           : html`<p class="muted">None yet.</p>`}</section>
       <section class="card" aria-labelledby="done-h"><h2 id="done-h">Recently finished (7 days)</h2>
@@ -10368,13 +14886,14 @@ export async function render(view) {
     view.removeEventListener("drop", onDrop); view.removeEventListener("dragend", onDragEnd);
   };
 }
-__STUDIO_EOF_2ff497a0e606__
-cat > "$DEST/studio/web/static/js/views/review.js" <<'__STUDIO_EOF_f6b03f8b7455__'
+__STUDIO_EOF_0cc4435bf1c8__
+cat > "$DEST/studio/web/static/js/views/review.js" <<'__STUDIO_EOF_2486e47e24ea__'
 // Audio review / production QA workspace with paged segment navigation and keyboard shortcuts.
 import { get, post, html, setHTML, badge, fmtClock, fmtDate, toast, busy, debounce, qs, onState, player, navigate, progressBar } from "../ui.js";
 
 const FILTERS = [["issues", "Issues (flags + warnings)"], ["flagged", "Flagged only"], ["all", "All segments"], ["generated", "Generated"],
-  ["passed", "QA passed"], ["approved", "Approved"], ["pending", "Not rendered yet"], ["overridden", "Spoken text edited"], ["noted", "With notes"]];
+  ["passed", "QA passed"], ["approved", "Approved"], ["pending", "Not rendered yet"], ["overridden", "Spoken text edited"], ["noted", "With notes"],
+  ["speaker_review", "Speaker needs review"], ["direction_review", "Direction needs review / stale"]];
 
 function diffView(diff) {
   if (!diff || !diff.length) return html`<span class="muted">No comparison available.</span>`;
@@ -10402,7 +14921,7 @@ function detailPanel(d) {
   return html`<div class="seg-detail">
     <div class="seg-head">
       <div><h2 class="seg-title"><code>${s.sid}</code></h2>
-        <div class="small muted">Chapter ${d.chapter.idx}: ${d.chapter.title} · segment ${s.idx} · ${s.kind}${d.chapter_timing ? html` · ${fmtClock(d.chapter_timing.start_s)} in chapter master` : ""}</div></div>
+        <div class="small muted">Chapter ${d.chapter.idx}: ${d.chapter.title} · segment ${s.idx} · ${s.kind} · <a href="#/inspect/${s.id}">Inspect speaker, context &amp; direction</a>${d.chapter_timing ? html` · ${fmtClock(d.chapter_timing.start_s)} in chapter master` : ""}</div></div>
       <div class="seg-badges">${badge(s.status)} <span class="badge tone-neutral">attempts ${s.attempts_used}/${d.max_attempts} (round ${s.round})</span></div>
       <div class="btn-group" role="group" aria-label="Segment navigation">
         <button class="btn small ghost" data-act="prev" ${d.prev_id ? "" : html`disabled`} aria-label="Previous segment (K)">← Prev</button>
@@ -10466,7 +14985,8 @@ export async function render(view, parts, query) {
   const bookId = Number(parts[0]);
   const book = await get(`/api/books/${bookId}`);
   const st = { filter: query.get("filter") || (book.flagged ? "flagged" : "all"), chapter: query.get("chapter") || "", q: "", items: [], next: null, total: 0,
-    selected: query.get("seg") ? Number(query.get("seg")) : null, detail: null };
+    selected: query.get("seg") ? Number(query.get("seg")) : null, detail: null, names: {} };
+  try { (await get(`/api/books/${bookId}/characters`)).characters.forEach((c) => { st.names[c.id] = c.name; }); } catch { /* optional */ }
 
   async function loadList(append = false) {
     const res = await get(`/api/books/${bookId}/segments` + qs({ filter: st.filter, chapter_id: st.chapter, q: st.q, after: append ? st.next : "", limit: 60 }));
@@ -10482,6 +15002,8 @@ export async function render(view, parts, query) {
   function listItems() {
     return html`${st.items.map((s) => html`<li><button type="button" class="seg-item ${s.id === st.selected ? "sel" : ""}" data-seg="${s.id}" aria-current="${s.id === st.selected ? "true" : "false"}">
       <span class="seg-item-top"><code>c${s.chapter_idx}·${s.idx}</code> ${badge(s.status)} ${s.wer !== null && s.wer !== undefined ? html`<span class="small muted">${(s.wer * 100).toFixed(0)}%</span>` : ""}
+      ${s.needs_review ? html`<span class="badge tone-warn" title="speaker not established - open Inspect to assign">speaker?</span>` : ""}
+      ${s.character_id && st.names[s.character_id] ? html`<span class="small muted">${st.names[s.character_id]}</span>` : ""}
       ${s.override_text ? html`<span class="badge tone-info" title="spoken text edited">✎</span>` : ""}${s.note ? html`<span class="badge tone-neutral" title="has note">✉</span>` : ""}</span>
       <span class="seg-snip">${s.original_text.slice(0, 110)}${s.original_text.length > 110 ? "…" : ""}</span></button></li>`)}`;
   }
@@ -10601,10 +15123,11 @@ export async function render(view, parts, query) {
   return () => { off(); view.removeEventListener("click", onClick); document.removeEventListener("keydown", onKey); };
 }
 export { navigate };
-__STUDIO_EOF_f6b03f8b7455__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_0d4f60a5e35f__'
+__STUDIO_EOF_2486e47e24ea__
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_7c09d161bd59__'
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
 import { get, post, put, html, setHTML, fmtBytes, toast, toastError, busy } from "../ui.js";
+import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
 
 /** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
 function browseFolder(startPath) {
@@ -10743,6 +15266,30 @@ function field(section, [key, label, type, opt = {}], val) {
   return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
 }
 
+function narrativeCard(n) {
+  return html`<section class="card" aria-labelledby="sec-narrative"><h2 id="sec-narrative">Narrative processing (semantic segmentation &amp; Narrative Director)</h2>
+    <p class="small muted">These are the global defaults for books imported from now on. A book can override them on its own
+      <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
+      context is given to the Director for analysis only.</p>
+    ${NARRATIVE_FIELDS.map(([title, fields]) => html`<h3>${title}</h3>
+      ${title.startsWith("Context") ? html`<p class="small muted">Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.</p>` : ""}
+      ${title.startsWith("Delivery") ? html`<p class="small muted">Base (voice cloning): <strong>no instruction input — not configurable.</strong> The Base model is conditioned only by the
+        reference clip, so emotion direction is recorded but not applied. The 0.6B CustomVoice model ignores instructions as well.</p>` : ""}
+      ${title.startsWith("Local LLM") ? html`<p class="small muted">The API key itself is never stored: enter the <em>name</em> of an environment variable the worker process can read.
+        Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.</p>` : ""}
+      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>`)}
+  </section>`;
+}
+
+function collectNarrative(form) {
+  const out = {};
+  for (const f of allFields()) {
+    const v = readInput(form, "narrative.", f);
+    if (v !== undefined) setPath(out, f[0], v);
+  }
+  return out;
+}
+
 function pathStatus(v) {
   if (!v) return "";
   return html`<div class="path-status ${v.ok ? "ok" : "bad"}" role="status">
@@ -10791,10 +15338,17 @@ export async function render(view) {
       ${sec === "models" ? html`<p class="small muted">Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.</p>` : ""}
       ${sec === "server" ? html`<p class="small muted">The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.</p>` : ""}
       <div class="form-grid">${fields.map((f) => field(sec, f, s.settings[sec][f[0]]))}</div></section>`)}
+    ${narrativeCard(s.settings.narrative)}
     <div class="sticky-actions"><button class="btn primary" type="submit">Save settings</button>
       <span class="small muted">Saved settings apply to new imports; each existing book keeps its own snapshot.</span></div>
     </form>`);
     view.querySelector("#settings-form").addEventListener("submit", save);
+    const total = () => {
+      const f = view.querySelector("#settings-form");
+      const out = view.querySelector("#nar-total");
+      if (out) out.textContent = String((Number(f.elements["narrative.context_before_chars"].value) || 0) + (Number(f.elements["narrative.context_after_chars"].value) || 0));
+    };
+    ["context_before_chars", "context_after_chars"].forEach((k) => view.querySelector(`[name="narrative.${k}"]`).addEventListener("input", total));
   };
 
   function collect(form) {
@@ -10809,6 +15363,7 @@ export async function render(view) {
       else if (type === "list") set(`${sec}.${key}`, el.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number));
       else set(`${sec}.${key}`, el.value.trim());
     }
+    out.narrative = collectNarrative(form);
     out.storage = {};
     form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
     return out;
@@ -10818,7 +15373,8 @@ export async function render(view) {
     e.preventDefault();
     const form = e.target;
     if (!form.reportValidity()) return;
-    s = await busy(e.submitter, () => put("/api/settings", collect(form)), "Settings saved");
+    try { s = await busy(e.submitter, () => put("/api/settings", collect(form)), "Settings saved"); }
+    catch { return; } // the server's validation message is already shown
     storage = await get("/api/storage");
     Object.keys(checks).forEach((k) => delete checks[k]);
     paint();
@@ -10846,7 +15402,7 @@ export async function render(view) {
   paint();
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_0d4f60a5e35f__
+__STUDIO_EOF_7c09d161bd59__
 cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_513afb06ec00__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
@@ -11494,7 +16050,7 @@ export async function render(view) {
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
 __STUDIO_EOF_e2b77877580d__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_afba12b3c069__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_9e12ba5609e9__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -11521,6 +16077,7 @@ import uuid
 from . import assembly
 from .db import row, rows
 from .engines import EngineUnavailable, VoiceSpec, SynthParams, create_asr, create_tts, max_tokens_for
+from .narrative import store as N_store
 from .pipeline import StorageUnavailable, check_storage, process_segment, recover_interrupted
 from . import audio as A
 from .util import dumps, loads, now
@@ -11681,6 +16238,9 @@ class Worker:
         j = row(conn, "SELECT * FROM jobs WHERE kind IN ('assemble','export') AND status IN ('queued','running') ORDER BY id LIMIT 1")
         if j:
             return j
+        j = row(conn, "SELECT * FROM jobs WHERE kind='analyze' AND status IN ('queued','running') ORDER BY id LIMIT 1")
+        if j:
+            return j
         j = row(conn, "SELECT * FROM jobs WHERE kind='book' AND status='running' ORDER BY position LIMIT 1")
         if j:
             return j
@@ -11716,6 +16276,8 @@ class Worker:
                 self._run_preview(job)
             elif job["kind"] in ("assemble", "export"):
                 self._run_utility(job)
+            elif job["kind"] == "analyze":
+                self._run_analyze(job)
             else:
                 self._run_book_step(job)
         except Exception as exc:
@@ -11780,6 +16342,8 @@ class Worker:
         p = loads(job["payload_json"], {})
         if p.get("recording_id"):
             return self._run_recording_job(job, p)
+        if p.get("segment_id"):
+            return self._run_segment_preview(job, p)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
             vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (p["voice_version_id"],))
@@ -11806,6 +16370,32 @@ class Worker:
             conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
         self._cleanup_previews()
 
+    def _run_segment_preview(self, job: dict, p: dict) -> None:
+        """Preview one segment exactly as production would render it: its character voice, its delivery
+        instruction, the same spoken text. Nothing is written to the segment's takes."""
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
+            seg = row(conn, "SELECT * FROM segments WHERE id=?", (p["segment_id"],))
+            book = row(conn, "SELECT * FROM books WHERE id=?", (seg["book_id"],)) if seg else None
+            plan = N_store.plan_for_segment(conn, self.ctx, seg, book) if seg else None
+        if not plan:
+            raise ValueError("segment not found for preview")
+        self._set(state="previewing", job=job["id"], sid=seg["sid"], message=f"Preview of {seg['sid']}")
+        text = plan.text
+        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct)
+        res = self.tts.synthesize(plan.voice, text, params, sid=None)
+        out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
+        A.write_wav(out, res.audio, res.sample_rate)
+        result = {"path": str(out), "duration_s": round(res.audio.size / res.sample_rate, 2), "engine": res.engine, "model_id": res.model_id,
+                  "rtf": res.rtf, "peak_mem_gb": res.peak_mem_gb, "seconds": round(res.seconds, 2), "sample_rate": res.sample_rate,
+                  "segment_id": seg["id"], "instruct": plan.instruct, "delivery_applied": plan.delivery_applied, "delivery_reason": plan.delivery_reason,
+                  "text_sent_to_tts": text, "gen_key": plan.gen_key}
+        if res.engine == "mock":
+            result["note"] = "Mock engine: synthetic test tones, not speech."
+        with self.ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
+        self._cleanup_previews()
+
     def _cleanup_previews(self, keep: int = 60) -> None:
         files = sorted(self.ctx.previews_dir().glob("preview-*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)
         with self.ctx.db.session() as conn:
@@ -11813,6 +16403,25 @@ class Worker:
         for f in files[keep:]:
             if str(f) not in pinned:
                 f.unlink(missing_ok=True)
+
+    def _run_analyze(self, job: dict) -> None:
+        """One bounded unit of narrative analysis (see narrative.analysis); pause/cancel apply between units."""
+        from .narrative import analysis
+
+        jid, bid = job["id"], job["book_id"]
+        with self.ctx.db.tx() as conn:
+            cur = row(conn, "SELECT * FROM jobs WHERE id=?", (jid,))
+            if cur["cancel_requested"]:
+                conn.execute("UPDATE jobs SET status='cancelled', finished_at=?, updated_at=? WHERE id=?", (now(), now(), jid))
+                self.ctx.job_log(conn, jid, bid, "Analysis cancelled; completed stages are kept.")
+                return
+            if cur["pause_requested"]:
+                conn.execute("UPDATE jobs SET status='paused', pause_requested=0, paused_reason='operator', updated_at=? WHERE id=?", (now(), jid))
+                self.ctx.job_log(conn, jid, bid, "Analysis paused.")
+                return
+            title = row(conn, "SELECT title FROM books WHERE id=?", (bid,))["title"]
+        self._set(state="analyzing", job=jid, sid=None, message=f"Narrative analysis: {title}")
+        analysis.analysis_step(self.ctx, cur, getattr(self, "llm_transport", None))
 
     def _run_utility(self, job: dict) -> None:
         p = loads(job["payload_json"], {})
@@ -11878,6 +16487,20 @@ class Worker:
         if seg is None:
             self._finish_book(job, book)
             return
+        ns = N_store.book_ns(self.ctx, book)
+        if ns.director_enabled:
+            with self.ctx.db.session() as conn:
+                has_dir = row(conn, "SELECT 1 FROM directions WHERE segment_id=?", (seg["id"],))
+            if not has_dir:
+                from .narrative import analysis
+
+                self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['title']}: directing the next {ns.director_lookahead} segments")
+                try:
+                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None)))
+                except Exception as exc:  # a Director failure must never stop narration; the plan then has no delivery guidance
+                    log.exception("director batch failed")
+                    with self.ctx.db.tx() as conn:
+                        self.ctx.job_log(conn, jid, bid, f"Narrative Director failed ({type(exc).__name__}: {exc}); narrating without delivery guidance.", "warning")
         self._set(state="generating", job=jid, sid=seg["sid"], message=f"{book['title']}: {seg['sid']}")
 
         def on_attempt(s, n):
@@ -11957,7 +16580,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_afba12b3c069__
+__STUDIO_EOF_9e12ba5609e9__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
@@ -12162,6 +16785,57 @@ def make_speechlike_wav(seconds: float = 10.0, sr: int = 24000, amp: float = 0.2
         w.writeframes(pcm.tobytes())
     return buf.getvalue()
 __STUDIO_EOF_c99a7b0d46fa__
+cat > "$DEST/tests/narrative_fixtures.py" <<'__STUDIO_EOF_b44d6d669c8c__'
+"""Representative manuscripts for the narrative tests (multiple characters, unattributed dialogue,
+changing emotions, scene transitions, recurring characters with changing names)."""
+from __future__ import annotations
+
+from studio.parsing import Block
+
+
+def P(text):
+    return Block("paragraph", text)
+
+
+SCENE = Block("scene_break", "")
+
+CH1 = [
+    P("The rain had not stopped for three days, and the old house on Harrow Lane smelled of damp wool and woodsmoke."),
+    P("Elena Marsh stood at the kitchen window with her arms folded. Behind her, Dr. Hale set down his bag."),
+    P("“You should not have come back,” Elena said quietly."),
+    P("“I had no choice,” said Dr. Hale. “The letter was clear.”"),
+    P("“The letter was a forgery.”"),
+    P("“Then who wrote it?”"),
+    P("“I don’t know.” Her voice cracked, and for a moment she could not go on."),
+    P("“We will find out,” Hale said gently, “but not tonight.”"),
+    SCENE,
+    P("By morning the lane was a river. Tom Briggs arrived on a bicycle, soaked to the skin, shouting before he had even reached the gate."),
+    P("“Mrs. Marsh! Mrs. Marsh, they have found him!” Tom yelled."),
+    P("Elena’s hands began to shake. “Found who?” she whispered."),
+    P("“Your husband. They found him in the river, down by the mill, and he is alive!”"),
+    P("She did not remember sitting down. The kitchen floor was cold, and somewhere above her the clock was ticking too loudly, and Hale was kneeling beside her saying her name over and over."),
+]
+
+CH2 = [
+    P("Three weeks later the funeral bell rang for a man nobody in the village had liked."),
+    P("“I was not going to come,” Elena told the doctor. “But it felt wrong to stay away.”"),
+    P("“No one would have blamed you.”"),
+    P("“I would have blamed me.” She looked at the coffin, and her voice dropped to almost nothing. “He was my husband, Hale. Whatever else he was, he was that."
+      "”"),
+    P("Hale said nothing. Tom Briggs, standing a little apart with his cap in his hands, cleared his throat."),
+    P("“Mrs. Marsh,” he began, “I am so sorry.”"),
+]
+
+BOOK = [("The Flood", CH1), ("The Funeral", CH2)]
+
+TXT = (
+    "The Flood\n\nChapter 1\n\n"
+    + "\n\n".join(b.text if b.kind != "scene_break" else "* * *" for b in CH1)
+    + "\n\nChapter 2\n\n"
+    + "\n\n".join(b.text for b in CH2)
+    + "\n"
+)
+__STUDIO_EOF_b44d6d669c8c__
 cat > "$DEST/tests/test_audio.py" <<'__STUDIO_EOF_78e55b160cf0__'
 """Unit tests: acoustic QA, WAV I/O, Range parsing, path validation, settings."""
 from __future__ import annotations
@@ -12454,7 +17128,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_ed2e38a8af94__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_309007d956a5__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -12839,13 +17513,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.2.2" and st["version_label"] == "v0.2.2"
+    assert st["version"] == "0.3.0" and st["version_label"] == "v0.3.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.2.2" and "stage" not in a
+    assert a["version_label"] == "v0.3.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_ed2e38a8af94__
+__STUDIO_EOF_309007d956a5__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -13025,6 +17699,1031 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
 __STUDIO_EOF_1c0cca55ee5a__
+cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_7e9fb985e21b__'
+"""Semantic segmentation, speaker attribution, Narrative Director, continuity and their integration
+with the queue. Pure-logic tests run on the fixture manuscripts in ``narrative_fixtures``; integration
+tests use the real worker/scheduler/SQLite with the MOCK engine (synthetic tones, not speech).
+The OpenAI-compatible endpoint is either an httpx MockTransport or a throw-away local HTTP server:
+both are TEST DOUBLES for an LLM - no language model runs in this file."""
+from __future__ import annotations
+
+import json
+import re
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import httpx
+import pytest
+
+from conftest import make_text, needs_ffmpeg
+from narrative_fixtures import BOOK, CH1, CH2, SCENE, TXT, P
+from studio.config import DeliverySettings, LLMSettings, NarrativeSettings
+from studio.db import row, rows, scalar
+from studio.engines import MockASR, MockEngine
+from studio.narrative import continuity as CT
+from studio.narrative import delivery as DL
+from studio.narrative import director as D
+from studio.narrative import segmenter as G
+from studio.narrative import structure as S
+from studio.narrative import windows as W
+from studio.narrative.llm import LLMClient
+from studio.parsing import Block
+from studio.worker import Worker
+
+
+def analyze(blocks, title="T", cast=None, **kw):
+    cast = cast or S.Cast()
+    return S.analyze_chapter(blocks, title, cast, **kw), cast
+
+
+def by_text(st, fragment):
+    return next(sp for sp in st.spans if sp.kind == "dialogue" and fragment in sp.text)
+
+
+# ============================================================ Pass 1: structure and speakers
+
+
+def test_dialogue_speakers_in_known_cases():
+    cast = S.Cast()
+    st1 = S.analyze_chapter(CH1, "The Flood", cast)
+    assert by_text(st1, "come back").speaker == "Elena Marsh"          # explicit tag, surname learned from the narration
+    assert by_text(st1, "no choice").speaker == "Hale"                  # inverted tag "said Dr. Hale"
+    assert by_text(st1, "was clear").speaker == "Hale"                  # same speech continued after the tag
+    assert by_text(st1, "forgery").speaker == "Elena Marsh"             # turn-taking
+    assert by_text(st1, "Found who?").speaker == "Elena Marsh"          # "she whispered": unique female participant
+    assert by_text(st1, "they have found him").speaker == "Tom Briggs"
+    assert by_text(st1, "forgery").attribution == "alternation"
+    assert not any(sp.needs_review for sp in st1.spans if sp.speaker)   # nothing confident is also flagged
+
+
+def test_unattributed_dialogue_is_flagged_not_given_to_the_last_speaker():
+    cast = S.Cast()
+    S.analyze_chapter(CH1, "The Flood", cast)
+    st2 = S.analyze_chapter(CH2, "The Funeral", cast)
+    blamed = by_text(st2, "No one would have blamed")
+    assert blamed.speaker is None and blamed.needs_review                # Elena spoke just before; we must not assume
+    assert "no speaker tag" in blamed.evidence
+    ambiguous = by_text(st2, "I am so sorry")
+    assert ambiguous.speaker is None and ambiguous.needs_review
+    assert {"Hale", "Tom Briggs"} <= set(by_text(st2, "Mrs. Marsh,").candidates)  # "he began": two men in the scene
+
+
+def test_threshold_controls_what_is_flagged():
+    cast = S.Cast()
+    st, _ = analyze(CH1, "The Flood", cast, threshold=0.9)
+    assert by_text(st, "forgery").needs_review and by_text(st, "forgery").speaker is None      # alternation 0.8 < 0.9
+    assert by_text(st, "come back").speaker == "Elena Marsh"                                  # explicit 0.95 >= 0.9
+
+
+def test_aliases_resolve_consistently_and_ambiguity_is_refused():
+    cast = S.Cast()
+    for t, b in BOOK:
+        S.analyze_chapter(b, t, cast)
+    assert cast.resolve("Mrs. Marsh").name == "Elena Marsh"
+    assert cast.resolve("Elena").name == "Elena Marsh"
+    assert cast.resolve("Dr. Hale").name == "Hale"
+    assert cast.resolve("Tom").name == "Tom Briggs"
+    cast.add("Anna Marsh")                                  # a second Marsh: the bare surname is now ambiguous
+    assert cast.resolve("Marsh") is None
+    assert cast.resolve("Mrs. Marsh") is None
+    assert cast.resolve("Elena Marsh").name == "Elena Marsh"
+
+
+def test_known_characters_are_not_renamed_or_duplicated():
+    known = [S.KnownCharacter("Elena Marsh", ["Mrs. Marsh"], "female", id=7), S.KnownCharacter("Hale", ["the doctor"], "male", id=8)]
+    cast = S.Cast(known)
+    st = S.analyze_chapter(CH2, "The Funeral", cast)
+    assert by_text(st, "I was not going to come").speaker == "Elena Marsh"
+    assert {e.name for e in cast.entries.values() if e.kind != "narrator"} == {"Elena Marsh", "Hale"}   # nothing duplicated
+    assert cast.entries["Elena Marsh"].id == 7 and cast.entries["Hale"].id == 8
+
+
+def test_first_person_narrator_owns_i_said():
+    blocks = [P("I opened the door and stood in the hall. I did not like what I saw."), P("“Who is there?” I said."), P("“Nobody,” said Pell.")]
+    st, cast = analyze(blocks, "One")
+    assert st.perspective == "first"
+    assert by_text(st, "Who is there").speaker == "Narrator"
+
+
+def test_quotes_across_paragraphs_continue_the_same_speaker():
+    blocks = [P("Mara said, “I have to tell you something about the night he left, and it is not easy to say."), P("“He never took the boat. I moved it myself.”")]
+    st, _ = analyze(blocks, "One")
+    d = [sp for sp in st.spans if sp.kind == "dialogue"]
+    assert d[0].speaker == "Mara" and d[1].speaker == "Mara" and d[1].attribution == "continuation"
+
+
+def test_scare_quotes_are_not_dialogue():
+    st, _ = analyze([P("The so-called “experts” never agreed, and the “final” report was late.")], "One")
+    assert not [sp for sp in st.spans if sp.kind == "dialogue"]
+
+
+def test_scene_and_paragraph_structure_with_offsets():
+    st, _ = analyze(CH1, "The Flood")
+    assert st.scenes == 2
+    assert all(st.text[sp.start:sp.end] == sp.text for sp in st.spans)
+    assert [p.scene_idx for p in st.paragraphs][0] == 0 and st.paragraphs[-1].scene_idx == 1
+    assert all(p.start < p.end for p in st.paragraphs) and all(st.paragraphs[i].end < st.paragraphs[i + 1].start for i in range(len(st.paragraphs) - 1))
+
+
+def test_emotional_cues_and_tension():
+    blocks = [P("The afternoon was quiet and the tea was warm."), P("“Get out! Get out now!” Tom screamed, backing against the wall, terrified.")]
+    st, _ = analyze(blocks, "One")
+    calm, loud = st.spans[1].cues, by_text(st, "Get out").cues
+    assert calm["emotion"] in ("neutral", "calm") and calm["intensity"] <= 2
+    assert loud["emotion"] == "fear" and loud["intensity"] >= 4 and loud["explicit"]
+    assert loud["shift"] > 0.5
+
+
+# ================================================================ Pass 2: segment construction
+
+
+def build(blocks, title=None, **kw):
+    st, cast = analyze(blocks, title)
+    voice_of = kw.pop("voice_of", lambda sp: sp or "narrator")
+    return st, G.build(st, voice_key_of=voice_of, **kw)
+
+
+@pytest.mark.parametrize("max_chars,min_chars", [(500, 120), (200, 60), (120, 30), (900, 300)])
+def test_every_source_passage_exactly_once_in_order(max_chars, min_chars):
+    for title, blocks in BOOK:
+        st, segs = build(blocks, title, max_chars=max_chars, min_chars=min_chars)
+        assert G.check_coverage(st, segs) == []
+        assert re.sub(r"\s+", "", "".join(s.text for s in segs)) == re.sub(r"\s+", "", st.text)
+        assert [s.start for s in segs] == sorted(s.start for s in segs)
+        for s in segs:
+            assert st.text[s.start:s.end] == s.text                       # wording, punctuation and case untouched
+            assert len(s.text) <= max_chars or " " not in s.text.strip()
+
+
+def test_segments_never_cross_scene_or_heading_or_mix_speakers():
+    for title, blocks in BOOK:
+        st, segs = build(blocks, title)
+        for s in segs:
+            spans = [sp for sp in st.spans if sp.start < s.end and sp.end > s.start]
+            assert len({sp.scene_idx for sp in spans}) == 1
+            if any(sp.kind == "heading" for sp in spans):
+                assert len(spans) == 1
+            assert len({sp.speaker for sp in spans if sp.kind == "dialogue"}) <= 1
+
+
+def test_limit_is_a_ceiling_not_a_target():
+    blocks = [P("A" * 0 + "The tide came in slowly over the grey flats, and the gulls wheeled above the water as they had for years, crying at nothing."),
+              P("Inland, the farms lay quiet under a low sky, and nobody walked the lanes that morning because the church bell had stopped.")]
+    _st, segs = build(blocks)
+    assert len(segs) == 2 and all(len(s.text) < 250 for s in segs)       # two paragraphs stay two segments although 500 would fit
+
+
+def test_short_fragments_are_joined_when_nothing_separates_them():
+    blocks = [P("It rained."), P("Then it stopped."), P("Nobody moved.")]
+    _st, segs = build(blocks, min_chars=60)
+    assert len(segs) == 1 and re.sub(r"\s+", " ", segs[0].text) == "It rained. Then it stopped. Nobody moved."
+
+
+def test_unrelated_dialogue_is_never_combined():
+    blocks = [P("“No,” said Ann."), P("“Yes,” said Bob."), P("“Why?” said Ann.")]
+    st, segs = build(blocks, voice_of=lambda sp: "narrator")            # even when everyone shares one voice
+    dlg = [s for s in segs if s.span_kind in ("dialogue", "mixed")]
+    assert len(dlg) == 3
+
+
+def test_overlong_sentence_is_split_at_the_least_disruptive_point():
+    sent = ("She walked through the market past the fishmongers, and the cheesemakers, and the old woman who sold lace, "
+            "although she knew that the letter she carried would change everything; and when she reached the harbour wall, "
+            "which had stood for three hundred years against every storm that the northern sea could throw at it, she stopped "
+            "because the ship she had been waiting for was already leaving the bay with all her hopes on board and nobody on the quay to wave, "
+            "and the harbour master, who had promised faithfully to hold it until noon, was nowhere to be seen among the gulls and the nets.")
+    assert len(sent) > 500
+    st, segs = build([P(sent)], max_chars=300)
+    assert G.check_coverage(st, segs) == [] and all(len(s.text) <= 300 for s in segs) and len(segs) >= 2
+    assert all(re.search(r"[;,]$", s.text) or s is segs[-1] for s in segs)    # cut at punctuation, not mid-clause
+
+
+def test_emotional_transition_gets_its_own_segment_only_when_sensitive():
+    blocks = [P("The room was quiet and the lamplight was soft on the table, and the tea had gone cold hours ago while she waited. "
+                "“Get out! Get out now!” Tom screamed, terrified, and the cup shattered on the floor.")]
+    one_voice = lambda sp: "narrator"
+    st, calm = build(blocks, sensitivity=0.0, voice_of=one_voice)
+    _st, keen = build(blocks, sensitivity=1.0, voice_of=one_voice)
+    assert len(keen) > len(calm)
+
+
+def test_speaker_change_splits_only_when_voices_differ():
+    blocks = [P("“We should go,” said Ann. “Not yet,” said Bob.")]
+    st1, same = build(blocks, voice_of=lambda sp: "narrator")
+    st2, distinct = build(blocks, voice_of=lambda sp: {"Ann": "v1", "Bob": "v2"}.get(sp, "narrator"))
+    assert len(same) == 1 and len(distinct) >= 3
+    assert G.check_coverage(st2, distinct) == []
+
+
+def test_manual_cut_and_join_are_honoured():
+    st, base = build(CH2, "The Funeral")
+    target = next(s for s in base if len(s.text) > 120 and " " in s.text)
+    cut = target.start + target.text.index(" ", 60) + 1
+    _st, cutsegs = build(CH2, "The Funeral", cuts={cut})
+    assert any(s.start == cut for s in cutsegs) and G.check_coverage(st, cutsegs) == []
+    boundary = base[2].start
+    _st, joined = build(CH2, "The Funeral", joins={boundary})
+    assert len(joined) < len(base) and G.check_coverage(st, joined) == []
+
+
+# ===================================================================== context windows
+
+
+def test_context_windows_respect_bounds_and_scene_breaks():
+    st, _ = analyze(CH1, "The Flood")
+    scene_starts = [st.paragraphs[0].start] + [p.start for p in st.paragraphs if p.scene_idx == 1][:1]
+    seg = next(sp for sp in st.spans if "they have found him" in sp.text)
+    w = W.context_window(st.text, seg.start, seg.end, 1250, 1250, scene_starts)
+    assert len(w["before"]) <= 1250 and len(w["after"]) <= 1250
+    assert seg.text not in w["before"] and seg.text not in w["after"]
+    assert W.SCENE_MARK in w["before"] or w["scene_break_before"]
+    first = W.context_window(st.text, 0, 9, 1250, 1250, scene_starts)
+    assert first["before"] == "" and first["chapter_start"]
+    last = W.context_window(st.text, len(st.text) - 20, len(st.text), 500, 500)
+    assert last["after"] == "" and last["chapter_end"]
+    off = W.context_window(st.text, seg.start, seg.end, 0, 0)
+    assert off["before"] == "" and off["after"] == ""
+
+
+def test_narration_window_is_only_the_segment_words():
+    assert W.narration_window("  Hello,\n\nworld.  ") == "Hello, world."
+
+
+# ================================================================== Narrative Director
+
+
+def good_reply(**over):
+    d = {"segment_id": "x", "speaker": "Elena Marsh", "voice_profile": "low and tired", "emotion": "grief", "intensity": 4,
+         "delivery": "voice breaking, barely above a whisper", "pacing": "slow", "tension": 3,
+         "confidence": {"speaker": 0.9, "emotion": 0.8, "overall": 0.8}, "text_supported_change": False,
+         "context_refs": [{"kind": "previous", "quote": "Her voice cracked"}], "facts": ["Her voice cracked"], "inferences": ["She is grieving"],
+         "ambiguity": None, "needs_review": False}
+    d.update(over)
+    return d
+
+
+def validate(raw, **kw):
+    base = dict(sid="x", text="I don't know.", context="Her voice cracked, and for a moment she could not go on.", known_speaker="Elena Marsh", cast_names=["Elena Marsh"])
+    base.update(kw)
+    return D.validate_direction(raw, **base)
+
+
+def test_director_output_is_schema_validated():
+    d = validate(good_reply())
+    assert d["emotion"] == "grief" and d["intensity"] == 4 and d["pacing"] == "slow" and d["facts"] == ["Her voice cracked"]
+    assert validate(good_reply(emotion="Sad"))["emotion"] == "sadness"                     # synonyms map into the vocabulary
+    for bad in (good_reply(emotion="melancholic-ish"), good_reply(pacing="warp speed"), "not a dict"):
+        with pytest.raises(D.DirectorError):
+            validate(bad)
+    assert validate(good_reply(intensity=0.6))["intensity"] == 3                           # 0-1 scales are converted
+
+
+def test_ungrounded_facts_are_dropped_and_speaker_disagreement_is_flagged():
+    d = validate(good_reply(facts=["Her voice cracked", "She had buried her husband in March"], speaker="Hale"))
+    assert d["facts"] == ["Her voice cracked"]
+    assert any("not found" in n for n in d["notes"])
+    assert d["speaker"] == "Elena Marsh" and d["needs_review"] and "disagrees" in (d["ambiguity"] or "")
+
+
+def test_leak_guard_removes_copied_manuscript_text_from_the_instruction():
+    ctx_text = "Her voice cracked, and for a moment she could not go on speaking at all"
+    clean, changed = D.leak_guard("tender; her voice cracked, and for a moment she could not go on speaking", [ctx_text, "I don't know."])
+    assert changed and "cracked" not in clean and clean.startswith("tender")
+    assert D.leak_guard("voice breaking, barely a whisper", [ctx_text]) == ("voice breaking, barely a whisper", False)
+
+
+def prompt_payload(**over):
+    p = {"sid": "x", "text": "I don't know.", "kind": "dialogue", "speaker": "Elena Marsh", "context": {"before": "Her voice cracked.", "after": "Hale waited."},
+         "sensitivity": 0.5, "cues": {"emotion": "sadness", "intensity": 3, "explicit": True, "pace": "slow", "tension": 1, "evidence": ["word 'sad…'"]},
+         "prev": {"speaker": "Hale", "emotion": "calm", "intensity": 2}, "profile": {"name": "Elena Marsh"}, "notes": [], "cast_names": ["Elena Marsh"]}
+    p.update(over)
+    return p
+
+
+def llm_client(handler, **cfg):
+    c = LLMSettings(provider="openai_compatible", model="stub-model", **cfg)
+    return LLMClient(c, transport=httpx.MockTransport(handler))
+
+
+def test_director_uses_llm_then_cache_and_falls_back_to_rules_on_failure():
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "```json\n" + json.dumps(good_reply()) + "\n```"}}]})
+
+    store = {}
+    d = D.Director(llm_client(handler))
+    out, key = d.direct(prompt_payload(), store.get, lambda k, v, m: store.__setitem__(k, v))
+    assert out["source"] == "llm" and len(calls) == 1
+    system = calls[0]["messages"][0]["content"]
+    assert "Never rewrite" in system and "controlled vocabulary" in system
+    out2, key2 = d.direct(prompt_payload(), store.get, lambda k, v, m: store.__setitem__(k, v))
+    assert key2 == key and len(calls) == 1 and d.stats["cache_hits"] == 1                  # cached: no second request
+    out3, key3 = d.direct(prompt_payload(prev={"speaker": "Hale", "emotion": "anger", "intensity": 5}), store.get, lambda k, v, m: store.__setitem__(k, v))
+    assert key3 != key and len(calls) == 2                                                 # previous delivery is part of the cache key
+
+    def down(req):
+        return httpx.Response(503, text="busy")
+
+    bad = D.Director(llm_client(down))
+    r, _ = bad.direct(prompt_payload(text="Another line."), {}.get, lambda *a: None)
+    assert r["source"] == "rules" and r["needs_review"] and any("LLM unavailable" in n for n in r["notes"])
+
+
+def test_director_repairs_once_then_gives_up():
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content)["messages"][1]["content"])
+        content = json.dumps(good_reply(emotion="nonsense")) if len(seen) == 1 else json.dumps(good_reply())
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    out, _ = D.Director(llm_client(handler)).direct(prompt_payload(), {}.get, lambda *a: None)
+    assert out["source"] == "llm" and len(seen) == 2 and "rejected" in seen[1]
+
+
+def test_rules_director_respects_sensitivity_and_is_labelled():
+    cues = {"emotion": "anger", "intensity": 4, "pace": "fast", "tension": 3, "explicit": True, "evidence": ["speech verb 'shouted'"]}
+    hi = D.rules_direction("x", "Tom", cues, 1.0, "He shouted at them all.")
+    lo = D.rules_direction("x", "Tom", cues, 0.0, "He shouted at them all.")
+    assert hi["source"] == "rules" and hi["intensity"] > lo["intensity"] and hi["facts"] == ["shouted"]
+    weak = D.rules_direction("x", "Tom", {"emotion": "sadness", "intensity": 2, "explicit": False, "evidence": []}, 0.1, "text")
+    assert weak["emotion"] == "neutral"                                                    # low sensitivity ignores weak cues
+
+
+# ============================================================ continuity and smoothing
+
+
+def raw(emotion, intensity, tension=2, pacing="normal", support=False):
+    return {"emotion": emotion, "intensity": intensity, "tension": tension, "pacing": pacing, "support": support}
+
+
+def run_seq(seq, **kw):
+    st, outs = CT.new_state(), []
+    for r, sp in seq:
+        sm, st, note, kind = CT.apply(r, st, speaker=sp.get("speaker", "Elena"), scene=sp.get("scene", 0), chapter=sp.get("chapter", 1),
+                                      strength=kw.get("strength", 0.6), enabled=kw.get("enabled", True), reset_scope=kw.get("reset_scope", "chapter"))
+        outs.append((sm, kind, note))
+    return outs
+
+
+def test_grief_does_not_snap_back_to_neutral_at_a_segment_boundary():
+    outs = run_seq([(raw("grief", 4), {}), (raw("neutral", 1), {}), (raw("neutral", 1), {}), (raw("neutral", 1), {}), (raw("neutral", 1), {})])
+    emos = [o[0]["emotion"] for o in outs]
+    assert emos[:3] == ["grief", "grief", "grief"] and emos[-1] == "neutral"              # decays gradually, then releases
+    assert outs[1][0]["intensity"] == 3 and outs[1][1] == "smoothed" and "carried grief" in outs[1][2]
+
+
+def test_intentional_abrupt_change_is_not_smoothed_away():
+    outs = run_seq([(raw("calm", 1), {}), (raw("anger", 5, support=True), {})])
+    assert outs[1][0]["emotion"] == "anger" and outs[1][0]["intensity"] == 5 and outs[1][1] == "intentional"
+    unsupported = run_seq([(raw("calm", 1), {}), (raw("anger", 5), {})])
+    assert unsupported[1][0]["intensity"] <= 3                                              # same jump without textual support is limited
+
+
+def test_escalation_keeps_building_instead_of_restarting():
+    outs = run_seq([(raw("anger", 2, tension=1), {}), (raw("anger", 2, tension=2), {}), (raw("anger", 2, tension=3), {}), (raw("anger", 2, tension=4), {})])
+    assert [o[0]["intensity"] for o in outs] == [2, 3, 4, 5]
+
+
+def test_speakers_have_independent_state_and_scene_chapter_resets():
+    outs = run_seq([(raw("grief", 4), {"speaker": "Elena"}), (raw("neutral", 1), {"speaker": "Tom"}), (raw("neutral", 1), {"speaker": "Elena"})])
+    assert outs[1][0]["emotion"] == "neutral" and outs[2][0]["emotion"] == "grief"
+    scene = run_seq([(raw("grief", 4), {"scene": 0}), (raw("neutral", 1), {"scene": 1})], reset_scope="scene")
+    assert scene[1][0]["emotion"] == "neutral" and scene[1][1] == "reset"
+    decay = run_seq([(raw("grief", 4), {"scene": 0}), (raw("neutral", 1), {"scene": 1})], reset_scope="chapter")
+    assert decay[1][0]["emotion"] == "grief"
+    chapter = run_seq([(raw("grief", 4), {"chapter": 1}), (raw("neutral", 1), {"chapter": 2})], reset_scope="chapter")
+    assert chapter[1][0]["emotion"] == "neutral"
+    never = run_seq([(raw("grief", 4), {"chapter": 1}), (raw("neutral", 1), {"chapter": 2})], reset_scope="none")
+    assert never[1][0]["emotion"] == "grief"
+
+
+def test_smoothing_can_be_disabled_and_user_values_win():
+    outs = run_seq([(raw("grief", 4), {}), (raw("neutral", 1), {})], enabled=False)
+    assert outs[1][0]["emotion"] == "neutral"
+    fin = CT.final_of(raw("grief", 4) | {"delivery": "heavy"}, {"emotion": "grief", "intensity": 3, "pacing": "slow", "tension": 2}, {"intensity": 5, "delivery": "hushed"})
+    assert fin["intensity"] == 5 and fin["delivery"] == "hushed" and fin["emotion"] == "grief"
+
+
+# ========================================================== model-aware delivery translation
+
+
+FINAL = {"emotion": "grief", "intensity": 4, "pacing": "slow", "delivery": "voice breaking"}
+
+
+def test_delivery_per_model_family():
+    cfg = DeliverySettings()
+    text, info = DL.build_instruct(FINAL, "preset", "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16", cfg)
+    assert info["applied"] and text.startswith("Speak strongly grief-stricken") and "slow pace" in text and "voice breaking" in text and len(text) <= 160
+    dtext, dinfo = DL.build_instruct(FINAL, "design", "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16", cfg)
+    assert dinfo["applied"] and dtext.startswith("For this line:")
+    ctext, cinfo = DL.build_instruct(FINAL, "clone", "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16", cfg)
+    assert ctext is None and not cinfo["applied"] and "no instruction input" in cinfo["reason"]
+    small, sinfo = DL.build_instruct(FINAL, "preset", "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16", cfg)
+    assert small is None and "0.6B" in sinfo["reason"]
+    off, oinfo = DL.build_instruct(FINAL, "preset", "x/CustomVoice", DeliverySettings(custom_voice="off"))
+    assert off is None and "switched off" in oinfo["reason"]
+    neutral, ninfo = DL.build_instruct({"emotion": "neutral", "intensity": 1, "pacing": "normal", "delivery": ""}, "preset", "x/CustomVoice", cfg)
+    assert neutral is None
+
+
+def test_llm_settings_never_store_keys_or_accept_credentials_in_urls():
+    with pytest.raises(ValueError):
+        LLMSettings(api_key_env="sk-live-abc123def")
+    with pytest.raises(ValueError):
+        LLMSettings(base_url="http://user:secret@127.0.0.1:1234/v1")
+    with pytest.raises(ValueError):
+        NarrativeSettings(director_enabled=True, semantic_segmentation=False)
+    assert LLMSettings(base_url="http://127.0.0.1:1234/v1/").base_url == "http://127.0.0.1:1234/v1"
+
+
+# ====================================================================== database / migration
+
+
+def test_migration_v1_to_v2_keeps_existing_rows(tmp_path):
+    from studio import db as DB
+
+    d = DB.Database(tmp_path / "t.db")
+    with d.session() as c:
+        for st in DB._split_sql(DB.SCHEMA_V1):
+            c.execute(st)
+        c.execute("PRAGMA user_version = 1")
+        c.execute("INSERT INTO books(uid,title,settings_json,synth_fingerprint,storage_json,created_at,updated_at) VALUES ('b','T','{}','f','{}',1,1)")
+        c.execute("INSERT INTO jobs(kind,book_id,status,created_at,updated_at) VALUES ('book',1,'completed',1,1)")
+        c.execute("INSERT INTO job_logs(job_id,book_id,level,message,created_at) VALUES (1,1,'info','hi',1)")
+    assert d.migrate(tmp_path / "bk") == (1, DB.LATEST_VERSION)
+    assert list((tmp_path / "bk").glob("studio-v1-*.db"))                                        # backup taken first
+    with d.session() as c:
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert c.execute("SELECT message FROM job_logs").fetchone()[0] == "hi"
+        c.execute("INSERT INTO jobs(kind,book_id,status,created_at,updated_at) VALUES ('analyze',1,'queued',1,1)")
+        with pytest.raises(Exception):
+            c.execute("INSERT INTO jobs(kind,book_id,status,created_at,updated_at) VALUES ('analyze',1,'queued',1,1)")  # one active per book
+        assert d.migrate() == (DB.LATEST_VERSION, DB.LATEST_VERSION)
+
+
+# ===================================================================== integration
+
+
+def put_settings(client, narrative):
+    r = client.put("/api/settings", json={"narrative": narrative})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def ryan(client):
+    return next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+
+
+def voice_named(client, name):
+    return next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == name)
+
+
+def import_semantic(client, text=TXT, queue=False, **narr):
+    put_settings(client, {"semantic_segmentation": True, **narr})
+    r = client.post("/api/imports", files={"file": ("flood.txt", text.encode("utf-8"), "text/plain")})
+    assert r.status_code == 200, r.text
+    prev = r.json()
+    c = client.post(f"/api/imports/{prev['token']}/confirm", json={"title": "The Flood", "voice_id": ryan(client)["id"], "queue": queue})
+    assert c.status_code == 200, c.text
+    return c.json()
+
+
+def all_segments(ctx, book_id):
+    with ctx.db.session() as conn:
+        return rows(conn, "SELECT s.*, c.idx AS ch_idx FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.book_id=? ORDER BY c.idx, s.idx", (book_id,))
+
+
+def chars(client, book_id):
+    return {c["name"]: c for c in client.get(f"/api/books/{book_id}/characters").json()["characters"]}
+
+
+class RecordingEngine(MockEngine):
+    """MockEngine that records exactly what the TTS engine is handed."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.log = []
+
+    def synthesize(self, voice, text, params, sid=None):
+        self.log.append({"sid": sid, "text": text, "instruct": params.instruct, "kind": voice.kind, "speaker": voice.speaker, "model": voice.model_id})
+        return super().synthesize(voice, text, params, sid)
+
+
+class CountingASR(MockASR):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def transcribe(self, wav_path, language="en"):
+        self.calls += 1
+        return super().transcribe(wav_path, language)
+
+
+def worker_with(ctx, tts=None, asr=None):
+    with ctx.db.tx() as conn:  # take over from any worker an earlier step of the same test created
+        conn.execute("UPDATE worker_state SET heartbeat_at=0 WHERE id=1")
+    w = Worker(ctx, tts=tts or RecordingEngine(), asr=asr or MockASR())
+    assert w.acquire_lease()
+    return w
+
+
+def test_semantic_import_persists_structure_characters_and_exact_coverage(client, ctx):
+    book = import_semantic(client)
+    bid = book["id"]
+    segs = all_segments(ctx, bid)
+    assert segs and all(s["src_start"] is not None for s in segs)
+    with ctx.db.session() as conn:
+        for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=?", (bid,)):
+            text = row(conn, "SELECT text FROM chapter_text WHERE chapter_id=?", (ch["id"],))["text"]
+            mine = [s for s in segs if s["chapter_id"] == ch["id"]]
+            assert [s["idx"] for s in mine] == list(range(1, len(mine) + 1))
+            assert re.sub(r"\s+", "", "".join(text[s["src_start"]:s["src_end"]] for s in mine)) == re.sub(r"\s+", "", text)
+            assert all(text[s["src_start"]:s["src_end"]] == s["original_text"] for s in mine)
+        assert scalar(conn, "SELECT COUNT(*) FROM nar_spans WHERE book_id=?", (bid,)) > 20
+    cs = chars(client, bid)
+    assert {"Narrator", "Hale", "Elena Marsh", "Tom Briggs"} <= set(cs)
+    assert "Mrs. Marsh" in cs["Elena Marsh"]["aliases"] or "Elena" in cs["Elena Marsh"]["aliases"]
+    assert cs["Elena Marsh"]["gender"] == "female" and cs["Elena Marsh"]["prov"]["gender"]["source"] == "rules"
+    st = client.get(f"/api/books/{bid}/narrative").json()
+    assert st["semantic"] and st["needs_review"] >= 1 and st["stages"]["structure"]["status"] == "done" and st["stages"]["segmentation"]["status"] == "done"
+    assert client.get(f"/api/books/{bid}").json()["narrative"]["characters"] == 3
+
+
+def test_legacy_import_is_unchanged_when_the_feature_is_off(client, ctx):
+    put_settings(client, {"semantic_segmentation": False})
+    r = client.post("/api/imports", files={"file": ("a.txt", make_text(1).encode(), "text/plain")})
+    c = client.post(f"/api/imports/{r.json()['token']}/confirm", json={"title": "Legacy", "voice_id": ryan(client)["id"]}).json()
+    assert all(s["src_start"] is None for s in all_segments(ctx, c["id"]))
+    assert client.get(f"/api/books/{c['id']}/narrative").json()["semantic"] is False
+    assert client.post(f"/api/segments/{all_segments(ctx, c['id'])[0]['id']}/boundary", json={"op": "merge_next"}).status_code == 409
+
+
+def test_tts_receives_only_the_segment_text_never_context_or_instructions(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    eng = RecordingEngine()
+    w = worker_with(ctx, eng)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    segs = {s["sid"]: s for s in all_segments(ctx, bid)}
+    assert eng.log and len(eng.log) >= len(segs)
+    for call in eng.log:
+        seg = segs[call["sid"]]
+        assert call["text"] == " ".join((seg["override_text"] or seg["narration_text"]).split())
+        if call["instruct"]:
+            with ctx.db.session() as conn:
+                ct = row(conn, "SELECT text FROM chapter_text WHERE chapter_id=?", (seg["chapter_id"],))["text"]
+            outside = ct.replace(seg["original_text"], " ")
+            assert not D.leak_guard(call["instruct"], [outside])[1], "instruction repeats surrounding manuscript text"
+    assert any(c["instruct"] for c in eng.log), "the rules Director produced no delivery guidance at all"
+    with ctx.db.session() as conn:
+        a = row(conn, "SELECT * FROM attempts WHERE instruct_used IS NOT NULL LIMIT 1")
+        assert a["delivery_applied"] == 1 and a["gen_key"]
+
+
+def test_assigning_a_voice_recuts_and_regenerates_only_what_depends_on_it(client, ctx):
+    bid = import_semantic(client)["id"]
+    w = worker_with(ctx)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    before = {s["sid"]: s for s in all_segments(ctx, bid)}
+    assert all(s["status"] == "passed" for s in before.values() if not s["needs_review"] or True)
+    hale = chars(client, bid)["Hale"]
+    aiden = voice_named(client, "Aiden")
+    res = client.patch(f"/api/characters/{hale['id']}", json={"voice_id": aiden["id"]}).json()
+    assert res["voice_changed"] and res["resegmented"]["kept"] > 0 and res["resegmented"]["created"] > 0
+    after = {s["sid"]: s for s in all_segments(ctx, bid)}
+    untouched = [sid for sid, s in before.items() if sid in after and after[sid]["selected_attempt_id"] == s["selected_attempt_id"] and after[sid]["status"] == "passed"]
+    assert len(untouched) >= len(before) // 2                                              # most of the book keeps its audio
+    hale_segs = [s for s in after.values() if s["character_id"] == hale["id"]]
+    assert hale_segs and all(s["status"] == "pending" for s in hale_segs)
+    assert scalar(ctx.db.connect(), "SELECT COUNT(*) FROM segment_history WHERE book_id=?", (bid,)) >= 1
+    eng = RecordingEngine()
+    w2 = worker_with(ctx, eng)
+    w2.run_until_idle()
+    assert eng.log and all(c["speaker"] == "Aiden" or c["sid"] not in {s["sid"] for s in hale_segs} for c in eng.log)
+    assert {c["speaker"] for c in eng.log if c["sid"] in {s["sid"] for s in hale_segs}} == {"Aiden"}
+    assert len(eng.log) < len(after)                                                        # not a whole-book regeneration
+    # narrator and Elena (unassigned) still use the book narrator
+    narr = [c for c in eng.log if c["sid"] not in {s["sid"] for s in hale_segs}]
+    assert all(c["speaker"] == "Ryan" for c in narr)
+
+
+def test_reverting_a_voice_reuses_the_cached_take(client, ctx):
+    bid = import_semantic(client)["id"]
+    w = worker_with(ctx)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    hale = chars(client, bid)["Hale"]
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": voice_named(client, "Aiden")["id"]})
+    w.run_until_idle()
+    with ctx.db.session() as conn:
+        n_before = scalar(conn, "SELECT COUNT(*) FROM attempts", (), 0)
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": None})
+    eng = RecordingEngine()
+    worker_with(ctx, eng).run_until_idle()
+    with ctx.db.session() as conn:
+        reused = scalar(conn, "SELECT COUNT(*) FROM review_actions WHERE action='cache_reuse'", (), 0)
+        n_after = scalar(conn, "SELECT COUNT(*) FROM attempts", (), 0)
+    assert reused > 0                                                                       # the original narrator take came straight back
+    assert n_after <= n_before + len(eng.log)
+    assert all(s["status"] == "passed" for s in all_segments(ctx, bid))
+
+
+def test_merging_characters_repoints_dialogue_and_keeps_the_alias(client, ctx):
+    bid = import_semantic(client)["id"]
+    cs = chars(client, bid)
+    tom = cs["Tom Briggs"]
+    dup = client.post(f"/api/books/{bid}/characters", json={"name": "The Cyclist"}).json()
+    assert client.post(f"/api/characters/{dup['id']}/merge", json={"into_id": tom["id"]}).status_code == 200
+    merged = chars(client, bid)
+    assert "The Cyclist" not in merged and "The Cyclist" in merged["Tom Briggs"]["aliases"]
+    assert client.post(f"/api/characters/{tom['id']}/merge", json={"into_id": tom["id"]}).status_code == 422
+    narr = merged["Narrator"]
+    assert client.post(f"/api/characters/{narr['id']}/merge", json={"into_id": tom["id"]}).status_code == 422
+
+
+def test_user_confirmed_facts_survive_reanalysis(client, ctx):
+    bid = import_semantic(client)["id"]
+    elena = chars(client, bid)["Elena Marsh"]
+    client.patch(f"/api/characters/{elena['id']}", json={"gender": "neutral", "accent": "Northern English", "aliases": ["Mrs. Marsh", "the widow"]})
+    # assign a flagged line by hand, then rebuild Pass 1 from the stored manuscript
+    flagged = next(s for s in all_segments(ctx, bid) if s["needs_review"])
+    r = client.patch(f"/api/segments/{flagged['id']}/narrative", json={"character_id": elena["id"]})
+    assert r.status_code == 200, r.text
+    job = client.post(f"/api/books/{bid}/analyze", json={"rebuild": True, "stages": ["structure", "segmentation"]}).json()
+    worker_with(ctx).run_until_idle()
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "completed"
+    now_elena = chars(client, bid)["Elena Marsh"]
+    assert now_elena["gender"] == "neutral" and now_elena["accent"] == "Northern English" and "the widow" in now_elena["aliases"]
+    assert now_elena["prov"]["gender"]["confirmed"] and now_elena["prov"]["gender"]["source"] == "user"
+    with ctx.db.session() as conn:
+        locked = rows(conn, "SELECT * FROM nar_spans WHERE book_id=? AND user_locked=1", (bid,))
+    assert locked and all(l["speaker_id"] == elena["id"] for l in locked)
+    kept = [s for s in all_segments(ctx, bid) if s["id"] == flagged["id"]]
+    assert kept and kept[0]["character_id"] == elena["id"] and not kept[0]["needs_review"]       # same row, same id
+
+
+def test_manual_boundaries_invalidate_only_the_affected_segments(client, ctx):
+    bid = import_semantic(client)["id"]
+    w = worker_with(ctx)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    before = {s["sid"]: s for s in all_segments(ctx, bid)}
+    target = next(s for s in before.values() if len(s["original_text"]) > 120 and s["kind"] == "body")
+    mid = target["src_start"] + target["original_text"].index(" ", 60)
+    r = client.post(f"/api/segments/{target['id']}/boundary", json={"op": "split", "offset": mid})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["created"] == 2 and out["retired"] == 1
+    after = {s["sid"]: s for s in all_segments(ctx, bid)}
+    assert target["sid"] not in after
+    unchanged = [sid for sid in before if sid in after and sid != target["sid"]]
+    assert len(unchanged) == len(before) - 1
+    assert all(after[sid]["status"] == before[sid]["status"] and after[sid]["selected_attempt_id"] == before[sid]["selected_attempt_id"] for sid in unchanged)
+    new = [s for sid, s in after.items() if sid not in before]
+    assert len(new) == 2 and all(s["status"] == "pending" for s in new) and any(s["boundary_manual"] for s in new)
+    assert re.sub(r"\s+", "", "".join(s["original_text"] for s in new)) == re.sub(r"\s+", "", target["original_text"])
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT reason FROM segment_history WHERE sid=?", (target["sid"],))["reason"]
+    # the manual cut survives a full re-segmentation
+    assert client.post(f"/api/books/{bid}/resegment").status_code == 200
+    again = {s["sid"] for s in all_segments(ctx, bid)}
+    assert {s["sid"] for s in new} <= again
+    # merging back
+    first = min(new, key=lambda s: s["src_start"])
+    m = client.post(f"/api/segments/{first['id']}/boundary", json={"op": "merge_next"})
+    assert m.status_code == 200 and m.json()["created"] == 1
+    # move_end shifts the boundary to a different word without touching other segments
+    nxt = next(s for s in all_segments(ctx, bid) if s["kind"] == "body" and len(s["original_text"]) > 200)
+    seg2 = client.post(f"/api/segments/{nxt['id']}/boundary", json={"op": "split", "offset": nxt["src_start"] + 100})
+    assert seg2.status_code == 200
+    left = min((s for s in all_segments(ctx, bid) if nxt["src_start"] <= s["src_start"] < nxt["src_end"] and s["chapter_id"] == nxt["chapter_id"]), key=lambda s: s["src_start"])
+    mv = client.post(f"/api/segments/{left['id']}/boundary", json={"op": "move_end", "offset": left["src_start"] + 40})
+    assert mv.status_code == 200, mv.text
+    with ctx.db.session() as conn:
+        ct = row(conn, "SELECT text FROM chapter_text WHERE chapter_id=?", (nxt["chapter_id"],))["text"]
+        mine = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (nxt["chapter_id"],))
+    assert re.sub(r"\s+", "", "".join(ct[s["src_start"]:s["src_end"]] for s in mine)) == re.sub(r"\s+", "", ct)
+    assert client.post(f"/api/segments/{mine[0]['id']}/boundary", json={"op": "split", "offset": 0}).status_code in (409, 422)
+
+
+def test_director_pipeline_overrides_and_targeted_regeneration(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    job = client.post(f"/api/books/{bid}/analyze", json={}).json()
+    w = worker_with(ctx)
+    w.run_until_idle()
+    j = client.get(f"/api/jobs/{job['id']}").json()
+    assert j["status"] == "completed", j
+    st = client.get(f"/api/books/{bid}/narrative").json()
+    segs = all_segments(ctx, bid)
+    assert st["directed"] == len(segs) and st["stages"]["director"]["status"] == "done" and st["stages"]["summaries"]["status"] == "done"
+    with ctx.db.session() as conn:
+        d = rows(conn, "SELECT * FROM directions WHERE book_id=?", (bid,))
+        notes = rows(conn, "SELECT * FROM story_notes WHERE book_id=? AND kind='summary'", (bid,))
+        text = {r["chapter_id"]: r["text"] for r in rows(conn, "SELECT chapter_id, text FROM chapter_text WHERE book_id=?", (bid,))}
+    assert all(x["source"] == "rules" for x in d)
+    assert notes and all(n["source"] == "extractive" for n in notes)
+    for n in notes:                                                                         # summaries only quote the manuscript
+        for part in n["text"].split(" … "):
+            assert any(part in t for t in text.values())
+    # generate everything, then override one segment's emotion
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    done = {s["sid"]: s for s in all_segments(ctx, bid)}
+    assert all(s["status"] == "passed" for s in done.values())
+    victim = next(s for s in done.values() if s["kind"] == "body")
+    r = client.patch(f"/api/segments/{victim['id']}/narrative", json={"emotion": "fear", "intensity": 5, "delivery": "trembling"})
+    assert r.status_code == 200, r.text
+    mid = {s["sid"]: s for s in all_segments(ctx, bid)}
+    assert mid[victim["sid"]]["status"] == "pending"
+    changed = [sid for sid in done if mid[sid]["status"] != done[sid]["status"]]
+    assert victim["sid"] in changed and len(changed) <= 1 + 24                              # bounded cascade
+    assert len(changed) < len(done) // 2
+    insp = client.get(f"/api/segments/{victim['id']}/inspect").json()
+    assert insp["direction"]["user"]["emotion"] == "fear" and insp["direction"]["final"]["emotion"] == "fear"
+    assert insp["delivery"]["applied"] and "trembling" in insp["delivery"]["instruct"] and insp["delivery"]["spoken_text_sent_to_tts"] == victim["narration_text"]
+    # the override persists across a Director re-run and a rebuild
+    client.post(f"/api/books/{bid}/analyze", json={"rebuild": True})
+    w.run_until_idle()
+    insp2 = client.get(f"/api/segments/{victim['id']}/inspect").json()
+    assert insp2["direction"]["user"]["emotion"] == "fear" if insp2["direction"] else True
+
+
+def test_director_results_are_cached_across_runs(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    with ctx.db.session() as conn:
+        n = scalar(conn, "SELECT COUNT(*) FROM director_cache", (), 0)
+        conn.execute("SELECT 1")
+    with ctx.db.tx() as conn:
+        conn.execute("DELETE FROM directions WHERE book_id=?", (bid,))
+    client.post(f"/api/books/{bid}/analyze", json={"stages": ["director"]})
+    worker_with(ctx).run_until_idle()
+    with ctx.db.session() as conn:
+        assert scalar(conn, "SELECT COUNT(*) FROM director_cache", (), 0) == n                # no new analysis was needed
+        assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) >= n
+    stats = client.get(f"/api/books/{bid}/narrative").json()["stages"]["director"]["stats"]
+    assert stats["cache_hits"] >= n
+
+
+@needs_ffmpeg
+def test_clone_voice_gets_no_instruction_but_keeps_reference_conditioning(client, ctx):
+    from conftest import make_wav_bytes
+
+    bid = import_semantic(client, director_enabled=True)["id"]
+    form = {"name": "CloneTest", "ref_text": "This is a short sample of my own speaking voice.", "rights_holder": "Jane Author", "owner_attest": "true"}
+    r = client.post("/api/voices/clone", data=form, files={"file": ("me.wav", make_wav_bytes(6.0), "audio/wav")})
+    assert r.status_code == 200, r.text
+    clone = r.json()
+    tom = chars(client, bid)["Tom Briggs"]
+    client.patch(f"/api/characters/{tom['id']}", json={"voice_id": clone["id"]})
+    client.post(f"/api/books/{bid}/analyze", json={})
+    eng = RecordingEngine()
+    w = worker_with(ctx, eng)
+    w.run_until_idle()
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    clone_calls = [c for c in eng.log if c["kind"] == "clone"]
+    preset_calls = [c for c in eng.log if c["kind"] == "preset"]
+    assert clone_calls and all(not c["instruct"] for c in clone_calls)                      # Base: reference only, no instruction
+    assert any(c["instruct"] for c in preset_calls)                                          # the same book's preset voice does get guidance
+    with ctx.db.session() as conn:
+        a = row(conn, "SELECT delivery_applied, instruct_used FROM attempts WHERE voice_id_used=?", (clone["id"],))
+        assert a["delivery_applied"] == 0 and a["instruct_used"] is None
+        assert row(conn, "SELECT ref_sha256 FROM voice_versions WHERE voice_id=?", (clone["id"],))["ref_sha256"]
+
+
+def test_voice_design_character_keeps_its_description_and_gets_delivery_appended(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    d = client.post("/api/voices/design", json={"name": "Gruff doctor", "description": "A gruff older male voice, low and slow, with a dry edge."}).json()
+    hale = chars(client, bid)["Hale"]
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": d["id"]})
+    client.post(f"/api/books/{bid}/analyze", json={})
+    eng = RecordingEngine()
+    w = worker_with(ctx, eng)
+    w.run_until_idle()
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    design = [c for c in eng.log if c["kind"] == "design"]
+    assert design
+    with ctx.db.session() as conn:
+        atts = rows(conn, "SELECT instruct_used, delivery_applied FROM attempts WHERE voice_id_used=?", (d["id"],))
+    assert atts and all(a["instruct_used"] is None or a["instruct_used"].startswith("For this line:") for a in atts)
+
+
+def test_whisper_verification_modes(client, ctx):
+    bid = import_semantic(client, verify_mode="off")["id"]
+    asr = CountingASR()
+    w = worker_with(ctx, RecordingEngine({"text:Tom yelled": ["drop"]}), asr)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    assert asr.calls == 0
+    with ctx.db.session() as conn:
+        assert scalar(conn, "SELECT COUNT(*) FROM attempts WHERE asr_skipped=1", (), 0) > 0
+    # every: the same kind of fault is caught and flagged for review
+    bid2 = import_semantic(client, text=TXT.replace("The Flood", "The Flood Again"), verify_mode="every")["id"]
+    asr2 = CountingASR()
+    w2 = worker_with(ctx, RecordingEngine({"text:found him": ["drop", "drop", "drop"]}), asr2)
+    client.post("/api/queue", json={"book_id": bid2})
+    w2.run_until_idle()
+    assert asr2.calls > 0
+    assert any(s["status"] == "flagged" for s in all_segments(ctx, bid2))
+    # sample: roughly the configured share is checked, deterministically per segment
+    bid3 = import_semantic(client, text=TXT.replace("The Flood", "The Flood Third"), verify_mode="sample", verify_sample_rate=0.3)["id"]
+    asr3 = CountingASR()
+    client.post("/api/queue", json={"book_id": bid3})
+    worker_with(ctx, RecordingEngine(), asr3).run_until_idle()
+    n = len(all_segments(ctx, bid3))
+    assert 0 < asr3.calls < n
+
+
+@needs_ffmpeg
+def test_assembly_preserves_segment_order_and_exports_metadata(client, ctx):
+    bid = import_semantic(client)["id"]
+    hale = chars(client, bid)["Hale"]
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": voice_named(client, "Aiden")["id"]})
+    w = worker_with(ctx)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    w.run_until_idle()
+    with ctx.db.session() as conn:
+        for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (bid,)):
+            r = row(conn, "SELECT segment_map_json FROM chapter_renders WHERE chapter_id=? AND kind='wav'", (ch["id"],))
+            assert r, "chapter master was not assembled"
+            order = [m["sid"] for m in json.loads(r["segment_map_json"])]
+            expect = [s["sid"] for s in rows(conn, "SELECT sid FROM segments WHERE chapter_id=? ORDER BY idx", (ch["id"],))]
+            assert order == expect
+    meta = client.get(f"/api/books/{bid}/narrative/metadata").json()
+    assert meta["segments"] and {c["name"] for c in meta["characters"]} >= {"Hale", "Elena Marsh"}
+    hale_rows = [s for s in meta["segments"] if s["speaker"] == "Hale"]
+    assert hale_rows and all(s["status"] in ("passed", "approved") for s in meta["segments"])
+
+
+def test_project_overrides_and_validation(client, ctx):
+    bid = import_semantic(client)["id"]
+    r = client.put(f"/api/books/{bid}/narrative/settings", json={"overrides": {"context_before_chars": 400, "emotion_sensitivity": 0.9}}).json()
+    assert r["effective"]["context_before_chars"] == 400 and r["defaults"]["context_before_chars"] == 1250 and r["overrides"]["emotion_sensitivity"] == 0.9
+    ins = client.get(f"/api/segments/{all_segments(ctx, bid)[3]['id']}/inspect").json()
+    assert len(ins["context"]["before"]) <= 400 and ins["settings"]["context_before_chars"] == 400
+    assert client.put(f"/api/books/{bid}/narrative/settings", json={"overrides": {"director_enabled": True, "semantic_segmentation": False}}).status_code in (409, 422)
+    assert client.put(f"/api/books/{bid}/narrative/settings", json={"overrides": {"llm": {"base_url": "ftp://x"}}}).status_code == 422
+    assert client.put(f"/api/books/{bid}/narrative/settings", json={"overrides": {"context_before_chars": None}}).json()["effective"]["context_before_chars"] == 1250
+    # global settings persist and validate
+    assert client.put("/api/settings", json={"narrative": {"director_enabled": True, "semantic_segmentation": False}}).status_code == 422
+    assert client.get("/api/settings").json()["settings"]["narrative"]["max_segment_chars"] == 500
+    vocab = client.get("/api/narrative/vocabulary").json()
+    assert "grief" in vocab["emotions"] and "slow" in vocab["pacings"]
+
+
+def test_segment_inspector_payload(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    seg = next(s for s in all_segments(ctx, bid) if s["span_kind"] in ("dialogue", "mixed") and s["character_id"])
+    i = client.get(f"/api/segments/{seg['id']}/inspect").json()
+    for key in ("original_text", "context", "chapter", "scene", "speaker", "voice", "direction", "previous", "next", "delivery", "attempts", "spans", "history"):
+        assert key in i
+    assert i["speaker"]["name"] and i["voice"]["name"] == "Ryan" and i["direction"]["raw"]["emotion"]
+    assert i["direction"]["smoothed"] and i["direction"]["final"]["intensity"] >= 1
+    assert i["delivery"]["gen_key"] and i["delivery"]["spoken_text_sent_to_tts"]
+    prev = i["previous"]
+    assert prev is None or prev["final"] is not None
+
+
+def test_segment_preview_job_uses_the_segments_own_voice_and_delivery(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    hale = chars(client, bid)["Hale"]
+    client.patch(f"/api/characters/{hale['id']}", json={"voice_id": voice_named(client, "Aiden")["id"]})
+    seg = next(s for s in all_segments(ctx, bid) if s["character_id"] == hale["id"])
+    job = client.post(f"/api/segments/{seg['id']}/preview", json={}).json()
+    eng = RecordingEngine()
+    worker_with(ctx, eng).step()
+    done = client.get(f"/api/jobs/{job['id']}").json()
+    assert done["status"] == "completed" and done["result"]["text_sent_to_tts"] and eng.log[0]["speaker"] == "Aiden"
+    with ctx.db.session() as conn:
+        assert scalar(conn, "SELECT COUNT(*) FROM attempts WHERE segment_id=?", (seg["id"],), 0) == 0   # a preview is never a take
+
+
+# ---------------------------------------------------------------- a real HTTP LLM endpoint (stub)
+
+
+class _Stub(BaseHTTPRequestHandler):
+    seen: list = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        user = body["messages"][1]["content"]
+        _Stub.seen.append(user)
+        if "Cast:" in user:  # attribution request
+            m = re.search(r"(Hale said nothing|Tom Briggs, standing a little apart[^.]*)", user)
+            reply = {"speaker": "Hale", "confidence": 0.8, "evidence": "told the doctor"} if "told the doctor" in user else {"speaker": "UNKNOWN", "confidence": 0, "evidence": ""}
+        else:
+            reply = good_reply(speaker=json.loads(user.split("\n", 1)[1])["segment"]["speaker"] or "Narrator", facts=[], context_refs=[])
+        data = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def test_llm_stage_end_to_end_against_a_stub_endpoint(client, ctx):
+    _Stub.seen = []
+    srv = HTTPServer(("127.0.0.1", 0), _Stub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{srv.server_port}/v1"
+        bid = import_semantic(client, director_enabled=True, llm={"provider": "openai_compatible", "base_url": url, "model": "stub"})["id"]
+        before = client.get(f"/api/books/{bid}/narrative").json()["needs_review"]
+        client.post(f"/api/books/{bid}/analyze", json={})
+        worker_with(ctx).run_until_idle()
+        st = client.get(f"/api/books/{bid}/narrative").json()
+        assert st["stages"]["attribution"]["stats"]["tried"] >= 1
+        assert st["stages"]["director"]["stats"]["llm_calls"] >= 1
+        with ctx.db.session() as conn:
+            srcs = {r["source"] for r in rows(conn, "SELECT source FROM directions WHERE book_id=?", (bid,))}
+            llm_spans = rows(conn, "SELECT * FROM nar_spans WHERE book_id=? AND attribution='llm'", (bid,))
+        assert "llm" in srcs
+        # the stub answered only where its evidence is genuinely in the passage; resolved lines carry that evidence
+        for sp in llm_spans:
+            assert "told the doctor" in sp["evidence"]
+        assert st["needs_review"] <= before
+        assert any("<<<" in u for u in _Stub.seen)                                        # the line was marked inside its surrounding passage
+    finally:
+        srv.shutdown()
+
+
+def test_api_requires_nothing_new_to_keep_existing_endpoints_working(client, ctx):
+    assert client.get("/api/overview").status_code == 200
+    assert client.get("/api/queue").status_code == 200
+    r = client.get("/api/auth/status").json()
+    assert r["version"]
+
+
+def test_voice_consistency_measure_tracks_pitch():
+    import numpy as np
+
+    from studio.narrative import voicecheck as VC
+
+    sr = 24000
+    t = np.arange(sr) / sr
+
+    def tone(f):
+        return 0.3 * np.sin(2 * np.pi * f * t) * (0.6 + 0.4 * np.sin(2 * np.pi * 3 * t) ** 2)
+
+    assert abs(VC.f0_median(tone(140), sr) - 140) < 6 and abs(VC.f0_median(tone(220), sr) - 220) < 9
+    rep = VC.consistency([("steady", tone(140), sr), ("steady", tone(143), sr), ("drifty", tone(120), sr), ("drifty", tone(210), sr)])
+    assert rep["steady"]["f0_cv"] < 0.05 < rep["drifty"]["f0_cv"]
+    assert VC.f0_median(np.zeros(sr), sr) is None
+
+
+def test_api_key_env_is_restricted_to_studio_variables():
+    assert LLMSettings(api_key_env="STUDIO_LLM_KEY").api_key_env == "STUDIO_LLM_KEY"
+    for bad in ("AWS_SECRET_ACCESS_KEY", "HOME", "STUDIO_LLM key"):
+        with pytest.raises(ValueError):
+            LLMSettings(api_key_env=bad)
+    c = LLMClient(LLMSettings(provider="openai_compatible", model="m", api_key_env="STUDIO_LLM_KEY"), environ={})
+    with pytest.raises(Exception, match="not set"):
+        c._headers()
+
+
+def test_analysis_survives_pause_and_a_worker_restart(client, ctx):
+    bid = import_semantic(client, director_enabled=True, director_lookahead=4)["id"]
+    job = client.post(f"/api/books/{bid}/analyze", json={}).json()
+    w = worker_with(ctx)
+    for _ in range(3):
+        w.step()
+    mid = client.get(f"/api/jobs/{job['id']}").json()
+    assert mid["status"] in ("running", "queued") and mid["payload"]["progress"]
+    client.post(f"/api/jobs/{job['id']}/pause")
+    w.step()
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "paused"
+    assert w.step() is False                                                                 # a paused analysis is not picked up
+    client.post(f"/api/jobs/{job['id']}/resume")
+    with ctx.db.tx() as conn:                                                                # simulate a crash while running
+        conn.execute("UPDATE jobs SET status='running' WHERE id=?", (job["id"],))
+    w2 = worker_with(ctx)
+    assert w2.recover()["requeued_jobs"] >= 1
+    w2.run_until_idle()
+    done = client.get(f"/api/jobs/{job['id']}").json()
+    assert done["status"] == "completed"
+    assert client.get(f"/api/books/{bid}/narrative").json()["directed"] == len(all_segments(ctx, bid))
+    # cancelling keeps everything already produced
+    job2 = client.post(f"/api/books/{bid}/analyze", json={"stages": ["director"]}).json()
+    client.post(f"/api/jobs/{job2['id']}/cancel")
+    worker_with(ctx).run_until_idle()
+    assert client.get(f"/api/jobs/{job2['id']}").json()["status"] == "cancelled"
+    assert client.get(f"/api/books/{bid}/narrative").json()["directed"] == len(all_segments(ctx, bid))
+__STUDIO_EOF_7e9fb985e21b__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -13262,10 +18961,10 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_e5b25dd03863__'
-20261028232018-d6932b10
-__STUDIO_EOF_e5b25dd03863__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_96a6113a69f0__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_b469221398a6__'
+20261028235813-7911947c
+__STUDIO_EOF_b469221398a6__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_e8ea5c765471__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
@@ -13273,62 +18972,81 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-ac83d53ee3927e1e581f4f44180b23291fefdab7f765f3afc8acd4843257b130  CHANGELOG.md
+a92815240f706a833c8352b8860d74df246954259c6d4c19e2359e924f8c7d72  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-6fdfb1f570b9198d5ae3ccfc76abd4d3bf1a8ac8e8b0a51bd8aec2ec94c5cc6f  README.md
+f5991d1fa71ca266dc8d699eb0cfeb69f9e18ccacfe1980b09a7c37ec8c8b6f4  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-313f07b8e27156bd0e66e02363c16573e870010f7f0a87d7b9b084ea115d6ac9  studio/__init__.py
+b430e4e22eca466a70192b2d4435c0c011f41163b3717b7aa7ef41da83efdd1e  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
 49663622a31635794c792cc0422cff68c8e8f8b66345b40797decad3601fff37  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 3e54096739657fd7db84e193f413006b85c140a06bd698730672c5e1b491878c  studio/cli.py
-6fb3508ffe70fa1725c24253d62c0d63c97a81a0abe11078f3bc12d41e192ad3  studio/config.py
+2f3629afdbf99c09ab39ae50f8a1da0b08d1858c574c22eb2c7a3a220e7d6085  studio/config.py
 fb2d7cc679920f354415e6c7f1dd0b9bfc844fe9a8960acae3c9453876319528  studio/context.py
-0fbb1a612ba5e66974ab4318bd7f1d7797036abcbb869089ef2cb56e137a2b37  studio/db.py
+be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
 df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
 9df2a6804c7244f4b4ee0b71da0c7f0d1e8080cd70ab16059dba315d325331d3  studio/engines.py
+6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
+c3a3ee25135498f9a8f345ec36df9096ed3c754b11c19893586908daf967e4a8  studio/narrative/analysis.py
+cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
+29cef5adfd5e89d915811a0b9bbaca954bfb230daeeccd8ff47d83344defb31a  studio/narrative/continuity.py
+708bc7550271f7cbc056d84fdaae78f958fb27036da77c42a34509e93281890c  studio/narrative/delivery.py
+4f4935b0c20f0400f0348476f8f9a5ebefc56cf4ca22272f31c97d9c8d27af14  studio/narrative/director.py
+524e9293fdbad5ba9940ae6d4b3f97165de5c04b851ce798a473b44d1d725b51  studio/narrative/llm.py
+42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
+07e3bd8e86404574c701e270964e2b8ca13075646ddc278e5f246a42297cc7b5  studio/narrative/store.py
+e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
+7443afaba3bf1e77c6b6cb5af09210f66a24fd4df2c92efeb92da31f3b12e138  studio/narrative/vocab.py
+fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrative/voicecheck.py
+35783594c7c72f8bffe54f9273f776fc90a838d32b8fff6cf3544d6484574fc8  studio/narrative/windows.py
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
-ee3d75cb5bf27d0cf1641192a62eb6783ffb54bdfddd6586e71f68b1495af0bf  studio/pipeline.py
+5a45663174aeac322ec15751f3c980782338f8b8d455e7b1e913ce410e1108dc  studio/pipeline.py
 0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
-be92893f7637719ca46cc3c93d686fddcc761a4d774385564a5b5ffed53b87a5  studio/services.py
+a8dde92edb17b748bcc5d9956112781e6b7776487a00397d26bee2206b7ccb84  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-aab33f582b9ee315dc28b3c67ea722a761cbb5f3bc2ec26f2c66fec26d279d23  studio/web/app.py
-5068e44bfe079a802aeb959b2361f7bc0b0dd2e6e442a4525221b6d9c6ba78b8  studio/web/auth.py
+0d5dd79d09fae87429453826134ac63c7bb01fa384597612b2d128235868f700  studio/web/app.py
+1b41532eb32426767a0c7defa61494295eacfcca035e3cec64383338dfd81b9c  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
+51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
 234b5211d21110d73f20c2d8f93561b9a76b81ac049e1bafc7fc4a90da3c717c  studio/web/security.py
-6f1faee0beee4ce828facbab72762b02e16235782acd5543eb450081ef637cdc  studio/web/static/app.css
+7f1c06c278c85b0a4b410905c56cb84669260725bbac4903f0bd68f83ec8616d  studio/web/static/app.css
 393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
-e0da28d55f1c1c93fbc84974f9d697b196349d1dcbfa327d1e630de86c69f5da  studio/web/static/js/app.js
+d500a2f4e47549c34fda445f8d410c5c28aaf10ab28283d96831e37c68fbbaa9  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 49a8615fbfc8e557a49958ad32ed704d6cf5fac0c8e1005e475c9e9e2b6c545f  studio/web/static/js/ui.js
 dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/static/js/views/about.js
-ccb124670dd0da4c4331e3972b64bc8b4a252e1ee87470f7712f79793cfcd66d  studio/web/static/js/views/book.js
+3798855b0baba8f36eff23c45c79ccd0b0dadf854addfd4f7b53de16ce802448  studio/web/static/js/views/book.js
+6ed178130836c60b2744ff4b67f2f4ef3743f9eb69f1a16de83a204b0f1787e8  studio/web/static/js/views/inspector.js
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
+607416cd476219867168f0a9db26052c46b70c0e611a4c245cb2efc75377f69c  studio/web/static/js/views/narrative-fields.js
+c628a052087f18c4d8b751e949839fb1bc41290f4a83f38f58bd9ca4e8be75ed  studio/web/static/js/views/narrative.js
 9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
-2ff497a0e6065d689f925e9f6a840c1935b5abd4c68cd285c4e849421ae76daf  studio/web/static/js/views/queue.js
-f6b03f8b7455e68e28db1cf5c85626106c1522a4f647291fd03641b7cabe0be7  studio/web/static/js/views/review.js
-0d4f60a5e35fa819053dd23665361cd449cc1dfd75188c615b78a97de8dc5927  studio/web/static/js/views/settings.js
+0cc4435bf1c8401ce77d2609457f53e7e12728c50a2242511bd03a4bf24e5517  studio/web/static/js/views/queue.js
+2486e47e24ea6d18fa31d41b4cdab37cbff072f4a9dfe8a0127576b0d1c20721  studio/web/static/js/views/review.js
+7c09d161bd59894e92a5e675b4fb4e7bbf5e533a552173a7e1e98e4491c04725  studio/web/static/js/views/settings.js
 513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
-afba12b3c069b092f6c182c6c25f2f1fde421281260813a77a0fbec36ad2ce7a  studio/worker.py
+9e12ba5609e9145ceb2211dc3019e4791bdaa668ba7f68117c6c3b6f5c61dae5  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
+b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-ed2e38a8af944d16bce92b869a22c16c8b52d13091fd59d5aa680ab9078fa1a1  tests/test_integration.py
+309007d956a5082862268889b0860c6346ac9c435c11b80128f4bfc1bed3ccfe  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
+7e9fb985e21bdf8f9f85afc54945599efd3c8438ca5686bced680f92f2998b49  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-e5b25dd038635fc54bc4de556fb82c74bb1f2a50222696f790ec2c28f0e96682  BUILD
-__STUDIO_EOF_96a6113a69f0__
+b469221398a64ff9c6296457f0ef113b8fb7b6cca9854b963da82657e9f606f0  BUILD
+__STUDIO_EOF_e8ea5c765471__
 }
 
 verify_manifest() {
