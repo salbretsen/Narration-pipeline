@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import threading
+from contextvars import ContextVar
 from pathlib import Path
 
 from .config import STORAGE_CATEGORIES, Settings, load_settings, save_settings
@@ -14,6 +15,8 @@ from .util import dumps, now
 
 DEFAULT_HOME = "~/audiobook-studio-claude"
 log = logging.getLogger("studio")
+# Name of the signed-in user for the request being handled (set by the web guard middleware; unset for CLI/worker).
+current_actor: ContextVar[str | None] = ContextVar("studio_current_actor", default=None)
 
 
 def resolve_home() -> Path:
@@ -128,7 +131,8 @@ class Context:
             (kind, book_id, message[:2000], level, now()),
         )
 
-    def audit(self, conn, entity: str, entity_id, action: str, detail: dict | None = None, actor: str = "operator") -> None:
+    def audit(self, conn, entity: str, entity_id, action: str, detail: dict | None = None, actor: str | None = None) -> None:
+        actor = resolve_actor(actor)
         conn.execute(
             "INSERT INTO audit_log(entity, entity_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?,?)",
             (entity, None if entity_id is None else str(entity_id), action, dumps(detail or {}), actor, now()),
@@ -140,6 +144,13 @@ class Context:
             (job_id, book_id, level, message[:4000], now()),
         )
         log.log(logging.WARNING if level in ("warning", "error") else logging.INFO, "[job %s] %s", job_id, message)
+
+
+def resolve_actor(actor: str | None = None) -> str:
+    """Explicit actor wins; "operator" (the legacy default) and None fall back to the signed-in user of this request."""
+    if actor and actor != "operator":
+        return actor
+    return current_actor.get() or "operator"
 
 
 def setup_logging(ctx: Context, name: str) -> None:

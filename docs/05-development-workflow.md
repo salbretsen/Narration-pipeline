@@ -25,7 +25,8 @@ Kill stray servers on Windows with `Get-NetTCPConnection -LocalPort 7891 -State 
   rendered from `tools/runtime-manifest.json`) and `src/installer/installer.sh.in` (legacy Homebrew-era installer, kept for existing deployments).
 - Release tooling: `tools/build_release.py` (update archive), `tools/sign_release.py` (signed index, refuses without a key), `tools/verify_index.py`,
   `tools/release_keys.py` (key generation, owner's machine only), `tools/lock_requirements.py` (regenerate `requirements.lock` with uv),
-  `tools/check_lock_wheels.py` (every pin has a prebuilt macOS arm64 wheel). CI: `.github/workflows/ci.yml`, `release.yml`.
+  `tools/check_lock_wheels.py` (every pin has a prebuilt macOS arm64 wheel), `tools/scrub_check.py` (public-repo scrub: fails on private IPs, `.lan`/`.local`
+  host names, `/Users/<name>` or `C:\Users\<name>` paths and PEM private keys in tracked files; allowlists with reasons live in the script; also a CI step). CI: `.github/workflows/ci.yml`, `release.yml`.
 - **Never edit `install_audiobook_studio_mac.sh` or `install_audiobook_studio_claude.sh`.** Regenerate both: `python tools/build_installer.py`
   (`--only mac|legacy`); then `bash -n` and `shellcheck -S style` on the mac one.
 - **Backslash escapes in heredocs sent through the Bash tool get mangled** (seen again in v0.5: a Python newline escape and a hex-zero escape inside

@@ -464,7 +464,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         except ValueError as exc:
             raise S.ServiceError(str(exc), 422)
         with ctx.db.tx() as conn:
-            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name", "operator"))
+            ctx.audit(conn, "auth", req.username, "user_saved", {"role": req.role}, (request.state.user or {}).get("name") or "operator")
         return {"users": app.state.auth.list_users()}
 
     # ------------------------------------------------------------------ pages
@@ -862,11 +862,11 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     @app.put("/api/secrets/{slot}")
     def api_secret_put(slot: str, req: SecretReq, request: Request):
-        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name", "operator"))
+        return S.set_secret(ctx, slot, req.value, (request.state.user or {}).get("name") or "operator")
 
     @app.delete("/api/secrets/{slot}")
     def api_secret_delete(slot: str, request: Request):
-        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name", "operator"))
+        return S.set_secret(ctx, slot, None, (request.state.user or {}).get("name") or "operator")
 
     @app.get("/api/storage")
     def api_storage():
@@ -885,7 +885,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_storage_mkdir(req: MkdirReq, request: Request):
         created = make_folder(req.parent, req.name)
         with ctx.db.tx() as conn:
-            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name", "operator"))
+            ctx.audit(conn, "storage", created, "mkdir", {"parent": req.parent}, (request.state.user or {}).get("name") or "operator")
         return {"path": created}
 
     @app.post("/api/storage/choose-folder")

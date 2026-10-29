@@ -9,6 +9,12 @@ Status codes used: `401` sign-in required, `403` forbidden (CSRF, role, path con
 needs confirmation, state), `413` too large, `421` bad Host, `422` validation, `429` login rate limit, `503` storage unavailable
 or network bind without users.
 
+**Attribution:** every `audit_log` and `review_actions` row records the signed-in user's name as `actor` (set per request by the guard
+middleware through `studio.context.current_actor`; `ctx.audit(...)` and review actions resolve it automatically). `operator` appears only when no one is
+signed in (loopback without accounts); CLI uses `cli`, the worker `system`. Release approval keeps the typed `approved_by` name in `releases`, and the
+`release_approved` audit row's `actor` is the signed-in account (`signed_in_user` in its detail); the QA report shows it as `release.approved_by_account`
+and each `review_actions[].actor`. No schema change.
+
 **Admin-only** (operators get 403): `PUT /api/settings`, `GET /api/storage`, `GET /api/storage/browse`, `POST /api/storage/*`,
 `POST /api/books/{id}/move`, `POST /api/books/{id}/archive`, `POST /api/worker/restart`, `POST /api/voices/{id}/archive`,
 `GET|POST /api/auth/users`, `GET /api/doctor`.

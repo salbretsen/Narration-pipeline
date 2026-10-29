@@ -14,6 +14,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from ..config import is_loopback
+from ..context import current_actor
 from .auth import COOKIE, AuthStore, LoginLimiter, is_admin_only
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -103,7 +104,11 @@ def install(app, ctx) -> None:
                 return JSONResponse({"error": "This action needs an administrator account."}, status_code=403)
         elif not is_loopback(s.host):
             return JSONResponse({"error": "Refusing to serve: network binding without any user account."}, status_code=503)
-        response = await call_next(request)
+        tok = current_actor.set((request.state.user or {}).get("name"))
+        try:
+            response = await call_next(request)
+        finally:
+            current_actor.reset(tok)
         response.headers.setdefault("Content-Security-Policy", CSP)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
