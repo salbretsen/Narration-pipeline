@@ -111,6 +111,7 @@ const SECTIONS = [
     ["repetition_penalty", "Repetition penalty (blank = model default)", "number?", { min: 1, max: 2, step: 0.01 }],
     ["retry_temperatures", "Temperatures for retries (comma separated)", "list"],
     ["max_warm_models", "Models kept loaded in memory", "number", { min: 1, max: 4 }],
+    ["cache_dir", "Model cache folder (blank = default; may be an external disk; applies after a restart)", "text"],
     ["allow_downloads", "Allow downloading model weights from Hugging Face", "bool"]]],
   ["export", "Export", [
     ["sample_rate", "Master sample rate (Hz)", "select", { options: [22050, 44100, 48000] }],

@@ -1,5 +1,12 @@
 # 6. Deployment and operations
 
+> **v0.5 note.** The supported install and update path for new machines is now `install_audiobook_studio_mac.sh` with in-app signed updates
+> (**doc 10**), which needs no Homebrew and keeps releases, user data, library and model cache in separate places. **Everything below describes
+> the deployment that exists today on the M3 Max (the Bash/Homebrew layout in `~/audiobook-studio-claude`)** and stays accurate for it until the
+> owner migrates (`install_audiobook_studio_mac.sh --migrate-from ~/audiobook-studio-claude`, doc 10 section 7). The migration copies and backs
+> up data, tests the new backend, and never modifies the old folder. The Mac's firewall, Homebrew and unrelated software remain off limits.
+> The hardware checks in doc 10 (M1-M10) have **not** been run yet. The redeploy procedure below uses the legacy installer, which still works.
+
 ## The production Mac
 
 | | |

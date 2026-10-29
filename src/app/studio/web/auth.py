@@ -30,6 +30,8 @@ ADMIN_RULES = [
     ("POST", re.compile(r"^/api/storage/")),
     ("POST", re.compile(r"^/api/books/\d+/(move|archive)$")),
     ("POST", re.compile(r"^/api/worker/restart$")),
+    ("POST", re.compile(r"^/api/update/(check|download|install|cancel|restart)$")),
+    ("PUT", re.compile(r"^/api/update/preferences$")),
     ("POST", re.compile(r"^/api/voices/\d+/archive$")),
     ("GET", re.compile(r"^/api/auth/users$")),
     ("POST", re.compile(r"^/api/auth/users$")),

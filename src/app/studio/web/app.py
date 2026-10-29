@@ -301,19 +301,37 @@ class WorkerSupervisor:
 # ------------------------------------------------------------------------- app
 
 
-def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> FastAPI:
+def create_app(ctx: Context | None = None, start_worker: bool | None = None, update_manager=None, auto_update_check: bool | None = None) -> FastAPI:
     ctx = ctx or Context()
     setup_logging(ctx, "server")
     S.ensure_builtin_voices(ctx)
     if start_worker is None:
         start_worker = ctx.settings().worker.autostart and os.environ.get("STUDIO_NO_WORKER") != "1"
     supervisor = WorkerSupervisor(ctx) if start_worker else None
+    if auto_update_check is None:
+        auto_update_check = start_worker and os.environ.get("STUDIO_NO_UPDATE_CHECK") != "1"
+    stop_checks = threading.Event()
+
+    def _auto_check_loop():
+        """Checks for (never downloads or installs) updates on the configured interval. Failures are recorded, not raised."""
+        stop_checks.wait(45)
+        while not stop_checks.is_set():
+            mgr = app.state.update_manager
+            try:
+                if mgr.layout.managed and mgr.auto_check_due():
+                    mgr.check()
+            except Exception:
+                log.exception("automatic update check failed")
+            stop_checks.wait(1800)
 
     @asynccontextmanager
     async def lifespan(_app):
         if supervisor:
             supervisor.start()
+        if auto_update_check:
+            threading.Thread(target=_auto_check_loop, daemon=True, name="update-check").start()
         yield
+        stop_checks.set()
         if supervisor:
             await run_in_threadpool(supervisor.shutdown)
 
@@ -725,6 +743,19 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
     from .narrative_api import register as register_narrative
 
     register_narrative(app, ctx)
+
+    from ..platform_services import default_platform
+    from ..update.launch import make_launcher
+    from ..update.layout import Layout
+    from ..update.manager import ReleaseUpdateManager
+    from .update_api import register as register_updates
+
+    if update_manager is None:
+        layout = Layout.discover()
+        pf = default_platform(layout.state)
+        update_manager = ReleaseUpdateManager(ctx, layout, pf)
+        update_manager.launch_helper = make_launcher(layout, pf)
+    register_updates(app, ctx, update_manager)
 
     # ------------------------------------------------------------------ media
     def _book(conn, book_id):

@@ -1,0 +1,123 @@
+name: Release
+
+# Push a tag  vMAJOR.MINOR.PATCH  (or vX.Y.Z-beta.N for the beta channel).
+# This workflow builds the update archive and the installer, and signs the release index ONLY IF the secret RELEASE_SIGNING_KEY exists.
+# Without the secret nothing is signed and NO index is published: installed studios keep ignoring this release (they cannot authenticate it).
+# Setup: docs/10-installation-and-updates.md ("Signing secrets").
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag must match the application version
+        id: meta
+        run: |
+          ver="$(python - <<'PY'
+          import re
+          print(re.search(r'__version__ = "([^"]+)"', open("src/app/studio/__init__.py").read()).group(1))
+          PY
+          )"
+          [ "v$ver" = "${GITHUB_REF_NAME}" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match __version__ $ver"; exit 1; }
+          case "$ver" in *-*) ch=beta ;; *) ch=stable ;; esac
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "channel=$ch" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi uvicorn python-multipart pydantic numpy pytest httpx cryptography shellcheck-py
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Tests
+        working-directory: src/app
+        run: python -m pytest -q -p no:cacheprovider tests
+      - name: Prebuilt wheels exist for every pinned dependency
+        run: python tools/check_lock_wheels.py
+      - name: Build installers and the update archive
+        run: |
+          python tools/build_installer.py
+          shellcheck -S style install_audiobook_studio_mac.sh
+          mkdir -p dist
+          python tools/build_release.py --out dist > dist/build.json
+          (cd dist && sha256sum audiobook-studio-*.tar.gz > SHA256SUMS)
+          cp install_audiobook_studio_mac.sh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+
+  sign-and-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Protect this environment in repository settings (required reviewers) so signing needs a human click.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install cryptography
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist
+      - name: Is a signing key configured?
+        id: key
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Publish WITHOUT a signed index (no signing key configured)
+        if: steps.key.outputs.present != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::warning::RELEASE_SIGNING_KEY is not configured. Publishing the files as a prerelease; NO signed index is produced, so installed studios will not offer this update."
+          gh release create "${GITHUB_REF_NAME}" dist/audiobook-studio-*.tar.gz dist/SHA256SUMS dist/install_audiobook_studio_mac.sh \
+            --title "${GITHUB_REF_NAME} (UNSIGNED - not installable by the in-app updater)" --prerelease \
+            --notes "Unsigned build: no release-signing key was configured when this was built. Do not rely on the checksum alone."
+      - name: Sign the release index
+        if: steps.key.outputs.present == 'true'
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.build.outputs.channel }}
+        run: |
+          # keep earlier releases in the index as stepping stones; the old index is verified with the same key before it is merged
+          gh release download "index-${CHANNEL}" --pattern "release-index-${CHANNEL}.json" --dir prev 2>/dev/null || true
+          merge=""; [ -f "prev/release-index-${CHANNEL}.json" ] && merge="--merge-from prev/release-index-${CHANNEL}.json"
+          python tools/sign_release.py --channel "$CHANNEL" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download" \
+            --release dist/build.json $merge --out dist
+      - name: The signed index must verify against the PINNED public key and match the archive
+        if: steps.key.outputs.present == 'true'
+        env:
+          CHANNEL: ${{ needs.build.outputs.channel }}
+        run: python tools/verify_index.py "dist/release-index-${CHANNEL}.json" --archive dist/audiobook-studio-*.tar.gz
+      - name: Create the release and publish the index
+        if: steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.build.outputs.channel }}
+        run: |
+          pre=""; [ "$CHANNEL" = beta ] && pre="--prerelease"
+          gh release create "${GITHUB_REF_NAME}" dist/audiobook-studio-*.tar.gz dist/SHA256SUMS dist/install_audiobook_studio_mac.sh $pre \
+            --title "${GITHUB_REF_NAME}" --generate-notes
+          # the index lives on a rolling release per channel; it is replaced only after the archive above is public
+          gh release view "index-${CHANNEL}" >/dev/null 2>&1 || gh release create "index-${CHANNEL}" --title "Update index (${CHANNEL})" \
+            --notes "Signed release index read by the studio's Update Center. Do not edit." --prerelease
+          gh release upload "index-${CHANNEL}" "dist/release-index-${CHANNEL}.json" --clobber

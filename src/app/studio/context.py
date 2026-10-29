@@ -17,7 +17,15 @@ log = logging.getLogger("studio")
 
 
 def resolve_home() -> Path:
-    return Path(os.environ.get("AUDIOBOOK_STUDIO_HOME") or DEFAULT_HOME).expanduser().resolve()
+    env = os.environ.get("AUDIOBOOK_STUDIO_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    from .update.layout import Layout
+
+    lay = Layout.discover()
+    if lay.managed:  # managed installation: user data lives in <root>/state, apart from the replaceable releases
+        return lay.state
+    return Path(DEFAULT_HOME).expanduser().resolve()
 
 
 class Context:
@@ -25,7 +33,7 @@ class Context:
         self.home = Path(home).expanduser().resolve() if home else resolve_home()
         self.config_dir = self.home / "config"
         self.data_dir = self.home / "data"
-        self.logs_dir = self.home / "logs"
+        self.logs_dir = Path(os.environ["AUDIOBOOK_STUDIO_LOGS"]).expanduser() if os.environ.get("AUDIOBOOK_STUDIO_LOGS") else self.home / "logs"
         self.run_dir = self.home / "run"
         self.cache_dir = self.home / "cache"
         self.backups_dir = self.home / "backups"
@@ -44,6 +52,13 @@ class Context:
                 save_settings(self.settings_path, Settings())
 
     # ----------------------------------------------------------------- settings
+    def apply_model_cache_env(self) -> str | None:
+        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release."""
+        d = self.settings().models.cache_dir
+        if d:
+            os.environ["HF_HOME"] = str(Path(d).expanduser())
+        return os.environ.get("HF_HOME")
+
     def settings(self) -> Settings:
         with self._lock:
             try:

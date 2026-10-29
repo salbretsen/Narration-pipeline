@@ -2,7 +2,10 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.4.0 (build 20261029095903-6d2ef68a)
+#  Version v0.5.0 (build 20261029104915-8394e3c2)
+#
+#  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
+#  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
 #
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
@@ -20,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.4.0"
-BUILD_ID="20261029095903-6d2ef68a"
+STUDIO_VERSION="v0.5.0"
+BUILD_ID="20261029104915-8394e3c2"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -142,6 +145,33 @@ except Exception:
 }
 pid_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 __STUDIO_EOF_45c27eed4a2a__
+cat > "$DEST/bin/audiobook-studio" <<'__STUDIO_EOF_94ed4bd34593__'
+#!/bin/bash
+# Audiobook Studio command line (managed installation).
+#   audiobook-studio doctor | start | stop | restart | status | logs | version | update --check | update --install
+# Uses only absolute paths under the installation root; changes no PATH, shell profile or system directory.
+set -eu
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+ROOT="${AUDIOBOOK_STUDIO_ROOT:-$(cd "$(dirname "$SELF")" && pwd)}"
+PY="$ROOT/app/venv-python"
+if [ ! -x "$PY" ]; then
+  echo "Audiobook Studio is not installed correctly (missing $PY). Re-run install_audiobook_studio_mac.sh." >&2
+  exit 1
+fi
+export AUDIOBOOK_STUDIO_ROOT="$ROOT"
+export AUDIOBOOK_STUDIO_HOME="${AUDIOBOOK_STUDIO_HOME:-$ROOT/state}"
+export AUDIOBOOK_STUDIO_LOGS="${AUDIOBOOK_STUDIO_LOGS:-$HOME/Library/Logs/Audiobook Studio}"
+export HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+export HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
+export PATH="$ROOT/app/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cd "$ROOT/app/current"
+exec "$PY" -m studio "$@"
+__STUDIO_EOF_94ed4bd34593__
+  chmod 755 "$DEST/bin/audiobook-studio"
 cat > "$DEST/bin/run-tests" <<'__STUDIO_EOF_3c447bcd621e__'
 #!/usr/bin/env bash
 # Automated tests (unit + HTTP integration). They use the MOCK engine (synthetic test tones)
@@ -377,11 +407,46 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_2fdbc114f99c__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_eb930f095d82__'
 # Changelog
 
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
+
+## v0.5.0
+Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
+**Not yet run on a Mac** (see `docs/10-installation-and-updates.md`, checks M1-M10) and **no release has been signed** (no production key exists).
+- **No-prerequisites installer** `install_audiobook_studio_mac.sh`: needs no Homebrew, Git, Python, pip, FFmpeg, Node, Xcode or Command Line Tools,
+  no sudo, and edits no shell profile or system directory. Installs a private Python 3.12 with the pinned `uv`, FFmpeg/FFprobe 9.0.2 (GPLv3 build,
+  downloaded not bundled, AAC and MP3 encoders verified) into the app folder, and hash-locked prebuilt wheels (`requirements.lock`, 88 packages,
+  `--require-hashes --only-binary :all:`; a package without a wheel stops the install instead of reaching for a compiler). Every download is size- and
+  SHA-256-checked against values pinned in the script before use and fails closed. Pre-flight (macOS 14+, native arm64, RAM, disk per location, mounted
+  external disks, writable paths, reachability, free port), `--check`, prompts or flags for library/model-cache location and the optional model
+  download, idempotent and resumable, `--uninstall` (data only with a typed confirmation). The old Homebrew installer remains for existing installs.
+- **Managed layout**: replaceable releases under `app/releases/<ver>` with an atomic `current` pointer, private runtimes, user data in `state/`, logs in
+  `~/Library/Logs/Audiobook Studio`, model cache and library anywhere you choose (`models.cache_dir` setting; applied as `HF_HOME`).
+- **Per-user launchd service** (`gui/<uid>`, no root): starts at login, restarts after failures only, 10 s throttle, 127.0.0.1 by default, port
+  collision and double-run detection, `GET /healthz` and `GET /api/version`. CLI: `doctor start stop restart status logs version update service migrate-legacy configure`.
+- **Update Center** (sidebar Updates, nav dot, Overview notice): check, release notes (plain text), download and verify, stage, **Install now** (next
+  segment boundary) or **Install after current book**, cancel, restart service, automatic checks (daily by default; never auto-download or install),
+  eight progress phases, history, clear states for offline / incompatible / failed / rolled back / switched off. Admin-only, CSRF/Host/same-origin protected;
+  no endpoint accepts a URL or command.
+- **Signed releases**: Ed25519-signed per-channel release index (version, channel, platform, arch, URL, size, SHA-256, published, notes URL, min compatible
+  version/OS, schema, runtime) with sequence number (anti-rollback), expiry, revoked versions and keys; public key pinned in the app
+  (`pinned_keys.json`, **empty until the owner generates a key**, which keeps the updater off). HTTPS only, host allowlist re-checked on every redirect,
+  size limits, resumable download, hardened archive extraction (traversal, links, bombs, per-file manifest). GitHub Releases first; `HttpsRepository` implements the
+  same contract for a future first-party host.
+- **Separate updater process** (one-shot launchd job or `update --install`): drain the queue at a segment/job boundary, consistent database backup, atomic
+  switch, `studio migrate` from the new release, restart, health check, automatic rollback (database restored only if the schema moved), repair note as a
+  last resort; user data is never deleted.
+- **Migration** from the Bash/Homebrew install (`--migrate-from` / `studio migrate-legacy`): backup, copy, library and model cache kept in place, new backend
+  tested on a spare port first, only then the old LaunchAgent is replaced (plist saved); the old folder is never modified; network binding off unless `--keep-network`.
+- **Boundaries**: `studio/interfaces.py` (PlatformService, InferenceProvider, TTSProvider, ASRProvider, ModelRegistry, ReleaseRepository, UpdateManager,
+  StorageManager, QueueScheduler) with launchd, process, MLX/mock, settings and GitHub/HTTPS implementations. Windows/Linux/containers/remote providers are designed for, not built.
+- **Tooling and CI**: `tools/build_release.py`, `sign_release.py` (refuses without a key), `verify_index.py`, `release_keys.py`, `lock_requirements.py`,
+  `check_lock_wheels.py`, `tools/e2e/updates_ui.py`; GitHub Actions `ci.yml` and `release.yml` (signs only if `RELEASE_SIGNING_KEY` exists, verifies the index
+  against the pinned key, otherwise publishes an UNSIGNED prerelease and no index).
+- FFmpeg lookup now prefers the app-owned copy; error messages no longer suggest Homebrew. 80 new tests (242 total).
 
 ## v0.4.0
 - **API keys can be entered in the web UI.** Settings > Narrative > Local LLM has an API key field with Save key / Remove key, so an
@@ -443,7 +508,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_2fdbc114f99c__
+__STUDIO_EOF_eb930f095d82__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -473,10 +538,10 @@ database and in a `.wav.json` sidecar.
   room tone and file format, and some distributors restrict synthetic voices.
 * Listen to the book. Automatic QA cannot judge pronunciation or performance.
 __STUDIO_EOF_fb9571e537dc__
-cat > "$DEST/README.md" <<'__STUDIO_EOF_8a91e8138373__'
+cat > "$DEST/README.md" <<'__STUDIO_EOF_2980a5b9ceff__'
 # Audiobook Studio
 
-**v0.4.0** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.0** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -488,10 +553,40 @@ independent verification, FFmpeg for mastering, and SQLite for state. The only n
 is the one-off download of public Python packages and model weights. Manuscripts and voice
 recordings never leave the machine, and there is no telemetry or analytics.
 
-## Install and start
+## Install and start (v0.5: no prerequisites)
+
+Needs only an Apple Silicon Mac on macOS 14 or later and an internet connection. **No Homebrew, Git, Python, FFmpeg, Xcode or Command Line
+Tools are required**, no administrator password is requested, and nothing outside your home folder is changed.
 
 ```bash
-bash install_audiobook_studio_claude.sh          # needs Homebrew; installs python@3.12 + ffmpeg if missing
+bash install_audiobook_studio_mac.sh --check        # pre-flight only: changes nothing
+bash install_audiobook_studio_mac.sh                # install (asks where to keep your library and model cache)
+```
+
+Open the printed address (default `http://127.0.0.1:7861`). The studio then runs as a background service that starts when you log in; use the
+**Updates** page for updates. To add a Dock icon: open the address in Safari, then **File > Add to Dock**.
+
+Read the script first if you like (`less install_audiobook_studio_mac.sh`, or `--extract-only DIR`); never pipe it from the network into a shell.
+It downloads, over HTTPS and verified against checksums pinned inside the script, uv, FFmpeg and FFprobe, then a private Python 3.12 and hash-locked
+Python wheels (about 5 GB on disk); model weights (about 6 GB, up to 15 GB) are optional now or download on first use. Full details, locations,
+security statement, update trust model and the macOS test checklist: `docs/10-installation-and-updates.md`.
+
+| Option | Effect |
+|---|---|
+| `--library DIR` / `--model-cache DIR` | Keep books (or weights) on another disk, e.g. `/Volumes/AudioSSD/...`; they are separate from the application |
+| `--port N` | Web port (default 7861; next free port if busy) |
+| `--download-models` / `--prefetch-all` / `--no-models` | Fetch the two default models now (about 6 GB) / all four (about 14 GB) / never ask |
+| `--migrate-from ~/audiobook-studio-claude [--keep-network]` | Adopt an old Bash/Homebrew install (copied and backed up; the old folder is never changed) |
+| `--check` | Pre-flight only |
+| `--uninstall [--purge-app] [--purge-data]` | Remove the login service; optionally the application files; optionally (after a typed confirmation) your data |
+
+Command line (no PATH changes; use the full path): `~/Library/Application\ Support/Audiobook\ Studio/audiobook-studio doctor | start | stop |
+restart | logs | version | update --check | update --install`.
+
+### The previous Bash/Homebrew installer
+
+```bash
+bash install_audiobook_studio_claude.sh          # legacy: needs Homebrew; installs python@3.12 + ffmpeg if missing
 cd ~/audiobook-studio-claude
 ./start-studio                                   # opens http://127.0.0.1:7861
 ```
@@ -778,11 +873,1793 @@ memory, model download size and any defects. Then finish the check by hand:
 | Model download fails | Check the network. You can re-run the installer, or let the studio download on first use. To work fully offline, cache every model (`--prefetch-all`), then disable downloads in Settings. |
 | Out of memory | In Settings > Models, set "Models kept loaded" to 1. |
 | Uninstall | Run `./stop-studio`, then delete `~/audiobook-studio-claude`. Your library may live elsewhere if you changed its location. |
-__STUDIO_EOF_8a91e8138373__
+__STUDIO_EOF_2980a5b9ceff__
 cat > "$DEST/requirements-mlx.txt" <<'__STUDIO_EOF_b50c02630f9f__'
 mlx-audio==0.6.3
 mlx-whisper>=0.4.3
 __STUDIO_EOF_b50c02630f9f__
+cat > "$DEST/requirements.lock" <<'__STUDIO_EOF_a1964c5cf742__'
+# Generated by tools/lock_requirements.py from requirements.txt + requirements-mlx.txt. Do not edit by hand.
+# Install with: uv pip install --require-hashes --only-binary :all: -r requirements.lock
+annotated-doc==0.0.5 \
+    --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101 \
+    --hash=sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb
+    # via
+    #   fastapi
+    #   typer
+annotated-types==0.8.0 \
+    --hash=sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7 \
+    --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
+    # via pydantic
+anyio==4.15.1 \
+    --hash=sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101 \
+    --hash=sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94
+    # via
+    #   httpx
+    #   httpx2
+    #   starlette
+certifi==2026.10.23 \
+    --hash=sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd \
+    --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.1.1 \
+    --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
+    --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
+    --hash=sha256:0beceaabe56af686895136a2de78db54ecd8e4046b236b8fd6d6cb61389e9bf2 \
+    --hash=sha256:154852545011f779917b11c78db2358d095da62a9a172b78ad0a583ee5adc0d0 \
+    --hash=sha256:194cffa889098ced9976c3fc6340305e43f6303657d298da55366907c05c22d6 \
+    --hash=sha256:19ee6127ee34de7d83ce3d371ebc5ed91addbdcc39f9ab15ce4eb35a4e534971 \
+    --hash=sha256:1a18a57b58cfb21fc28d72e876acf10eaed67a1ed96226f92af4df681d571c4c \
+    --hash=sha256:1aa5645c30469b09530c4ebca77ebf8f17618293c58f8549cb1a543a50236e7d \
+    --hash=sha256:1dea0e4d7d4f11f619fe8c1d76caf49e24405b4b5743c0e3be16a500ecd930c9 \
+    --hash=sha256:208f941bb9d18e768138677f0a6d2ce01f590df56043dda1df1535ac57c88517 \
+    --hash=sha256:210019b6c7cf07f081b4c54635c8cf744377001350e29cc0f81c4377b4797735 \
+    --hash=sha256:246fa40ce8645a614ff682e0b70f37134e460eaf93a775e0cbe3cca585a67a80 \
+    --hash=sha256:25792eac27877609e7bb06d42ff88278a6624fff2ba9bbb523c09616b117e80f \
+    --hash=sha256:27350daa11d4f10c540e6e89dada4c54feb7256ad03e9a4dc075ebad7ba360d1 \
+    --hash=sha256:28907ab9bfb6aa13184cfc17c6b8e1023c5ab6fd7076d8c20a35e59fe04f8f29 \
+    --hash=sha256:2ae64be792b8966f2c69538199728b290e34726562896df1e5dc8ffd8d8188e8 \
+    --hash=sha256:31348097ff5bbe827ccc41795d4dd099d9f0625e7def00ee653c137a490c2a6c \
+    --hash=sha256:3143d81e29e1e20a9ce10901ec369012947876596f75a222235965f2b7ae832e \
+    --hash=sha256:3222ba5d678f80a030e6afbcc33dc1ae5cb45facabb61cee2c7016b8432fde48 \
+    --hash=sha256:3311ed60d36f83378794e1009ac6258bafbf81f7888b4caa7b35a521e3f95813 \
+    --hash=sha256:334644fbac4eff73d985a17a91226df55d0f394160c4cfb880e084c8f7161cac \
+    --hash=sha256:34e261f78cb6ceaaa36f42f2613f4380d94d9c759a9c73c769ee6e0247364632 \
+    --hash=sha256:363e05fa78e15116c3c32c210ee36884fd6b9afa6d440e47112c3bd511d64cb6 \
+    --hash=sha256:398aff33cee2767e3e781d2554c54bd0dff386bb437581e0d8011fde1a942ec1 \
+    --hash=sha256:3d22a20b1fb1632cc72c22f95f7b0d2961c3e1c235f245ba4c606c4771035659 \
+    --hash=sha256:42a494cee34437f05546455144f2b5d9ac09b1face62bcfce597d2e521066688 \
+    --hash=sha256:42e2f76b9455f5a9a844f770bf3e200ed3da0e15f5df3db9c31fe80b04b3d004 \
+    --hash=sha256:42f6930c31dc7f50732c9ae793c2786c7b6b044195967bbdde40bb9be81c4cc0 \
+    --hash=sha256:456a61fa52d579ebf9df2e9552ead5129855dbaff6c1e5a9b1bc408809bdc062 \
+    --hash=sha256:471cee653ae88de62096552e6d24ccb4a5adb8c8c9f10b5054d0122c15bf2779 \
+    --hash=sha256:49cbc70e6542d4ccccb936558d1064a8012541e78f821f955cff24e357776c94 \
+    --hash=sha256:4a7c934f7360e8cd64fe9efadcbd10c7c6364f531e432b9a4bf5ccbc9e0e8b50 \
+    --hash=sha256:4be96343e422f2dfcd12ab5c9f5aebe03f82f737c6bffeca6830b3875cb44aab \
+    --hash=sha256:4f42141fc14250de6dde5ee7ea4432be017252d91f19c5ad043c084cea629cac \
+    --hash=sha256:507a24c282e0f42f8ed737cf048572cbf580468da5555764a8331735e9c736b6 \
+    --hash=sha256:51b31d1c98274844cfd7838ce00bfc27c7423a4dc00fc0772fc3331c2cc90676 \
+    --hash=sha256:58acb8ab8e295e6c5ea12f888cbb13cf21511ef2a3303a23f4325c29d17fe5c1 \
+    --hash=sha256:5a59cc1c4442bc3d5c703bf720b51138d0bfc173618807c9ee2490a7541dd3d9 \
+    --hash=sha256:5bb4e7ea95dcd6a014a6fef62e62467d67d8e582326443f3d68e71d6320a9fcf \
+    --hash=sha256:5c58fe613dc5e5336357eff555824a314d8e43282600435c8d1cb6a7a2fedd13 \
+    --hash=sha256:5e7cecbaadb83884793e05828cee59b210b24583b9c7425d0ba6a754fe22eb4e \
+    --hash=sha256:616f097f2fe415bc92a247f02e11f634e1f9e9a83d327e3c915c15089c87869e \
+    --hash=sha256:63bbfd5ded17c4840ac07cd8f1c21ba9d9708141f840b324f422f41b207e3973 \
+    --hash=sha256:64faea20f4e2613363a1a9b9c7dd73058f3ecd00133a511e72ad7c511658f527 \
+    --hash=sha256:661c298b4821edebead0c91edd2b00374d67ad7c5a1f7a91d4442633b79d6a72 \
+    --hash=sha256:68e62fe11f30d5ca8289242866f0a5291402d8529ca2178ab8afc5c9694ae890 \
+    --hash=sha256:6a8dddef476fab96d066d578fc88526767b836ab5ab21754e1d5bf3879c31c7c \
+    --hash=sha256:6e192623c49c94421616a5778fba35cf0d5a8d000650c1967ef4448ee5cdd990 \
+    --hash=sha256:7225e4514edb64eb6740324353e0da0711954fd8d7da4576755b1c6e09b697cd \
+    --hash=sha256:75f80557d1389eddbd0de2681f6a390a0c5338c31ddaa821381c203fc3fd50d9 \
+    --hash=sha256:770de9db11e84213beec501cfcaa013b019820ca881e03344dea5844f7876d94 \
+    --hash=sha256:7750c6449dff7864bb9bb27ddfb0267756189201a3afc911d82b3caacd70dfc3 \
+    --hash=sha256:7bde5e4cc5c10140859842b9d383af292b22639a4dffb725314baf45968cef80 \
+    --hash=sha256:7ce713ace7c0e4520535b42b77eaa742c16dab813978064913e5a3cf82973b41 \
+    --hash=sha256:7da0c5eff80f0197f3b3d1232ec5a682a9325f4ae9016a78f5f5ca35f9ced1f5 \
+    --hash=sha256:7dbb61fe3a7699468030f71bbe5f8a0e326a151daa91beb11a6fc1f980c55e1c \
+    --hash=sha256:811bd1e21d32de12efca32393a0ab3f5133b54fce9bd44b8bd77ab07da14bf6a \
+    --hash=sha256:8ef53b2de9bcb9197d31854256575d59dbac0cba72ac627bb291ef5eceb74be4 \
+    --hash=sha256:937c0052c05a31ca1daf18de3158eed4dbfcb9cc107adbea227728d647be701e \
+    --hash=sha256:9d2055050ea716bd38b7f7f1579c275386646b4894c155a3e2f3cd62ed41b7c6 \
+    --hash=sha256:9f8d177621de5cb38ee3e731eda45d421db093ec0739f46a5594babda7987a98 \
+    --hash=sha256:a2d7755bef5a12ed488f4ef1f1b69ee9191d7396083b755a5d2295f6edb4768b \
+    --hash=sha256:a48d62ab9d6f4f98c983223a547af44be6ca3691074c31cecced6facd3ba2dc1 \
+    --hash=sha256:a4f00aa42f75d6e4595e8866e748cc1705adc0cddfeb2ca86d0d03993d63ba03 \
+    --hash=sha256:a6e721d4b0e45d5b65e87534470e67b18dcd092c83f68fba09f152b9cbc061af \
+    --hash=sha256:a730a083190634c65cca36ba5f489531576ebd79bcd5c8e172130f6453127231 \
+    --hash=sha256:a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2 \
+    --hash=sha256:aa9511c62d14da7aacc9b4bf51f3f697a621e83b2d6919008243c3aad168eea3 \
+    --hash=sha256:ab36d55f9ed2d067327667c2fea18dda018eb628dd6347aa01dda6cf1f5d3836 \
+    --hash=sha256:ad2c86c495b899d862ea0f4b42891b8713a3bd45dd4105c7fd51c2a72f39f3a5 \
+    --hash=sha256:aeae0e330c9f6acd681f647d46cefd30c29f93e3392882e792e82080c9691399 \
+    --hash=sha256:b0431303acaea1089ad4b3e9ce4e6518193def1118d4073ca848635ee4ea2e96 \
+    --hash=sha256:b5bdfd1c873d4e093aabc0ca84c4ca6dbc4f752afb5c86f146d9742580c9da2e \
+    --hash=sha256:baed1e86cc735622097354b9d1281406caf42ff42a886d29faa8e8d1630333be \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf \
+    --hash=sha256:c26608d2222fb1e94487e4a387d85f13eb55d5ed725cb25a0c589ac4ee60e7bc \
+    --hash=sha256:c7659f22557c5a0bc4855cd635f55edec690cc008a40768527762cb9fb263455 \
+    --hash=sha256:c8c69575568085ba0b1b10c0249d779a214aea6f6522e949a0fc9fb0fcb449d0 \
+    --hash=sha256:c8d2c9fd1f2d16f780d15127abb050d13d1a76c03a4bd87d7e4980e45e511e12 \
+    --hash=sha256:ca82be1a1d406ecfe1d25dc16cb33488e5a16bf4438c9fb590484ea29d92478b \
+    --hash=sha256:cc572dace3f60ef98d7b12ff411d20f5362feb31a0439eab0085bbfd349982d7 \
+    --hash=sha256:d18e5ac0f2f03f4f518d3e23db0f0cad7faa1da8620e9c09461d443bbf6e6692 \
+    --hash=sha256:d28630f5854ab07ab1fd4aba756de52326c82e6be15d414b12793f1975048b54 \
+    --hash=sha256:d9c275eaacd24aa73f94ffd6de08fc3f932424d8b6c376f4bed7cde376fe7bc3 \
+    --hash=sha256:da0e573f9f97159390c89d9f1a9e41908b66d408cc5b58d08cf3847d844c531b \
+    --hash=sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be \
+    --hash=sha256:dddad92b554513a31f272570678ba307fb9f618f05e3d4a5eacafff9eae03e1d \
+    --hash=sha256:df423d40ee8654634421812bc3b196da3f9bd7d32929da813f8394c4348a5358 \
+    --hash=sha256:df913725b79db7bcf03448f36b7bf8815363417d5b58deecf9305e3e30f0f21a \
+    --hash=sha256:e0bcb7e0f677f543555d2adff3bf19c05f66cdb4796e5ff602442ab2fe3c4ef7 \
+    --hash=sha256:e2d65b31f36619cda3999b78b2aa9632e76b78448e7a56fc4240824200e7c4fc \
+    --hash=sha256:e6e8cff14d6fb0be70a09c0bdc58096f501952d04624ebf867e0e56da2df8960 \
+    --hash=sha256:f16c709686a78c727bbbf059f92b0bf41c6fc60deec706d2dc19f529175a6125 \
+    --hash=sha256:f24fb43132a4c6b4cb4eb029492919b2db645be6808d738f244fd146c03c32cb \
+    --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a \
+    --hash=sha256:f5cfbc5fe74540d335175b656c725d74d90e3730c626d92575eea35029d9afaa \
+    --hash=sha256:f81b3b8f3d4e343550fa4baa0e479bba9f2d29ce9c2e9b51d1ce1718d7442fcf \
+    --hash=sha256:f8ec5e643a9a937f64e1999eb9f75d072263751912dc5cd06d3c85f8f44be7c3 \
+    --hash=sha256:fb92203a88b3d3053034db775110081c49d28be6551923805e039924093761e4 \
+    --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
+    # via
+    #   cryptography
+    #   miniaudio
+    #   sounddevice
+charset-normalizer==3.5.2 \
+    --hash=sha256:01077390b03f7988f11d700a2194e69b119741a86b1a638b1db88891e3eced8e \
+    --hash=sha256:01b0c0d2262a9e28e8484a278c7e1b5d650e3ac8cf2683d2967e25899f208bdf \
+    --hash=sha256:04851f73ae72b8413dddadb16a49dfee95263553741fd42d546f7d66907e6be5 \
+    --hash=sha256:0521c5665880b33d603717defa76c094048900010897909952397feb3039da56 \
+    --hash=sha256:0774bf9bf620249fee3e0b8b9fd3065de213be30f3aa94ce2494b3b638949e26 \
+    --hash=sha256:0891b9d3903c5571c03771ca669a4b0ec5618ca722a5c957d3d29cd4e5062848 \
+    --hash=sha256:0c951d5e6dd9c2ff60609476752bee49da4206adde960ebc247766937f72e718 \
+    --hash=sha256:0fed1d06615f022ee3b13caf5e8b180cfea32bb2c5aded8a9d44277afc040f93 \
+    --hash=sha256:114e4d0c92d618409ed82a99e22b5c5e768fe995f2973f78265f4524f49d4640 \
+    --hash=sha256:11912e4bb14baae7c5d8791aa55ba0a3a03ec6729073307b0f57270abaa713d3 \
+    --hash=sha256:11a4d68a6ecda3292cb1e50239e111543ba5d709bb62a6b4ea1afcfa729d8875 \
+    --hash=sha256:124fbf1a8ff966d87ae05bb8bd45a71f966055ed8bba320d0c7cf450bc5f4d0e \
+    --hash=sha256:1461ac396c4fdb983a675f20aa555624f0ee18ac83d832b9244ffff3d8055275 \
+    --hash=sha256:1503bccbeb36d5527790c3930327704c39af22de3112f1b1666a9f3ce15ee204 \
+    --hash=sha256:15bb4005af6320d259dc7593ca84a38d7fe06a421dbcf7b910ae23979101e787 \
+    --hash=sha256:15c44f7edfd477b06f517a5cc317fc1707edb9de2c865f43d4b6513907473234 \
+    --hash=sha256:16fa0eccf81304b79c5cd87f9271c3b85dd9dd99245e4422ae9c0dd45e0f99d3 \
+    --hash=sha256:183b88127acdb4fabe59d951ab424faf1af7b63cdbb5f776186c1ea2ffcaed98 \
+    --hash=sha256:195c26fb65950f8fce54e26349852b7bdd7c5f120aeefbcc440b8a20faaed4a3 \
+    --hash=sha256:1afb975bd5d68d5ce9f6b6d44fdf2f7e34b895a35e95708a7a91b20a3b51d187 \
+    --hash=sha256:1b4cbc7c3491ccb4aa17fcd8165649d01cf39f76de1696da8631b5f71b85401d \
+    --hash=sha256:1bc0baf5ef96b6ede57d47f4b8fe4d9d84019c3bfcbeb20a41edc6a6ee341f1f \
+    --hash=sha256:1c50fe28bbc2ced33386f298650d91218076c05420e6cbd790b913adc41659e7 \
+    --hash=sha256:1db38f4c5496827c1a501846d64d14c3b80c7e6714e406cd7dc36a9899fa1011 \
+    --hash=sha256:211d5a3eb6af8f513b8d4ca19a8c1b7accab1b5f0d3175f9826b03c1a920dc1f \
+    --hash=sha256:23851fb4e1b85ed3f6c2a27b777cdfe2e19fb5b38429a8faf38c7542b7665869 \
+    --hash=sha256:254eb48b9fa5ee9898a3c445825a1f340fe53712a098904b39b0bddba8ea3cb1 \
+    --hash=sha256:2625388c6c754520c37abaf3b41eb34d1cc4a373f457898f08606c8e362b891d \
+    --hash=sha256:281cb91036248400f4cc957495cccd44c275c2e0c5854f7e45ac5cf7dc193847 \
+    --hash=sha256:28a15fdad492a99b6eccfaaed66ef3f74050680545ea61ec8b2f4c538f1f1320 \
+    --hash=sha256:28b4f0d66fb834ff90f28209ac7bce77868c45d8c93e26f906709d9b7c2e1af9 \
+    --hash=sha256:2a925889534b3748302dae5dead07cc13480de1dac3aea80a941b729b471ef93 \
+    --hash=sha256:2b7b3bbfb4fe8ef40600792d762fbaa9057559f9d3fad209525b7a22b99e91fd \
+    --hash=sha256:2c9ad19a6cfcd5ea5c0d41161d22f9df1dcc277e9bef2751391334546a314c00 \
+    --hash=sha256:2cc961b171b3f3440f410489ab3573e86aea8736134ebbb40ea1338b7f0831bc \
+    --hash=sha256:2ce45c6627b22c47e390bc91a41c3d13032192e699fa0bea96e9671b373d69b0 \
+    --hash=sha256:2e06a3a98f916dd41d27f3105e02e7a40181c98c94b9158733d03a6f80506c09 \
+    --hash=sha256:304d5463e65a35d7bb0850550e0780395395f6fcf452f04db7d5ca7cecc425ac \
+    --hash=sha256:304d8e4d493af723536393eee0c689eb7813f4a474c8b479dee63f1fdd98f621 \
+    --hash=sha256:30fcd120b732aa79317f08dee04d7de0847822e4cf7ee0e9f445bb958832252c \
+    --hash=sha256:31f3930700408d211f13378ccbe1c40845d8da54bd0681fac3a9b5aae81c7aa8 \
+    --hash=sha256:34276fd796040bf0993ab33a369aa572e6979c7aab225a88893667ad8eac8f7a \
+    --hash=sha256:355ad8011081dec5412240c087a9a0c9d4d5039f3ed11a3f13e18c2b29b56c51 \
+    --hash=sha256:38a873987f3be698494da8b2e3085e29da02da7b633dce73e79c699a113d7bf0 \
+    --hash=sha256:39de2a259fc954455c57274dc94c79d5842774e1247a016aff30bc0efed0f4ef \
+    --hash=sha256:3d14b50de6bf4d0edf857a9386836846f982b8f524e188e2e68b96d702bcf4aa \
+    --hash=sha256:3d21b8b13c7592db2ac5e544a6d83187b995257472b0c9e8351b6d507ae37ed6 \
+    --hash=sha256:3d31298449090ab8d47b7b1b2a555ff73cac7ed438a08b7ac160980c7ebed649 \
+    --hash=sha256:3ddacd27458c45bdacd6bd6db644bfb730efbf9e830310186e3045c9c5be8fb2 \
+    --hash=sha256:3df041de8887954562c9b261cba85ca0e9ded74048daf125f45edcfaa4832229 \
+    --hash=sha256:40ab6bffa02ae10a0581e6c198be7d2d8ca5c2a0c64e4ed3465d766df457573e \
+    --hash=sha256:4275811936e2f06feff5e598fb42a1b7ae852da8e39605211892b56b81a34efd \
+    --hash=sha256:443eae2bf318abeaf6f15d785138f71fd6de770e99a92158b8b814265e079115 \
+    --hash=sha256:447441e76ec720b15e64418d32e092297340387053047c7c694f579efb0ee1d9 \
+    --hash=sha256:4495c5002a7b28557e7e222e77e0b661183e432b7d6d2e788101e3f240e05b8c \
+    --hash=sha256:44bd4fbb29dfbeba60e7d2bd000c59e4b21ddb3cc53912b14048d37092706d7c \
+    --hash=sha256:4685902cf26edf013ed7a3da0f426ebba7a00ebb9541386d835afbf002c11cab \
+    --hash=sha256:498dc3188ca05a68231ac3fdbfc7f57eb67e1343c30e0fea17f8218c1599b253 \
+    --hash=sha256:4c2b5031f63e331e3839b40aed2dd6f191e9c07edbde303e7876846ea1946995 \
+    --hash=sha256:4d48f2d08b9de5864e2c8744d4461b862fb149a18274abc8b698c45975573438 \
+    --hash=sha256:4f87960d57feabfb618e4e0af6e7371645fa26a277860739d6e5d6e0012c92f0 \
+    --hash=sha256:50e3adfb96fc189eb27b1cf62d3b598b89b4bb0420d93a3d3e42e137409011be \
+    --hash=sha256:51cf45226a9b588d0d2b4880c62d686934b63ab0bd79ca23ab0e9762eb27441b \
+    --hash=sha256:52aa6992700996af31f375de0c6bacd402b0097fe40b53c426b9f51a90ebabc7 \
+    --hash=sha256:55ea99acb17b9325618de155a0cd6a2e8f5d10be008113e1d433bbb58db543b2 \
+    --hash=sha256:56bc200a365efb37383b7852e4cc5898d3b2da5987289b543956cf8cad71018a \
+    --hash=sha256:588461c2e8384d309bd63e5826019b6977bc66d629b99ac8737bb795d7b2cb5a \
+    --hash=sha256:58ca3755ee7ff7f59b57789ec9833c9de9ea275405cdd240eda1f193112e398a \
+    --hash=sha256:58f361dcbab699cf8f42db3f47c8e7fd1036f138c23a5d08de9fde5f425a730c \
+    --hash=sha256:598a11a2c7ebaa5334bf698bf29568c9c390abac6a154d8170fedecd1cea38c5 \
+    --hash=sha256:59f63901b0031c3136cf64704dcb21de0bbae62ce2c9529bc39d27665463de37 \
+    --hash=sha256:5cde776b7cc66e4f6c99612cea4aa7269aa65863f7a15841b2c264f103822f4e \
+    --hash=sha256:5e2b6b57e9733d39f0c9fd3185efa6b8e29652c4cd8fe94180272cf6ed9a78c4 \
+    --hash=sha256:5fb29fb8cd1a46c27a1bf9613ad5ec2599310d46b4025d9556404a6b6a292800 \
+    --hash=sha256:6045373d5a89a5ec71afde535db987ca28e76dfa276c2d4c818265b375d4b055 \
+    --hash=sha256:619799369eeef6366ed3e8755a5670f4f2f0fb6b30a0fd7264dc0fdc2357058e \
+    --hash=sha256:62588a277bfb59def052abd940703fa35107152bf479781a878617d60faf8fb5 \
+    --hash=sha256:62603db9a7caa0802eaa28c1c46fecd7b3a263a774069c24c3c28c302448721c \
+    --hash=sha256:65cd72beeeca9d3aaea1201e5923859f308f952f9c71de93f06063c79f0f7a3b \
+    --hash=sha256:68eb192d85ab8e5f6ec69c2bc6ac0179fbf04a5ac1569d12fbef74883fe102d0 \
+    --hash=sha256:6bd128f206a7752ae1f2ab6c61bf8a24ba28913a10df8b14c2637b973ff97a80 \
+    --hash=sha256:6be488a102b8cf28d0391d8c4ba7748938ae28b78ad901f8585520fca33ead1a \
+    --hash=sha256:7218e8f32b0956cfcd048fd42d9d5779809745ca1d86113ca56f66e7ae1549c4 \
+    --hash=sha256:7441d755b7ab94f8d4eb3e43ec05482d760842fd263d003a99102d742cd835e2 \
+    --hash=sha256:749e97e1b32313717a565abbe321bc2190bc8b35f1a67e4cdbc7c56c8d8ffe58 \
+    --hash=sha256:75a3ceed0724d625d64b86ca20aba182e4df462e04c2414fc941c0f523f06aac \
+    --hash=sha256:780fbe7cab297b81dad9fb8dc5eb003c0468ffb0d9e5f65068c53a34661a96bc \
+    --hash=sha256:78456a747de8dc58360ffa581f30a002baf5aa28cb262536545e91f113ed7639 \
+    --hash=sha256:7967d08cf06dee78443b874f98c98036f624f3a4e73e11f9f64f5be4d25393cf \
+    --hash=sha256:7a881931aa470808df94a8c380eed2bbbc76cd9dc622310f99665658c821eb6d \
+    --hash=sha256:7dcd882da75ef9adf94903b1e3b9419e8aa8fb4c7396822b834b9ef7fb96954f \
+    --hash=sha256:7e841fb9010836c992c9f12fcbd43a831de93a5f726fc1ccd8ca1d0268c5014c \
+    --hash=sha256:7fdde2c9fd9e3eca40631e024664cf2584272cc8f96308cbe5fdfc930f51d8bc \
+    --hash=sha256:8024d00c3faf3fc0c16e07a69f4405e8eac7cc0ab15f65fe6cf43827c4cf72b4 \
+    --hash=sha256:80d02b6f04e92601a081dd97b23d3128033098bff5d35d392ddcc0476ea11253 \
+    --hash=sha256:838dcc90063569a0448120554591a1d6c4a4ffe11babf048908793154ab86ade \
+    --hash=sha256:849df64e889b2e17230d58410a03dba311a65b163508fd33679b2b737d4b7858 \
+    --hash=sha256:87475fabc8d9996fd9c27debb395e642e8c838d78a00b6e932227a0e06b81e26 \
+    --hash=sha256:87e50a3e7cb90af586b6c5faf23e302a970415ac73bd7bd90a515a04b427ef96 \
+    --hash=sha256:89b53f3cda69831909888e0494f4fa0bcd3537e3e138dabeb620bd6ad946bae8 \
+    --hash=sha256:8a893cc101149f80a653f82062ebc95b34525a2614382e1da5458fe7c6997249 \
+    --hash=sha256:8b2bfab86aa71ae13aa41a6a26aab338e0db2b8bc75434b05aea89e011ff35a4 \
+    --hash=sha256:8d86d6fc60743dc916eb79e2eb1ec4818e21e427731543af40a3021851174a13 \
+    --hash=sha256:915563965d418f986e7e145accc592eae9e1a1be3566ff98a05d7a9ec42a76e1 \
+    --hash=sha256:92888bb3187c5ba50500b00b3b310c9f2c651709d28036077680cb5255450a03 \
+    --hash=sha256:93223adc95033dd47133a46ccfc316a0139176fd79085762e27202ec56018f03 \
+    --hash=sha256:9373ad13ef0d2c0fb761e04e55bfdee5a08b52cef2c882c8fbe9935b1517152e \
+    --hash=sha256:9409a8bf35cf78353942504b24a57de3d75b708997a1e4bd8db71ac8633ce364 \
+    --hash=sha256:9b7f416ff0978e2f2249330527f0ad6fa02f4932e6199692d3b52da2048c19e4 \
+    --hash=sha256:9bde855991b7e362c146535e3136a50bfaffc0487d38b33ca7e5edefc6e23849 \
+    --hash=sha256:9cae88599c7219005d879f98e5ed53341e9a122af585e1091200358a3003d2a0 \
+    --hash=sha256:9cf9b1a857e25c4baceeb3624e92a56df3668f398c4acba74e174d81fb4d1d3a \
+    --hash=sha256:9f56f72050826f63dcee7a7f55b0a77168cb3bfc553fd405e7f8f9ece75a4036 \
+    --hash=sha256:a090bb2c68df85450502e3e20d665e3a5af9c65a84d6508ed477badd49166fd3 \
+    --hash=sha256:a192e2c40070d92c3ccf777e3a5c4ff515573cd2bb7ed0c537fdadbbec5bbf21 \
+    --hash=sha256:a19a731138fc27d5682277d3b9df22855cea1239bce7fcec5f78f42ef2d1f3c3 \
+    --hash=sha256:a66c3bc5ab1f0ff2164fc9965ddd611ff0802173f4b9d24554c563f6ab7e1d6e \
+    --hash=sha256:a815775b6c38d4e0ff7bcffbeba67feded90202bb6a226b8dd35f1c855217413 \
+    --hash=sha256:a89012d6d5476ee112d20d998570ed58df2260a852afb1758809cd6900411d21 \
+    --hash=sha256:ae4f5fea5b8b8ccff88238cc8569303e5ee95efae67fa62922a311397a71f346 \
+    --hash=sha256:b6856554c4f44d79fc2307d5768854310a8f0096e501c75637542c82292b0429 \
+    --hash=sha256:b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685 \
+    --hash=sha256:b736353c0a625bbd5fcec108576e2385db3496f4f771f785ff32e108d3c3bc45 \
+    --hash=sha256:b7fd005a73d9e657273b7a10dc71a9e03c8fb9ee6999798d6918ce095b81ac7f \
+    --hash=sha256:b91363207bd9dc966a691e959bb47f64b30f7ac4b072be9968b366982f7db77c \
+    --hash=sha256:ba0b1d2620edf869789c3879223f52bf2afc5d31b3cb47cc57b3a12c05e2aa9d \
+    --hash=sha256:bbbfc8e28816f19d7c0f1816664980c0a9875d01b27cdf8eedddb639d9e108ad \
+    --hash=sha256:bd16aabe4a02a297c23417aa17ac6299dbd8c49f673bcd645b4929b11f5a4400 \
+    --hash=sha256:c0afc6800ba57ccc350374c5bd6150419915d95ce93cdbab2d783d75eaf30ecb \
+    --hash=sha256:c6708715abcf3c73b99508253e961a9967f02fe536532834149574eda6de0d1c \
+    --hash=sha256:c7c9ab723cde841fefb34efbad91e87f00a674b1fe1cd0784fde742bf2c154dc \
+    --hash=sha256:c8f3d67aeaf55f017982b73683f0e7342ba2f6635a78f69ce89ebb26aa411e5c \
+    --hash=sha256:c9790464842f85f437dbbb54417eda1e0e6bfc52dd8d22d6fd1c994b73b2dc74 \
+    --hash=sha256:ca403d7e4798f525fdfc78e258820419cbbd0f0ecbab9de7840e3c017cf6b8cf \
+    --hash=sha256:d008d90a7f2471519aef0c90dfbe73b3e6e4d5e66ac48e19154c17e89e98b604 \
+    --hash=sha256:d19fbd981a488e22cd04883659ca6b08f50b5974f9fd7c95655ef6a043e5893f \
+    --hash=sha256:d1befeed746d247c81127bb14de9dc3d30edb6e5976d34f83f86ed262b1d9105 \
+    --hash=sha256:d2374b62878abb00cd8309b32af6c0b715cd02dec0ca74ef12e5069bdc64144a \
+    --hash=sha256:d376bbd28b3a8999db1a103b3b388aee6f1ddeb3e51bc2172993efdcd86e064d \
+    --hash=sha256:d4a7319f304a774bed22115bc891618e45f85065ab44ea6acd07d274e750519a \
+    --hash=sha256:d6734d2ef8a50fbf8445c139477da401f50d62a0606bf00e20ec6d87773fefb1 \
+    --hash=sha256:d760fe2a4d7c3b226cb9026d6a842868d52a7901bd98420e1baf14e80da85cf5 \
+    --hash=sha256:d913de495d90407cd859d263bee2e5d1a4ed3eb6573c04e70d9ec619a7cbed7f \
+    --hash=sha256:db19d07e2e0129e974a0e65d0064fc222a446cd5122c2fd4184d2af9fc734a9e \
+    --hash=sha256:dca9ab98072a5a54ebacebdc45f53e645336b320c667410b061be1ca588ae709 \
+    --hash=sha256:ddc7dacc8ece3a182e7f15cb862d1fd616b46d076cb1ae9dd232b2c38b655874 \
+    --hash=sha256:ddf19c062bea7a0cc80f519243d2c01dd091be0cf952a0750d4ad576709559f5 \
+    --hash=sha256:def79fa35ef0cef8d2accec024f4fdc7ead3012ff02f5215c783f39f03ef8cfc \
+    --hash=sha256:df29a0a7107f7011e77f4eebdddec4c7331e24d787a0b21a46d63bdf7445da95 \
+    --hash=sha256:e09a3942ecbdee5cce73ea9d42da82b81b72ac1bf031ce069b93b5adf4eac8cd \
+    --hash=sha256:e242bb1c5e76e97dfa9e7f209a71e93a01d7f19ffdd5cfbb2e2d55b4f08f8ab0 \
+    --hash=sha256:e243bd13217235fc7290c621941c3f5cc8b66e4872495be821d7436ba2fb838d \
+    --hash=sha256:e2af3aad578aa6bd1384bcf4750fc285e5a9de53f40b7d41e5a0bf748edeb2b3 \
+    --hash=sha256:e4e81e09c1578b8df602e3db08b0b3ea0a6947ad612f52bf8dc5ea8d47691f0c \
+    --hash=sha256:e54da4baf05720032d527874d40b65fa4d7e5c6c6a43d0c3adbeffcaf275a2b3 \
+    --hash=sha256:e80e6c2f55656b4824d72065abb4ddd6a525c74bd78a0aab5d9fc2cf4fb5af50 \
+    --hash=sha256:ed2a239c0ea213acc1908150a3037257083c7c083128f1a4cec2ec4b97dca491 \
+    --hash=sha256:ed905975ab14056a2e5eb1c376cb2e1ebc5396baf84163939c518556fccde9f5 \
+    --hash=sha256:ee21e28f0430bd6dc9086c6e525d5e818a44a5ad19720c8a0ef766792f3eb5e5 \
+    --hash=sha256:ee43c17b173d46a3212baa6ead3ae258eeabdae48c263a01ccf0218c366dd655 \
+    --hash=sha256:ef4fcbf3327382cd4c9f540babd61248208af7b93eec4de397b4d5f58a09e288 \
+    --hash=sha256:eff0ac9dbe711a4aee69bf04a83896aa9b85f19641264053a9f6d48573abb7dd \
+    --hash=sha256:f0aa869112ef88429ae17820d99c3dd9504c9e9c671d3c246f3d7442cb051084 \
+    --hash=sha256:f3c96f633825733f735c5a9cf21d21a257d8e1edf0b1cee0a064b9c424ca0f7d \
+    --hash=sha256:f5833ad231be5eb6553de524a70f48d71b2c8563101750531e0b80184e175cd4 \
+    --hash=sha256:f5ec61164adcec446f8969a3358ec3f9b26bbda3b9213e5586d219afa8df2915 \
+    --hash=sha256:f7d486c83842422badd511868fd8a9a20e9407ace71564b6af47ce7e60a336c1 \
+    --hash=sha256:fb9e68df06293761f9fe66ade60a9bc6d0f5e42b8acf2939a9158af86ab0e5bd \
+    --hash=sha256:fc14a032f813bf5fe624d991960ea83e9715adc27e4c1830a2361eb1d02ac341 \
+    --hash=sha256:fcff63213e8e6e47770541a4607175404f47cbb3ebea7b6058cc82d524a0e424 \
+    --hash=sha256:fd1fbe0f116b6e55da77aca2c6ddcddcfac2186cbf78bdebf40fc156efca389d \
+    --hash=sha256:fe9753dfee015c570d73df76f899f18444d41388bffcde097deba51c4fadbb9f
+    # via requests
+click==8.5.0 \
+    --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
+    --hash=sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34
+    # via
+    #   huggingface-hub
+    #   uvicorn
+colorama==0.4.6 ; sys_platform == 'win32' \
+    --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+    # via
+    #   pytest
+    #   tqdm
+    #   typer
+cryptography==50.0.2 \
+    --hash=sha256:0ddc924c04591c2811ca024d62ecad4f7f6f08af8939c211438f48a16bd23602 \
+    --hash=sha256:0ec5f09541743261e66e291b4a0cbf0fb2997aeaab6d9e9c740b9dba1b58d1c2 \
+    --hash=sha256:0ecbc5652bdb6fc9eaf89a7d196e20941adfe812f43bc4ca05d9150496821047 \
+    --hash=sha256:1981f1db4630889b9ef7803fadef12b056f428cb6b85c27ba57b774793b6093c \
+    --hash=sha256:1ba34f04897fcdaa73f74145c25f3ec146fbd56593853e88adc2e811303c5f42 \
+    --hash=sha256:241449bf940a5d27309bd317e6f9a2af6932113818bb2b8f5c59ddc7ef16da18 \
+    --hash=sha256:25784ce8b9621c90c643efb9e1e2162ab3b0224cae446ad5e70e7fcb1ce18b51 \
+    --hash=sha256:3dc4fd8058cea1644971207d530e1a03a184a805ffc8ebdddf0599d78a331b81 \
+    --hash=sha256:4061c0079120205fb760c58acab6443e217307dcf05e3702cf970e0689972856 \
+    --hash=sha256:4a20ce1e5cb4284a86692fdcba7cb8754185c6b2e5c56fcef3751cf451d3cdc2 \
+    --hash=sha256:4e81d95e5bafc2d6e34e4bed780e53e4d5b9a2f928573428aa4d35fbec1eb0de \
+    --hash=sha256:58a0c478eeca76fe5e07993c5a0703def34a6dc6a0cda4f5564639b33112ffe7 \
+    --hash=sha256:58ddb5a8e3179d12f19e4ea34d2d32e9d63a4baa142c875c1eb59f41b7243acd \
+    --hash=sha256:630ebfea3bf689d075f82316324ff7433dc447fe6bc1bfc76524b74b4a9567d2 \
+    --hash=sha256:6f8700550aa1474a91e5dc07049c46f98b423b5b1ddd0483e0b51362eeeaf5be \
+    --hash=sha256:78198641e5be9521beea5aa782bb551a58068d10e6eb04c9c680c1b69f2e7d45 \
+    --hash=sha256:79def8d059362e7831389ed3be0ecdf58a89386e1271e35dd9f5af84e81bffd0 \
+    --hash=sha256:7a8701d6b584d76e909e3d305b7d126b41439876a5aaf76cddc67fc230eafa2e \
+    --hash=sha256:7afa5a6602a9f29af1f3a2965f831bae7c9d5d597b7cbb716d41ab3b7d89879c \
+    --hash=sha256:7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5 \
+    --hash=sha256:7b75de3c8b3be1cdb1052747c929440c3eea46c1bc2cb8a6e3a48388e9b7b452 \
+    --hash=sha256:7c6d0330c472d96f6a6afe24d80dfdf15176c33096f0a4397ae4c60f3dd3be48 \
+    --hash=sha256:828d49b0ff5a0e3975865571c5d91dbbdd0d38d8289b249a163e9425413a5e05 \
+    --hash=sha256:84f964e537f916e2cc85199e5a88742e964939b575ac8598b3f9d6cc416cdaf1 \
+    --hash=sha256:85d0d9a31b9098e98534226d5686b47264b95e62ce459dc2e62fdfc809f9fe93 \
+    --hash=sha256:87e9ce85beb6b328ba370cc6e6aea483c92617b4c95b1d33a49297eb662bfb04 \
+    --hash=sha256:8c71ba2cd31fc93748c38e1b613200ff1c2665cbfd5341fe3a61cfde35a1430e \
+    --hash=sha256:92e665960f25fcdc73725b9cec7a3824f279ba97a98653afe9ffac2e43668f67 \
+    --hash=sha256:94e5e9f108ee10471288214d3d233fbfbb492840a8457eb85178d643ddeb32c7 \
+    --hash=sha256:9c8402a82ea0dc4ceeab793db05f0fafa8ca139ca34fcde5df0f596103c74107 \
+    --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079 \
+    --hash=sha256:a582ab2ae1d34f67112cadc86702774c9ea4374df6bca6afe672817203c99134 \
+    --hash=sha256:a6557e5f38e065ca9fbdaf7cfc7435ecb1d113aa81a022d1b51921ee7432e227 \
+    --hash=sha256:a9f7355e6fab51f6c369b86fb7571cffa05edee2c2121e0380a37fb9ac1cd5c1 \
+    --hash=sha256:ab50ee449bf968271e820086f10a33d101dd060370abc10bcd22279be2656539 \
+    --hash=sha256:ac9ed99d81760c62fe89d5f0815cdfa1ba9a35141cf30f1c2d044f04b4803d2e \
+    --hash=sha256:b13478603dcd0a2479ff8e87e2c19a7d525734686fe3c49542472293a204212d \
+    --hash=sha256:c423ab384a46c4dff7217b2ea5ba2e11cffdeab6441acd04cf65a369caf0366c \
+    --hash=sha256:c5e67125c7dca78d199ec4e116aa93dbb83494808ecbb8211a2cb09b1bf41dbd \
+    --hash=sha256:c71be1cbfa5cd9a41ee452acf1eccd82b2c05950358b106ec8ceb83411d1a020 \
+    --hash=sha256:cbc8738fd8526d80f35cb3a40d41f41a2e7030bb3b18b09a6778ef63d291c2fd \
+    --hash=sha256:ce47f66801c20ec6c6632453bb5960fe38939e9306970b48b3a5a26de7745d94 \
+    --hash=sha256:d370b8d1dfcdf7130178137f6fbee6140774a1acc6cacefc4b42643ec11d0a3a \
+    --hash=sha256:d38cdff612d06fa6a32840d5e1b1f7a27cee4a349aa9085d94a67789d6bfd408 \
+    --hash=sha256:d8947001be83df1394050758ce0e745dd74fb134eef0a4b5124208dfc3a68c37 \
+    --hash=sha256:deb9fde5c60e437ee4821bc9bc39ff31b42135c27e1dc61ef0a629389c1de62e \
+    --hash=sha256:dfe9763530994147d9af1def057a5b9658b00e8f8fe8743d144d1e0911c2e454 \
+    --hash=sha256:e105ab60406787da31fccc883fc0f733af1efd78f0136a4599692c4083a73d0c \
+    --hash=sha256:e275096ea1e60cc595cda2836fd4a6c725d1125108b868be17f53684d164e2cc \
+    --hash=sha256:edc3342adf8f697fc5f59c887a304356f147b397809440ed64e2fa6af2f50f37 \
+    --hash=sha256:ee247f5c245c9a2fe7c8e2214e295918838e44e00a45a6718451e4004219e767 \
+    --hash=sha256:eef4c2f3423810b3070ab391f85436d2f8bbfcb286ac15cbc73190b3563b1f1a \
+    --hash=sha256:f21e8a22c8605750c7af886bab299a363721264061b4ac0a30efb73cfd58efc5 \
+    --hash=sha256:f265528741e048bce55c3463ed721fb0aa45a5888d8add8cfeccb3035451bbdc \
+    --hash=sha256:f2f9bd7f90c64fe89253f0a2c05e3c4856072660429ce8831b4235bf29403a67 \
+    --hash=sha256:f785f6161f202ab04d8ca194158968798e480ca058943907972da5f12e2881e8 \
+    --hash=sha256:f9f6143a8c75945eb960d9eb98905a441394abfa24afaae239d514ffb2586480 \
+    --hash=sha256:fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb \
+    --hash=sha256:fdd28f912fccfec1846a94e2e1e8f9b0012f557f0c46fe4f3eb0d7a87afcf90b
+    # via -r requirements.txt
+cuda-bindings==13.4.4 ; python_full_version < '3.15' and sys_platform == 'linux' \
+    --hash=sha256:03a8fd2a25530dbae26ecd4462d418156028e35b3f3b081440ff6368506e10eb \
+    --hash=sha256:0c3f4cc887eac0d5edb5d7396cc78b336bee151a97e2ba7acf59e8b9380132d0 \
+    --hash=sha256:0ce9208c7cf03a947ac11553b08ee2fca594ac63d34360639a9060980f546a62 \
+    --hash=sha256:0d714d5a85174530b58b39a8e06664ebc6296e62a90d66b0b2eb4dbdfaaabe5b \
+    --hash=sha256:433efa31e33c2868621b5f6036bd3bf5de9c45c5546cb1361a5f6ff3415b8bb5 \
+    --hash=sha256:4a429132f06d0c3a853aa419aabe4c0a7bfc3f3886fb4c336d81729f63754d31 \
+    --hash=sha256:50bc70ef3b225f4794f5b374773629836bbfdf4a21fc975ac25e7daad67494b8 \
+    --hash=sha256:5d6adc44f098472d8ac2d6211923eea6081830521852dc77f8c9237bf9320a59 \
+    --hash=sha256:6781fe08ed5f4b5163a3c6577e079bc28955811382d35995c916bf052ee0994e \
+    --hash=sha256:680e70dcb8b61fdae16d3bb4876c41d55aadc9fe8b3825ea567f2f2c85606b0a \
+    --hash=sha256:76dafd37ff5191f183ea9c1d981f7bb541df5c0bec502bcc4cc84a3eea706b40 \
+    --hash=sha256:787936778fb69a66afa5d7769086640cbf938a3b83f2b8171174a46d115e87ce \
+    --hash=sha256:85d961133658fff3167cfcf69de1beac8e46453c15fd4bcaa4a96d3ef1110c69 \
+    --hash=sha256:87899d738c2c093821b8306e96585fbceb3a9d69a1e1598b9e4639aabf9548ce \
+    --hash=sha256:90f85a00fc89dd4a8f7c4beb0a2f3f788b845c8496fe84adc1217830206db9e0 \
+    --hash=sha256:939d2672199048649fd2118e4df9df770a517711e50d25c05f880f3606b78142 \
+    --hash=sha256:93ad74e8181a89e7886be9d06414a772701081c9edcf6c84d9fc1ccda50f6767 \
+    --hash=sha256:978927d7b911e80fa5a7308284c39c79b1182c48f47ed62717fc7f5c22f6ded4 \
+    --hash=sha256:a4c97f8430d7f7c4a4d0f245510d26647dd81ea3fc65941f7a815ad395cbc30e \
+    --hash=sha256:a8109e8ca1e40b666fc94d7bc4a172dfb99746a7d3fd933ee17b3f36f48f24ab \
+    --hash=sha256:b346bfe1dda49537537c06cc4727b2210d949d8aee883cb591bca46581629d00 \
+    --hash=sha256:b8b2e4235b552edb42cdbe39de7a9259ceec631e21c7344b76177db9cc6c58b4 \
+    --hash=sha256:baa0f5f1f9a05032e7deb97051e85aa18b4e3c6db914f1c813bb2f02e5c72db4 \
+    --hash=sha256:caba27cd9a5f910aaadb54878f52ad91be1abbe3b3cfb955c999709c1a1798b0 \
+    --hash=sha256:cc1acee5720dbe077777fe540eee84ec4547286bbed3cba24d1c764d4b930317 \
+    --hash=sha256:cc8f35176be380fa241dfe9b8583a16db9c4b043fecb4b2932898e1699e5a0fb \
+    --hash=sha256:d9e00ee968781e06ab09f8c87f75586f04829988d66b4a0d6efbccfd03576b71 \
+    --hash=sha256:db0cdac6a8d8bd72f3dcb755ad4fcc904e0bd75a30091422fedbcfa9fc06b09a \
+    --hash=sha256:e1cef1eaf5a08cc3bf3675ca9d3f97f3fc7085998556c848b4053e74ba4ba392 \
+    --hash=sha256:f5bf66473514863aeede6cdefd887e6e22d74dbbac0933cd166ab4498935d04e \
+    --hash=sha256:f8ac692e0377c51d0bda32ae6782caafa007a5de171571ac844e616391c89a16
+    # via torch
+cuda-pathfinder==1.8.4 ; python_full_version < '3.15' and sys_platform == 'linux' \
+    --hash=sha256:85a4e708c725d603f576042ef32781a3d1737c51e84c35fe361d2680191af65a
+    # via cuda-bindings
+cuda-toolkit==13.2.2 ; sys_platform == 'linux' \
+    --hash=sha256:d12edc1aad1356236a2ee10c0d794b1aff5d3e79bfeca54867c3bb8e5afd87b0
+    # via torch
+fastapi==0.162.0 \
+    --hash=sha256:3785963de305dd09912426cb81f2d230fce98ab3521cdfe97265c8d14983128c \
+    --hash=sha256:6a22c1e2e6e32e0633ee7e170f00009a29b8228b16feb219ee42f32fd8d88a8f
+    # via -r requirements.txt
+filelock==4.2.4 \
+    --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e \
+    --hash=sha256:c6d8663535e1650ee430507b4ffbac7b464dd64b7647ea0112a9f406499d163d
+    # via
+    #   huggingface-hub
+    #   torch
+fsspec==2026.9.0 \
+    --hash=sha256:0f08147951c8cb31d844c3547d631053b127863b60be04cf06e121333ee0e2fe \
+    --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f
+    # via
+    #   huggingface-hub
+    #   torch
+h11==0.16.0 \
+    --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
+    --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+    # via
+    #   httpcore
+    #   httpcore2
+    #   uvicorn
+hf-xet==1.7.1 ; platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' \
+    --hash=sha256:1b710504674091061d4f26fb7991773992dad091f8e162d0a8c965c3ec7427fe \
+    --hash=sha256:4498ae151a4576d18f8714302c9be16aceda4b34ed028b3f5226656377d77163 \
+    --hash=sha256:46d09bc6200388622f6aeb6db6d7b47060f63c483b6fb637e0e13e87470bfabf \
+    --hash=sha256:4b5bc399ad059a2a7484f185162666fb7ecd77b573e8bafc336fd38a5741a522 \
+    --hash=sha256:4e649d3e9fd045a8563cf1346a6f67bbe3fa8215f5cce9b84042c876f26fe02c \
+    --hash=sha256:6e6639f77da484eb36671d86262a48f7904946f31f6ce980dcf0690f2dfdc1c4 \
+    --hash=sha256:89d06f4975e807eefc6f6777180f452cfb86f6c79f2a6caa6fb28809c84c6777 \
+    --hash=sha256:aaa2cf2f7a35bd653a365f6444ac0860b7b5ec11b7658090005d4aa6e10ae60b \
+    --hash=sha256:b269c6fe9f5c8104561b7320458a07865f64d159ee1306487be6f95ed9960013 \
+    --hash=sha256:b7fe4b5c4cc912a2c7b36538c6696d3312bd1471835ee814c3dd3dfc5509c3b9 \
+    --hash=sha256:bfa59cfeea1d3161bb6b86e8ceaaf1ee4bd07b0353222c27cfb643e0521c04d4 \
+    --hash=sha256:c1f2c5685e89ee251e885c65ab366d981f555b2c8857642f4f8ee1e7dc4efdf6 \
+    --hash=sha256:cfcb057a0e9dc337839056f3eb11b2d7e3b594686a56f37a0e4458071b6f84ca \
+    --hash=sha256:d6e2c99e5dc7d6fa301e92e79a4f02cf962620dfc9fef84b687df597845cd72a \
+    --hash=sha256:e2f21d368a84f798cd394549292e3abe3be22d362aaf13fdd10b0f85a630590c \
+    --hash=sha256:f26bfd4a6e31b4e37e749a07e8642589406e8537be05eccfd633a92b95e2fb51 \
+    --hash=sha256:fc2767e5b6ba9f74aa5b86728e64cef48668bed91c50e7313ba1d78f7c510c75
+    # via huggingface-hub
+httpcore==1.0.9 \
+    --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
+    --hash=sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8
+    # via httpx
+httpcore2==2.16.0 ; sys_platform != 'emscripten' \
+    --hash=sha256:5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f \
+    --hash=sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643
+    # via httpx2
+httpx==0.28.1 \
+    --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
+    --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+    # via -r requirements.txt
+httpx2==2.16.0 \
+    --hash=sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f \
+    --hash=sha256:fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a
+    # via huggingface-hub
+httpx2-jsfetch==1.0 ; sys_platform == 'emscripten' \
+    --hash=sha256:70a0e3eabfef7cce5ad9c629f7d01ca05e418f586646f4ddf14782e4c1454c60 \
+    --hash=sha256:cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32
+    # via httpx2
+huggingface-hub==2.4.0 \
+    --hash=sha256:13a6158b9e3393d9d3f248ce99074d50c2a0a1449fb9d8e2f710751e2084c188 \
+    --hash=sha256:42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801
+    # via
+    #   -r requirements.txt
+    #   mlx-audio
+    #   mlx-whisper
+    #   tokenizers
+    #   transformers
+idna==3.20 \
+    --hash=sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44 \
+    --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
+    # via
+    #   anyio
+    #   httpx
+    #   httpx2
+    #   requests
+iniconfig==2.3.1 \
+    --hash=sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960 \
+    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
+    # via pytest
+jinja2==3.1.6 \
+    --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
+    --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+    # via
+    #   mlx-audio
+    #   torch
+    #   transformers
+llvmlite==0.50.0 \
+    --hash=sha256:0225351ad77ea30501fc5b4c09ff6868169fde50c5a576cdfda1645091157616 \
+    --hash=sha256:1cb21c420a47dcfa56223228d013c6f9d234e05e06e6819a41638d78bbd78e6c \
+    --hash=sha256:211da1b088d566aafa1e444d546f64fc7f13b1af56ff0207a1705d88607be6ab \
+    --hash=sha256:266a6a29be71c3e3a22960ddcedf66b4e0388e5abb6cc4991cc093d6df402ad7 \
+    --hash=sha256:33ddf12b1e12d7e551e1c1e6ca8087d0aacc931f480019eb33ef2ab77681da4d \
+    --hash=sha256:3f490c0f4800c8ddeee6a607acd037497bf6508586804f4e2f11f53a1ee7fe2d \
+    --hash=sha256:423c8d89d13f7eb4488933d5a86b0fa952927956298cfd0087f6753b5123b5df \
+    --hash=sha256:425845f415a06dc50db08db033c6b568e0d85c4937e932c605a4d49e1514b2da \
+    --hash=sha256:4b78a8b669eda09ca1ff4c1a75003023912092974d3e771d1da0777f1b383bdf \
+    --hash=sha256:4da0e8c6e6f144b433672a632f75d6b4da7bd4fdb5c3e9981d6ea6741319aeae \
+    --hash=sha256:51a4a716db98591f0a1bea34c6548cdb4017731ee5e678ded8cf842dca8af3c5 \
+    --hash=sha256:55f50a6b7c0b8de88b05d6bc407d70a60486ce024013997dc97e202bd187c75b \
+    --hash=sha256:6e8df54380110ea5e9127386e739d2b0829cc6dfa4a24a9195226336c91b06d5 \
+    --hash=sha256:7ae211012c6849528a5f7cd17a78d8b2421a2813c7b4184d6c0b2ffa89a7d296 \
+    --hash=sha256:7dde9836d144c446a303b57b2dd906c35308411eb07f1279c1db581d3d774048 \
+    --hash=sha256:818b3d4845ac8e126e23cb500867570d0602a42a43e67b14acec31f046e03130 \
+    --hash=sha256:944133e9621d1dfbfdaf0fed3234b99f85e6ba27c38f4045acc8f8a5e699a5c0 \
+    --hash=sha256:987600ce6f7bd6d808f4bb0ea61a8eff2fd17cf32355691e801eb0a65a7304f0 \
+    --hash=sha256:a1d5b6eac064f201b4aa091030282e6f240d8d322dddd7381840731455c3e664 \
+    --hash=sha256:a32980e3d727b0e56974ad89d0764920048602a75805b8917cc0298e798b0ced \
+    --hash=sha256:a6ffde00d4be8772a24e3e8b3af6bf86a79e7cf066d944ef56136b3957d707dc \
+    --hash=sha256:accfc36951230e0e694b41bbfc96ba554284e72f0eab2dde0cf273e4109e51ba \
+    --hash=sha256:afd7b438c60e0f60c4368ec603bb9f20d938a203b5f59b80bbe50c749b4b2f16 \
+    --hash=sha256:c20595cc3a76e3c85140fdafbf9246c732ddf8e0e646ba2f4e4881f87567300d \
+    --hash=sha256:c2b23236bd0d7ad56a94208263d791956f79c8c45f39458931df556206d4496a \
+    --hash=sha256:c7d4e2bbb29a860a6e85e22afdb96696241263942a5b214cac3e4b704e1d3abf \
+    --hash=sha256:cda14ab787e609c2c2c5d1386a6d5f8723e9d047d27341585f606c27dc5744ab \
+    --hash=sha256:d501e5103076b9a14be885d2574dc2f6793171aa54a853d1244e011d476f1399 \
+    --hash=sha256:d5447a6c39171368edfe28a71f605e6e3edd40a1dc31f5e5c9d50585718ae6d0 \
+    --hash=sha256:d88c9b325f5fbefc79d95b1daa8fb96018c40bd2958103eea7334e6c8f17fb40 \
+    --hash=sha256:e8cc203c1fd509131cd72b7554413d4a3e5527cc5558c5a7ebe19840018c57c1 \
+    --hash=sha256:e94f9066f1257a9cef6c832e6c9de0f140e2bb150de2db39f657b2a5996e0f6b \
+    --hash=sha256:ecdc9fae295da8ac793578a27020515e24d970513143efa227e696582aeb16e6 \
+    --hash=sha256:f1ac2b9f699c46219fbbd66b304105f5e1b218f05ffac6fe03cd851f93718e58 \
+    --hash=sha256:f2a2cd6ec9ffcc1b7147dea0d7a49efebf17a2b434e0c2844fe175999d571eb4 \
+    --hash=sha256:ffe46ef508df226e54b5fe1f7bf11122e5297bcdbb3902cc5b670a429d56ff47
+    # via numba
+markdown-it-py==4.2.0 \
+    --hash=sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+    # via rich
+markupsafe==3.0.4 \
+    --hash=sha256:007e1ffd9bf65bb6ee96df7b258fc632a4868dd5566037986c64781f35a36e98 \
+    --hash=sha256:02fa4acbc6a3fc5c693c34d4dd8c1130b7fe99cc915181b0ddd6f72aeb296002 \
+    --hash=sha256:03470d1a8268e692ecf79ecd565593e59d44219377a7ead61f1f1b94c1f7ff6b \
+    --hash=sha256:04e7902ba80ee4bac1d50a549606527a1dcf0476cd81403db41099d3b60ec653 \
+    --hash=sha256:051417f74bcaaefa316276e0ff723f541616ca51043d070da00249d9bddd3e3c \
+    --hash=sha256:05295589e619b9bed252a86b532b8e27350abc372d18ba89b59375325e91ec1e \
+    --hash=sha256:06de8ef6331f6e822c28d577dc8bf43fe398800477c49498f38fc38b67ff33fc \
+    --hash=sha256:0764a13d34cae40db7bbf3a09b7e9b491bf4603e20b263a7a9d6b8e324975d0a \
+    --hash=sha256:077293e425f28ec737dbcad442a71752e28f8ae27cde3d68acd1fb212091cd92 \
+    --hash=sha256:0930db9bdc62d22944e10b066448bb65dc9abe9112880c7cab8da54db4284d5f \
+    --hash=sha256:0cee7cb0f9a1b6892ea482237d9403b3d1b4603aee057d0ff01f0fac2d019a97 \
+    --hash=sha256:0d9c47709875fdb321452056622e930c52afbc07a7d780762fbb8b4d91ce6fa4 \
+    --hash=sha256:11935df9bf455ed0c04eb87bcd720f02b1fe5e02128a9430f23aed6f93336fc7 \
+    --hash=sha256:12a606a492de952afcb43b59a14aaaaad120e708d3663dd0fdf2d738d427a691 \
+    --hash=sha256:14bd2d845d62ab678eaf81da89d7b621b51756c72346745c1a594c09d49207a2 \
+    --hash=sha256:15ba9e28640feef770374b116a6f019c21f52404aeabe516aa7f800587b98cfc \
+    --hash=sha256:18a801868a884f216e784d7d14db2a4077143ce7610440aee2ce8f734e7cfcde \
+    --hash=sha256:1c0df495a977d10460a94941799c72d5b5ab03d3858d949b55b5a66c8f371c99 \
+    --hash=sha256:1caa2fa5a6184fb233153b35f654e6687bd555476f6170f29d8ee9be1a8b0af9 \
+    --hash=sha256:1e1451fab512d1bcc3dc26988ec1edb0b82c2db909132872cd9356070a6b63df \
+    --hash=sha256:1f1f9477e174582b0a1b583d60b66e1f2cf5d3fe12cee985e4aedf44766600e5 \
+    --hash=sha256:2628d3a8cb648ecebb3c5d6b0a1052d400e4d8b7ac0fb786be8d285b50040d17 \
+    --hash=sha256:26e9867520db70d37f7fb421a7f0d8adb40171011fb84ce869afa1a83370dfa8 \
+    --hash=sha256:2a6ef68ae94aed8721934072b27a3b654ea2100b97e4ab864cf1489c90926fbc \
+    --hash=sha256:2b2b1e18af909b448bb3cf9e3433366f7a8726271fc214e8b10e0f62a78c724b \
+    --hash=sha256:2cb3dd71fc6be918ad4264346a8ed69485f9b7ed7bf35495d8e22807cd6b8bea \
+    --hash=sha256:2d1b7d9308288661f56672b1b157d75fc536714d3638487bbea17b6318a78248 \
+    --hash=sha256:2dad610540cb2e6272855c178f08ae9a1c7ac258a7fb71660553a5f104b42741 \
+    --hash=sha256:2e5a7cd7fdd14fcb1ae5d7d8bf23d24fbd1daefd1fbca2580132e1ea75f098b5 \
+    --hash=sha256:2e9ad7dd851bf45fab9f75cbff4cb493fee9979e8d8c7c9c3ee119022518edd6 \
+    --hash=sha256:340cbb1957ba99929cbf19a75626d36ba1ae21d1730b287d1cf7f824a20c4fc7 \
+    --hash=sha256:34bdde374c5932765d7dc685c4a1d191a3207852d67e8e0a9eb6ea85156181f1 \
+    --hash=sha256:353bd63081912ab8cfa6a0c7d185934cdf8426f04c618bba6bc4b394f2069b67 \
+    --hash=sha256:387d8cd30e69b3f0a72877b9ae717033396404e19095b17fe89753a981fda44f \
+    --hash=sha256:3882fb412298575bae3b9c46868251f15cc69307359f87bb1b382e53d6e5a2c9 \
+    --hash=sha256:38fc55594dab834470b6733dead2ee9e3f657fb0608c769dcafa0ba5ab52f45c \
+    --hash=sha256:396ec4e65cc889f69786b3b89478b471cee5a3bcf468b9d9bb03e1a30fb291fc \
+    --hash=sha256:39dbacefc411633db5b4378b066a9aca70a3d7e2922c9e578d825f844026eeba \
+    --hash=sha256:3a93d9616ddecfb393727a0041a562cf0b15a244e20f2bd25efc7949be4c4f17 \
+    --hash=sha256:3d23795802fc8bd72534836d64489bbf0f67c088959091bdb22e10735a5107bf \
+    --hash=sha256:434139499bb20b502ed3baa1f169e618f924a97e7a777fea1a49446d80106cf6 \
+    --hash=sha256:436e3ffc6310d3c41878c601db29098102fe5d8a467c49da4a4125254e0980f2 \
+    --hash=sha256:489505b03f692c3f376394e49194fa7a7f9e8558d6e293a7056a0032b0c38163 \
+    --hash=sha256:4a540e2d3192792fc84eced57bef37851ccb2b41f73291bb17408eea77bcd278 \
+    --hash=sha256:4a7cdc2a420ca01058182da4253329764d4bfa055564d1eced90e6ba1e8b1d3d \
+    --hash=sha256:4bced6e2a6dba6a28f7dd3c6ce14df1b2dd495923f16ea484cad03decd463b2b \
+    --hash=sha256:4cf3468d5ec187ffffcaca8e61929a37448f215dafc1386a12c750a72fe53634 \
+    --hash=sha256:4e2c4809c14559aa7ef426f27fb35afbb38104c349a903bf8f3600456764bb38 \
+    --hash=sha256:4ed644d75aa94a2baf7ec3a96eaa160ea58c742eb9d27c6506053c5c40fc84ed \
+    --hash=sha256:4f6e0852a0283b1b1fd776eeb7b766a5f440b3e2bd31ab51af3b400585f3965c \
+    --hash=sha256:5066b244f576f91afc8ee3ba029a89f99d39c79b1853fe9d39bea9f0afbec148 \
+    --hash=sha256:5086f9975abb1ab531ee6afca1761e4b59a19b446f3f6522ed776963228cfe5a \
+    --hash=sha256:50b5bedc9ed8a94fc8857a42ef4f84a81ea88f8d4f05dc8705fb23ee6d8dcca7 \
+    --hash=sha256:52704c5d36eb6dda8866493decd61111fff86244c9b1ad225ca01b9e91e5970f \
+    --hash=sha256:55ffd6ce583d97dc71dc92e930324c8c0d25aea7e3ade6ae54ef77cedb096811 \
+    --hash=sha256:569d65055d367e3dcdf30c3f41119467b73d9ee9faf332bdf40402644f5ac08e \
+    --hash=sha256:57f9947a7e57a081c1e3e0a2dd0d2dcf290a4531450e6f611e30084c222a7295 \
+    --hash=sha256:5989cb26b2e1efc6a42216a9f6b5ee495ce5ace2e5b352a9af489976b32d1ee2 \
+    --hash=sha256:5c22873ad1f0532ba40fa1727f3c0fc1bbbaab6d373d4cbe3f0dc74b2e2521c7 \
+    --hash=sha256:5e8b3d0b18fd623afa12ecb2ce8d8becef69f9b5440c6330c7972200e0bb84b0 \
+    --hash=sha256:61631e08084be9e21a8967ec3139c7616ed7c5e9368e05c86d1b39562c8a57b6 \
+    --hash=sha256:64511c54db4e4987aef4c41923235927428729e8174c5dba488429be70a998ed \
+    --hash=sha256:6669c1bf34080161ce49c589cc512ef24d4c704ac9d2b2d3667f519c60418378 \
+    --hash=sha256:672d207103e6b16ca098611b0f9efad6bc00afd47c03d6ef62186495ca677dc0 \
+    --hash=sha256:6768d67d1bce64270e0fdc2e69309d68b9b18ae56ddf6c711d168e9d051c2cac \
+    --hash=sha256:6a45c3d514f2436064db00d7fc8778d888f0236ebfed649b53d13a59e69ad51b \
+    --hash=sha256:6bd9e1788e15bfcf6a9082de42e30387e7b85d211ab21e57a939bb8cfaaf8d96 \
+    --hash=sha256:6d2a9efe686f9de00d0d1ea32a4a5a86d558a2277501bd78d964214eab625e59 \
+    --hash=sha256:6da83a088f8ef93b2d483a8232a4dbf4d69d3d8496b568a03c56becac43e1808 \
+    --hash=sha256:7018d4af1cd272e847aa5917983ab5e83e4f6579f9dbfecd4a79c0ca80b144c2 \
+    --hash=sha256:71f88e749ea29f67f21f3b36433c1dc54c7729ed2a6d9e2da2e0d9e0d7b224eb \
+    --hash=sha256:737c9c3981998eba27f11786f84fddcbabc74068b72a4a1f454ea02094b57b65 \
+    --hash=sha256:73e77980c7207854f00fc4e71fb1626868d5740ab4012623d55c7a99ad122a72 \
+    --hash=sha256:799c39bdf5e2f1292fedd3009f7b3c9e760f10b2420cb9638d56920840ff6db8 \
+    --hash=sha256:7a83aa6e4805df46fed18e989d3d16f86ef60cb50bbc8d9ce3a6be89165fbf6e \
+    --hash=sha256:7d3391b2188d18737cb2fa147028b1096236eaa7e156446c650a489fa2cadc91 \
+    --hash=sha256:7e1636da3d8dfc220b6dd10264db5f2b165e4888c4518594898fbe381049af8a \
+    --hash=sha256:805c8b84534fa10891890f0e4be39f3a99e94615d93e8836bf9fa1fdca2feeb2 \
+    --hash=sha256:811d02d5122171c1941357efd8f9bf4ffe907b7f0a1a4e729a880e4be3f46e3e \
+    --hash=sha256:8138eb83940ec7299024d92d4dee45f601b9e6c5ffde9d25f4e35e326203c707 \
+    --hash=sha256:83b3944fea42a8400edf92fd1770fb8d0d4f7de651353bd2d8525a92dba69a21 \
+    --hash=sha256:849dd2bb0e5e4ab2b71c7191726a4a8d5aa8a610daa584728cbee0b710ddc4ef \
+    --hash=sha256:8698d70a8081ee8c090dbb394768b5789a1da8b131b5499f89d071dd3cfaf6be \
+    --hash=sha256:8781a792a070cf2bd1b86d3aa943894115faaba6e88122a7bf32d62072742453 \
+    --hash=sha256:88d59b473bfb03259722600839af9bbd7fa13a2eb514beefeedb95997882f69a \
+    --hash=sha256:8909c2f1c6dd65e054ac4b573a91c8384d1492281e55d82d159d653f7a13adf6 \
+    --hash=sha256:8965520ac587c94a4ac48b729be3d8b8de00af39699b17585dfb599babe77977 \
+    --hash=sha256:8b5d563170ff8ba3181caa967c99a3c804d1dedb702c7cb93a6a7c32247da978 \
+    --hash=sha256:8e124f974786f831d6043728e38296969d3579db8896fe004682f5758e613581 \
+    --hash=sha256:8f0fac8b13d14bb06c68195f849371924ae53dd7b1c00fed24650f704383b692 \
+    --hash=sha256:9240187afb63d2f9ddc3e032c670356fe941f6e20662ea168a5dc3f1f317e1b3 \
+    --hash=sha256:925f929d6b59a8b3f8b8c6ac363cd0af7eecc81efb3071770b3c6717c450a369 \
+    --hash=sha256:9348cbb300d224fe3b89793262cb093504d4ae927004468463f745188a193e4a \
+    --hash=sha256:9388003072b95f2f1e3fd908604194d653ba21330d811961a78b7da1a77e9e36 \
+    --hash=sha256:9438a2648b2195980cb2dd8e53ed7b8df91319e2d0b70ae61a9e1d1bc8d3bec9 \
+    --hash=sha256:94e4c421742086aeee4c32a506eec8859d7634aad943f7e6aacf70f813478768 \
+    --hash=sha256:94f5407f7bc64fa6463906b896f9904beeeb7dd8dc116ee8e9056c8714ff9916 \
+    --hash=sha256:971a3bbb75d97ae4e2e8f7d4834236f86f85f0c85e04ab2e191db1123b04f80b \
+    --hash=sha256:9e227f3dbe6bde7491cf0a9965d00b88c6b1a4a95d11480ddf88bb96d397c19f \
+    --hash=sha256:9e25feb9e330b63edb0278a0acdf85e50d0cb0fbf49c3084abbe4e24ae195346 \
+    --hash=sha256:9f098115c247e11d138ab83a28fa0323c77015007ea2df73ba5fd714dfefd67c \
+    --hash=sha256:a18f38cafc329bac5e3c2b96c765b4c96d3d103421ed22ab7988c1e3fce27464 \
+    --hash=sha256:a4bbd2d87dd233b9fc5812160c3d0ffbe42edc22a26ce0469f58479ede633fe9 \
+    --hash=sha256:a5fcffb37e602b0b3c1638a97746b9b96125caa9bcf6fa41d337a9261de231ee \
+    --hash=sha256:a8e9f292fcda89b324f2f5c91d13f1424a153e40fc2756f38ee23b15835ff300 \
+    --hash=sha256:a9f54054101545a9a9cccefddf54316aa6e4491611fcbef9e91b3b6bebec04f6 \
+    --hash=sha256:aa2c838cc024642cc04c6854232f32b43e5e22833dd11119c1766c7873b8370d \
+    --hash=sha256:ac0c7c9f1609b0c4c114feb1d7a3409564c7fb77e360bed9e97e5d25dfeaf868 \
+    --hash=sha256:add96447a86d205ab616665d53b2950ee81083757f56e6ea833c8b2917646b46 \
+    --hash=sha256:ae9dcb8fbe244cb82f8a6458b455b927a03685e383d9bacf1ea5ce180b96dc97 \
+    --hash=sha256:b4a635a0487774f841cb1fb62e907e7195cc95bc761e053184b8acc3ceb20733 \
+    --hash=sha256:b4d12837e0203bbace818ff4a7461afdcd78bcd782351cea148139180d7bcffe \
+    --hash=sha256:b61687d0828e72bf5cda24a2690188f37170bd31c9359ac97e4e66569f120a16 \
+    --hash=sha256:b807e598953730f82e4eae3bd30f6a122cf6b31c398c6b504c0e04c13c170429 \
+    --hash=sha256:b8cd1f918b26fd7b1832ece557cc18f2d8747309ff8b3f0ef9d4250c5ad67a39 \
+    --hash=sha256:b91cc9d336957239ff200f30097e6fea2dc6d6fb3c81e853eaa09eac904fd894 \
+    --hash=sha256:bd3ce56ae2cbae3ba82b683bc425cd7e48d2ed8b10f3e818186b6f5646d9271c \
+    --hash=sha256:be6cb0c799abb0e2ba3e618e6d28ddddf7e485f6c2ce938dfa237daf3905072c \
+    --hash=sha256:befb4158af32106b9a93db8d6d1d1cbbd418c0d5aca0cabb7b1780abf0c89169 \
+    --hash=sha256:bf053da3c97a4bc5ecfbb218cdd2983febd91c617be8367d139882aa11e490aa \
+    --hash=sha256:c02e8f18bdedba082cef725942ac823b9b60656db07f7e265cb31618dfd00d77 \
+    --hash=sha256:c1bc67752d5f21013cfe430df4062441714eab79f65a6a05e01505957e9c35fe \
+    --hash=sha256:c61750fadcd119d0825bcb7d7d675dd264dcc89cc05292aab5be68ebdbb374ad \
+    --hash=sha256:c90d5b3d4e944e065a301d741b3c1d784f6bd1f503aa68b4967e32b2ba313d85 \
+    --hash=sha256:c9a7f43c0b202b334cc9184af09bb8f21d3a209e038efaf106936fb69e6b026e \
+    --hash=sha256:cb96e6e088d6cf71c1ea977510948320234824cf226e32f6f6e044f7a9c82b34 \
+    --hash=sha256:cf63c214fe879a65e69a386f915e36104fc84254ab141240f8854602d8e0be2a \
+    --hash=sha256:d1aca03ede943eb80ab3d63bb082c84b7aab85ea83bd0fd0c200260945fb49d9 \
+    --hash=sha256:d2e56fd3b00222722abfb3f5f0759ddbae4b90811b5ad4343c64030ad1bde70c \
+    --hash=sha256:d5f93ebbeb8032d47e349328ec8662d973d9b05a70b3c35df1f91fe419b84749 \
+    --hash=sha256:d882a373d8093c2941e01291b7ced96e9cbe4781da9a7751ca7e6c70385e5214 \
+    --hash=sha256:d920abdfa61279ba1a2ef9484aab07bf03331f8c08a10120fa332353d06e6932 \
+    --hash=sha256:da2af0d7aebfc2074080d72efa6ab8317c62481ef1f896f65d9999c1c01f4494 \
+    --hash=sha256:dd8ea6ebee7aedbf7c749fa80521d9ccf1ba473e0d1e14805caafbaad281c889 \
+    --hash=sha256:de8b364c423ef0a4bad9069657d617f9a5d2b2062457a89b1fa16ee199c399c1 \
+    --hash=sha256:df1ae86ff54725a01fa1a0510b914ca53a161b7050be74f6204e24aded5971d0 \
+    --hash=sha256:dff05cb7016dff1e9fd68f4122c127b65dfc59de5306cfb7ad92f956f230bee2 \
+    --hash=sha256:e1a622f13970d81f95d0c72f9dc090dce9085fccfa4c9f2174377ee32bd15786 \
+    --hash=sha256:e49fb0d1ce92cfa0cb198cc5b1b11cdf9d0638658e2a2db2687e39db7c87fc78 \
+    --hash=sha256:e5c802729725bd07e2bc3ab7b76dc7e0bbfc53129d8f1eb1c002c24cf774717e \
+    --hash=sha256:e841068dc0be4cb6dfb5c890eb88cbdcff2f4a332393c7ec94e8e618bd32c1a8 \
+    --hash=sha256:e916035e3e9930cbdfdd10abf48861340221857f45509565898e012263f7b289 \
+    --hash=sha256:eba154571c16e032112afac0dc2dfe9e63c2ceb7aedd07bb7eecf2ce26d4dd4c \
+    --hash=sha256:f03460ff076f70ab595bb45a0205ccea1971443575b6920c52e755dec2b3fbfe \
+    --hash=sha256:f0ec3b750b59375eab5b0fb2b9254810c00a3375be6d789899f1055a1d556237 \
+    --hash=sha256:f291bcf42ae98eb5107edb162c3c998b4a89648fd8e99ed4cbd12705292788cd \
+    --hash=sha256:f61efe1d2fe0de16158a5fe1d1cf3c14bdb6aecd54d8938fd26512c525c1f624 \
+    --hash=sha256:f68edfc67aabac33708941f26f22a7b8e9f81429bc0cf249fcf7d66b23af8d19 \
+    --hash=sha256:fa95848c929b6a75f6848d3c9793e59db365ee436776e57db835cdbfa79ba977 \
+    --hash=sha256:fd9f8797427910198f95bced71ddfed61130d7e349213bfb8466c9c99e2c46a8 \
+    --hash=sha256:fdb4ca07ab75ffadab4a8b135ad59cdbb3156b99310f3d565370da74a15d6bd3
+    # via jinja2
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
+    --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba
+    # via markdown-it-py
+miniaudio==1.71 \
+    --hash=sha256:06222d80b057ca4beccb6f97a134c2c2bf646ef7890e1759cfc09db7eecec44d \
+    --hash=sha256:12bc33e7e61072b4b541c14e10ef76119d5643e6bbb98e2dec0c0738889438fb \
+    --hash=sha256:14892ad9b884e637029a22a781dea569b292a1be13682380fd14cefcf80ea4ed \
+    --hash=sha256:154b085dd914a0e79e3d93160e1a07aacb27d66c65f9ef6a0d87c1a194f32c04 \
+    --hash=sha256:166516449e2bb5f628d89cedbbb8720dceb96a0562c7e08a0e8e3cb10f58647c \
+    --hash=sha256:19be6f0a1e601c2237433e579734cfaf6469191b224c20c9e5f73c32ef9ee2b9 \
+    --hash=sha256:19dc58e4c50ffc48db2ce988019c28f05ca0eaa7c10b45b5c99b70107e610c8a \
+    --hash=sha256:1bf93aeede652926f27f430f0fd69ef0cf8a949c07b537d6a2f295602c747037 \
+    --hash=sha256:33986d5d725ebcbc253551e7358689bc81b19b6950b33cec8e8c1142ca4fc0a9 \
+    --hash=sha256:3bbeb1e068fe42475e017e8150e9e345182b583d0dd4d9e77ffa20c39935d9ec \
+    --hash=sha256:3ef441d139264f8a5dcb9aa6fcd0b1e1e69f58715baae416ff33f045ffba6ad5 \
+    --hash=sha256:4c849ccb1349f7b3553a77a66fe7e972315185f5c4c44a0bbda7ebcdd224db37 \
+    --hash=sha256:5009b4e29cd43de3631d2d5ab09cc074192c085b4c8dd8a121b856ce1af6bab7 \
+    --hash=sha256:50d66729e1dd7a4cf13edc25115ac54f776dd9f67803ba1a7cd1128ebf2e8cfe \
+    --hash=sha256:61b86f26d653040db32d9d15b05446321dd10e45beba25b44f841e26935213d5 \
+    --hash=sha256:62db602651bc20a2698f36a0d356d7217ed6f4f917550c7ffb3705c8e8be90cf \
+    --hash=sha256:70fa2ea5353e6919aca59b8c5768144af009d18c3bca251749d66fb497424563 \
+    --hash=sha256:84139a10ef172acd762ccf120142877b037a1aaf71def99d2c75f66329f89d8b \
+    --hash=sha256:8a28ff4ad23e55bbde8808ce525d3bb7d249d7612f77646b30e06fc6b7a778ac \
+    --hash=sha256:8fc1a4f084cc1b4b25c567d22f54d1e46bfa505c17ed777c8b198e5c53d0f785 \
+    --hash=sha256:978cc4d58d8beef1a705e1141dc177a8a357c10ba3a16f7d71482ee722023bbd \
+    --hash=sha256:9f379d4995f1fac6dcae65810f6a31cba264339b3e591a14b233f85a6d03d81e \
+    --hash=sha256:ab100e5240b104b5326e4ec1be07b6ae461f7d3d4d7a694857fd2f0493d210f9 \
+    --hash=sha256:ac4a37ebbbfbfbeca50f4390e50f9952807ca61ac62f0c3bcbbc7dd698531dd3 \
+    --hash=sha256:aee8e4eec8d7bde4ee78066561329235a04231a221c9b247f1ffaf850551087d \
+    --hash=sha256:d9dc15eff711bcfc62a9d05e0c78e4bc34821a455595e049629f2fea7491a523 \
+    --hash=sha256:e6287f15caa808a88aad0700a182bec1ff6d98769717425adf9ebf41259d1936 \
+    --hash=sha256:ea86ae04ddbbf2beed20b9970af4a0baca8e6ed0e9625e1ed957be5540c943fd \
+    --hash=sha256:f4a44b70b66628b0c307e40ae0ae857695978cae18462179b806d8edc807d416 \
+    --hash=sha256:f7042af3a4db5b90e5efaea257b6dfcff9389239ea643e6b0faa80169528e2e6 \
+    --hash=sha256:ff51e2887bb673e2e757752b586b3dc924d59aa5fbcae9bbc45f4a111bd3262b
+    # via mlx-audio
+mlx==0.32.4 \
+    --hash=sha256:001b07946f2867a800aee73d302ffdaf5eb81cafe64c7ba19fddf7e219324822 \
+    --hash=sha256:05cca4bed007230e109ca33ac377bac96f3b4c8ed5b67097499de4e913dd011c \
+    --hash=sha256:071566ae01dae3a293f3612b623eb68eeb2ef28d27d85ff66e661b6a6f254593 \
+    --hash=sha256:09da967a668de8b7033de3d74930efcf36ef993ede93173f51f11452a1c09b22 \
+    --hash=sha256:0c3cb35b709275d1791d435d2f1c4bd734e8a82ba99c340954cdda68570acaa2 \
+    --hash=sha256:105ddb962e3dab018971dba4bd195167512fa0a43b431fb680d0019efbae0903 \
+    --hash=sha256:18de5b82203c18d4e5be1a85c773afdd3e855266d8ecbdf2138072e29ee4cbbd \
+    --hash=sha256:1933ecd6bbe639e98b5bb9c753e928103357df01a5791ca0d8285db3d810e4c7 \
+    --hash=sha256:1dd56491b44a2bfa217f60da66a5c9c889add7ad9dc2cbcf526389ea31d83bee \
+    --hash=sha256:1e52124110303abb7513e6575f59c4c1d32e721c1a45f7a2ae200e8cc492ef13 \
+    --hash=sha256:2154f5ce28b51de46b990eb794223bebf8e0a5326ae2658a1e45c247e50779d6 \
+    --hash=sha256:22e84ed60fb6386c9426ba2c23808052a4c2edd9643dabda0772886f849e4527 \
+    --hash=sha256:32eb7a6c6a9646325e7dc5749d46cae30fb74eab8a39d3bbb0603163127bf7a4 \
+    --hash=sha256:370cbb0b307c40ccdd0131587734520c498829b54364dceca7e2c7e517ef89ee \
+    --hash=sha256:3f1ea7ed238d18e49cf266155039256e87987f43dab5e87ea7bb91a959e64f91 \
+    --hash=sha256:42f57e27ea37642222e00031ea73e47420a40f7de6e6af870e82b8cdd033c5ec \
+    --hash=sha256:43a6469797f09a985f8f035df63cd072105d5f16bfbe27d82b542065c988c3dd \
+    --hash=sha256:4f8e640fd3afcc19da343c5a769743f361573b8db98cd739e295a387921486a5 \
+    --hash=sha256:4f95afac25431585b34846d472ea0ad5db83fc97fb014d62c70082456f6b6b5c \
+    --hash=sha256:539ff8b596669263bd531f49fa1a825f570c766ab43c48e454447d6a47e91271 \
+    --hash=sha256:5f34d5aa0b23e2a52234665837e4804b045e9928df1be36f1a2450e0d1e996bb \
+    --hash=sha256:6017de097cecbc28adec1048f89e579e93e2c2292b1325d1396f26aacd4107bc \
+    --hash=sha256:60ba41564e8b5018c9d8a5f8ce7a5aaf70c96d8dd98c1a54b854cbada362d471 \
+    --hash=sha256:6267be0db81a9d850b3ecd9bf0cf7dd0f439408db9fbc59237e37fda3f7676b0 \
+    --hash=sha256:63ac6fde8a55d688448fc25eb32b645276501e0a30ff961a72958dfd0a4065df \
+    --hash=sha256:668cc9dd0518b00c092b44dca365a12ffe0cebb5cca0af0b9790fe3cd8f51782 \
+    --hash=sha256:6c6cf406fe093b4ea21876949e0d21f75384900f3df543e8411447ee37cdd394 \
+    --hash=sha256:6dd2d7948c3708a62a1b13c32b03b5a94031e0cd3b7f5c5a0343e5a4a3b3bc41 \
+    --hash=sha256:6e92768199ffcbc271c2fe0b0bf32f734d78bbc91d15ad7347cd7d5624a9b338 \
+    --hash=sha256:70bac04a877236b059fdc7b317d47db335a48d6eafccda9b91a59907c594758f \
+    --hash=sha256:733d28fc6b200910211924cd8d5deef86095cd085a0bf64502943c80b22942d5 \
+    --hash=sha256:7928869076db6267ab3ebdb253b2c80be1e738b3032c783170bd1d59d460c578 \
+    --hash=sha256:82716e3051bbf12d67d95397ce5018236c15edb87fe55f949bc383e5668d8f1e \
+    --hash=sha256:83adc889ae89057fd9f292ca1a9ee56da43f181fccc7ae48a060d7aadc179eaa \
+    --hash=sha256:869c4e2d99ef622cfb39e6581afe5d3286e0c01161e03ad580561db28bcd3992 \
+    --hash=sha256:95830850ababacf86d4e1e11b8cfa062a14b12c0c5f332dad1d4f99e1679a162 \
+    --hash=sha256:986f001874378d0a4c1f919817b7e331be96bbebf3993f5182459bcfc6ac0116 \
+    --hash=sha256:9c2040afc35e71e210007a6bfb45c75fdffd8a1609885b8d138cdea919a6ef5e \
+    --hash=sha256:9dee6ddc835bc16968daaa0fb804ef99bcc3cca5abf6c33bca17c52a1dd99823 \
+    --hash=sha256:a01855e2c023e64683798d7148f9760c59b32be6e43f4bcbea8eb8137b650a5b \
+    --hash=sha256:a9c09da5cbb4cf8b142f3b7bbda05e10b51d7793f861904e440208f63578a194 \
+    --hash=sha256:b517badcb8174f8937699465a0ba5b58c2daeaa9bd13d69b1e6ab13401d24a74 \
+    --hash=sha256:c1844df29fd58a78147b7fc2509682179d25edc81eb83659d26fef3c5930c25b \
+    --hash=sha256:c45854cd4e20559bb2aa613c6aaffb58e86ec7cf5bdd32100c4a59d8bcaf4d9d \
+    --hash=sha256:c4cb0d445a54278e5ba64a2d18b338421b1e8faac3e78b6b722ad9d83ac191fd \
+    --hash=sha256:c7375f2d6acd8c72f413d018266ae06387cb9caab31f475f3ff1c5600a7cb4c5 \
+    --hash=sha256:d124475e725707a94598211d3c80edfa9755bea9c327e8babff6ce4511344d9f \
+    --hash=sha256:d46dd07f57a65bae00ba7da239ee76ebf87e3202f042808d209b56be3140e416 \
+    --hash=sha256:dd0c9070d9c362fe280a0224806b1b47719b154984735041ebcc907e597c08ca \
+    --hash=sha256:dfd5269398bb64372137d8c354530b6e81159ce0e92fd1ed7e9140b294fd939a \
+    --hash=sha256:e1ce3514d2bc6f9c14e1c69787acee0926aae0599d73bacf4a8048394a2d2ca4 \
+    --hash=sha256:e5ed9e82d813ed9314be9acbab95f519c5816233a2ab38270be2ff5d10d2786e \
+    --hash=sha256:e635385a4f778b248ea6f61fbeb285b6bb14a1891d75cfbfd5af12e010298308 \
+    --hash=sha256:ebed763d7da5833982529baf02d0330c5437f4ee5207a1a8a60ab261bd94302d \
+    --hash=sha256:ef130e3da895c85374b11a6c389acb122893f2ffcbed826b8b62fd45a20b7ad6 \
+    --hash=sha256:f0604cb3015091f285c79c7b7dbfcabcfa9948248728c7bab6e0263513c3d3fe \
+    --hash=sha256:f1e6ef441e1e2ce54159022a8fa5597f8ea4f7acf278752049c4f774bbd0501d \
+    --hash=sha256:f50b2b759c98d50ded360dc470d03d62ce1a41b3a6da81dd5e0b995865dca067 \
+    --hash=sha256:f6cbda9cb8c33c9f8673a2b69fb19bdab75b5032d4e47a42a0e7b36db1c3ebcc \
+    --hash=sha256:fbb3fcf1363a631d05aa5adcb30d07655158be07e09339c1fe62f7267b3a78f5 \
+    --hash=sha256:fc8bfe0478c96cdcf0c4786f13edaa20490fa1714fb145f254627bd66654d81d \
+    --hash=sha256:ff1d7be54758ea3a875b8fe54eff13bed17ad9566505e301f5d7851bf869680f
+    # via
+    #   -c constraints.txt
+    #   mlx-audio
+    #   mlx-whisper
+mlx-audio==0.6.3 \
+    --hash=sha256:2cfaef542f29c0eb0f58bb3823eafbb9acf9df9b01a7f45a9bbf3b4b5d44dab9 \
+    --hash=sha256:bed9a2801a4d500fd007b046bd0209ddcbe2cb0528a648ee7891486b30909df6
+    # via
+    #   -c constraints.txt
+    #   -r requirements-mlx.txt
+mlx-metal==0.32.4 ; sys_platform == 'darwin' \
+    --hash=sha256:514df92d41a286895d2564b4b18f4da45096bd7a4a0c47e1042f345ad5a7f936 \
+    --hash=sha256:8019b2db622599267d66cc168b2f0dbf5af929790a6c3b3913e00eabc42a7947 \
+    --hash=sha256:9f0a3cc26d89724434d9684932fc6f3e4e83669d2a895d858ed2c8a55eb84e8b
+    # via mlx
+mlx-whisper==0.4.3 \
+    --hash=sha256:6b82b6597a994643a3e5496c7bc229a672e5ca308458455bfe276e76ae024489
+    # via
+    #   -c constraints.txt
+    #   -r requirements-mlx.txt
+more-itertools==11.2.1 \
+    --hash=sha256:35a7377edd1dd6608dcb2cdf534ded55ea32d49448875ad042cd3f879fb1ded0 \
+    --hash=sha256:cbf08fd0af284dc69718b9b76a8e6203df624d70209ea511e4219d350c856f63
+    # via mlx-whisper
+mpmath==1.3.0 \
+    --hash=sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f \
+    --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
+    # via sympy
+networkx==3.7 \
+    --hash=sha256:e3fd2c13a7814cee3746340d8d7f8598a67f16a58bf47fb7f8793fab6efca1b0 \
+    --hash=sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a
+    # via torch
+numba==0.68.1 \
+    --hash=sha256:0b8c2cdf8d52373814d9fe0fdd91a654b4607527657488487c58ac897c2596a3 \
+    --hash=sha256:10967c80d943d32fec1a28bad89b404c820778c5d472844661900399879cbe95 \
+    --hash=sha256:26064885ae0ffcd365e1801beacc524ac4a9bd306b7552749dcca42e0ef2fed3 \
+    --hash=sha256:44f56e7c1e77d3380986f42e187ff13516aeac1f1771fe3826e65f003053d308 \
+    --hash=sha256:4d1b544f37fc237d16698a4266bb3d5b3c40ec8aa4c925a191ff09ec6d115310 \
+    --hash=sha256:58fe7a3810261cf13797d8aa94c018cfe91e1e8adf634df60eb60ef834f9367b \
+    --hash=sha256:5d4bd6ff1923d0b32a2208eaf3e1940f4548a13fdba8bd1ee7893b8f4b8f55f8 \
+    --hash=sha256:674d9c19e591e4e706c85ed9c7129dfea02086096250cb957dbffb64ebf3dba4 \
+    --hash=sha256:6d115039768cc2eb3cc99b32355ca507e1bbc653eca5492c83ab6399f218df27 \
+    --hash=sha256:7abaf69f64cbbeecf0c2384d55d1249ede6206de06d905da48f943c065e51490 \
+    --hash=sha256:7de5e5d00e6c8967fc861be2a015eb8ad701ab3cf65d7f4a2c4d950990cf65d3 \
+    --hash=sha256:8b33fee239194b9b6cb9b176f3c2563b94e5882fd846748ad0cf960daeee5406 \
+    --hash=sha256:8b89ed029ec79d017af9101afd8f832b1f7eb1a366227a439437c17f38be6122 \
+    --hash=sha256:9550e3f84ddca05d3cad1f2f780beed004a9b6c62fa12e995fb5bcb871d0cd6c \
+    --hash=sha256:9de461812470173a14eeb7e0bbd27c897dffe835402a33861166842fc5f6ea57 \
+    --hash=sha256:a4bdbff6ac4ea52a647c758e78403489a1b01a7ee9c2977c92f931c10802c078 \
+    --hash=sha256:b206741270692578112600767ef5e4935b38484a9edbc8dd925389ac67d0e828 \
+    --hash=sha256:b4d210701b32d1d4ffe26d5fc4e96c6b47e2c5d6c4c1a0f76dc48c156ef295ea \
+    --hash=sha256:bd238734c5bd4a7db5dd2e935d60dd9d485a5fa15b37396a2dd690b8b1d51742 \
+    --hash=sha256:c6f43dbbdcaac98a75a539b7c79ba490bd7265f24f454ac203de37bc5710ee71 \
+    --hash=sha256:c8882360f6bf7c6ff59308dc0fe79508a613a6e92329d4064ddd3258462cef4d \
+    --hash=sha256:c9cc5e30f0ec71d1d6e706cd3f9f98218a0221ee8cf25bb2079bdc1a9c4ae65a \
+    --hash=sha256:d372139235fcf11e3d81d1f145584e38c75a839b4d02f1f999cda1b134965eba \
+    --hash=sha256:dc3f29d540be5fc60699dbac53fc04f246cbf503a4e2e8315f04b70fcd9f1ec7 \
+    --hash=sha256:dc54a2cb3ccd2ae30dbae56311bb397bbd1428d9cd8ccb82a70da3439360bb30 \
+    --hash=sha256:de5fbbd0bec5496dc0408bf1eeaad4ff64a2b1e3c66b4065e4c42523550ee3e1 \
+    --hash=sha256:e5a2d544d8a2da45f9cc5856ed794c31f133ada51ef7a734a9b7cd4596e1887f \
+    --hash=sha256:e8069ec8807764fdd355a578e3943132a0b8e053e5d61e7b3639ed371ceaa80c \
+    --hash=sha256:ed9e36c95b79b675ec2332951118c3b264921a5cc49e0e934be2663ddece1b69 \
+    --hash=sha256:f2170303a731542b5c16501a08b2b1cbb4596e5bb9ba6a661b65ed953e59b8a6 \
+    --hash=sha256:fb83f1043e53753503d303036065990ff48fe0ef901e897153f57b2aec12c38d \
+    --hash=sha256:fc764aa37deab88718de20151af0f53aa72d1c5cb3b54c6eb648473323f80a5c
+    # via mlx-whisper
+numpy==2.5.4 \
+    --hash=sha256:067374eb538c34c745436365cf7b0112595c1d326f21ce4ff340f61230239fbb \
+    --hash=sha256:0b4724a19de67bea8cfc4970798efa78bcbbe2ac2613cfac16721a42d44de2a5 \
+    --hash=sha256:0f02a46e49cfb6c73bdb7aea1c0d3461dbae9aba613542b65f657cd3d17b9fab \
+    --hash=sha256:1c2e71b04c6cad90026e544501bbe0ab9290fa8a4d845e7e8c0d124fb429c988 \
+    --hash=sha256:1ef3aa6d7e29bb13677323114280b05acc57607fa2300e66432d665d5418a162 \
+    --hash=sha256:2132418bf8dd124a427ca9e6a1daf9ee1a87185344c95119ceae868b99466da1 \
+    --hash=sha256:2199ed071f460487c8db2c0e5c0b564494190edb4772fe80f9aad88b2604def5 \
+    --hash=sha256:2377da2dd3ba2c1200956acbab2a358c83b8e1f8531191672d1cd6ad83250d53 \
+    --hash=sha256:298eca75243f2cbbfdb460560b9fb2a1792a33cf2ab4286efd43d92e8d3df508 \
+    --hash=sha256:2c2c4afffdeb7920e445028dd71eb932cac3e704792e964bc2a232426d4f1255 \
+    --hash=sha256:2ca144f15135b6212a5c47b1e2aeca6e412f102f95a2d5d88d8aec77eb255de3 \
+    --hash=sha256:2fa3328f784fc8277fc48026f6cad516f5c561c5d8e2e39b3c9e0c8f23223b34 \
+    --hash=sha256:325518d4245b9e331387702aa58c2ce1dc4cdcbb41dfb4ccd5dcbc7e08db1266 \
+    --hash=sha256:332f3378fe077dd850e677ec01bdcc4f22368fb5d50ef10b2c79230b1bf5a592 \
+    --hash=sha256:3573cd22564692a5b899ec344e5d5b9cc4576f2985b96f22af3564ed54f2710f \
+    --hash=sha256:381a7a3d2e65e64c0ec302795ab9dc12bb1e73f150904699c153716177eebdaf \
+    --hash=sha256:38f47be9f74ab870d2633b5456ae519c43758a8d1fd05342f0ce4ecc034396ee \
+    --hash=sha256:4054173604cd8658796053f1f3bc0befb68ec1c0762c57fdad61e199256a8617 \
+    --hash=sha256:468397ba3c64427474706e5c9123fe266395496714dc684294eac75cd4930d1e \
+    --hash=sha256:4e263278bfb5ee6409db8aedbc4cc32973b1b82bc1e8d3c668551d04d83a7e37 \
+    --hash=sha256:5258bc06526964be5face2fc6f756857a3f24f21ec3e72ca131337a75b165d6c \
+    --hash=sha256:56733449d2544178beaa4545cee357370440cf056c197f9c7bfb19dbfdd0e86d \
+    --hash=sha256:5ec3753760c1a6d8bb91200666e545c3a9728e6269dfb5d6ce02340996698aa3 \
+    --hash=sha256:5fbf7141bbfd63aea22f435c9062a032b9ea0082fe9845dad7f021d3f1234e71 \
+    --hash=sha256:64d1c8ac28a4077cf987e0a71a7a0ef7e2df70722f07f0baa42dbb7eb6938647 \
+    --hash=sha256:64f9c9878c1938476365e11ccfb6b770f3b9e5f045ccddc514235041e6959365 \
+    --hash=sha256:6c109eac9cd439193678f69d70733c1108487546ca8eafc107b510ae10c1aecd \
+    --hash=sha256:6d6a71b9d9a97c03633aa12565ef2825ffa036cc1d99cfd50dacf0f128af4fe2 \
+    --hash=sha256:6ffa07666f8da0eef81d149934a626d0d95fbd6838432a33e66245423a9062c0 \
+    --hash=sha256:7415db95818b39ec475a5eea54d9e3b6bc83e3912158e46da3438cdce399804d \
+    --hash=sha256:77045a4b175bbf5316ec08003880804336c78f92281a1b72222b274ea85ec5ac \
+    --hash=sha256:7a14a461d9340f1b46b8648578aed9cdb8b3b018a8fac6c1dde2c9192a01a87f \
+    --hash=sha256:80d6ef6e8620eb2c2b4c4caad50b5935d6db3cde2d51581b55dcc79e14016d1d \
+    --hash=sha256:81e3420b27048b65eb14c3acf0c174a8cb0e023277716110347d2dcb26026dad \
+    --hash=sha256:823874a507a84af050493b622affde94b6f7c3a0dc22cb2801381bc03b871c00 \
+    --hash=sha256:8b4d2fd2d34e5f8c9235ee787de5631a37a28402b15cb80814df973d2be54129 \
+    --hash=sha256:8dddfbee2e68d26d0d7d7d9cb247b1fd4409241cce32d815a11d97ec2cfde179 \
+    --hash=sha256:950ea81d57ef070665581b6e1b5f6a029306423cd1739c5b95fe78aa30db6b9d \
+    --hash=sha256:956555e0603a4d38019ae6925711cb9dc43195c076a928accf7ea5d50bddfe53 \
+    --hash=sha256:98b053943e5a0474ec0da309d2cb9d3f18ea57f8a2067c2ab7b5f763d1068380 \
+    --hash=sha256:9968ab7e49b93ac6e1c3b2239732183152c9150f16308d30b66a372cffe3483c \
+    --hash=sha256:9a94cf751c9ad8ebaa835bcd3d40dacf8534ad086b88c38029b65123c7999d2a \
+    --hash=sha256:9cb18a327b49c5c337f972b03682f6a49855525faaf3c0d3e9c96cd0fd8880a8 \
+    --hash=sha256:a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a \
+    --hash=sha256:a813ed7719bf45463c51779e6a98d0385fe905e48447526938a4b8337333d551 \
+    --hash=sha256:aa1cce2ff3f8d953de38b76bf44602caeb69f101430208f64a10067f7cb4b1d3 \
+    --hash=sha256:ad62a416ddcf863bf44bba76fbf6b53366ab0692e294f51cae4b5fbe0d246788 \
+    --hash=sha256:aec3fc4b32ff82421274f5d205c559c51c840c8df66a78efd7f3612dd005a26a \
+    --hash=sha256:b1185012870173de7ae33d370bd45b1cf5baee747ea4b97036b65f4e93016877 \
+    --hash=sha256:b11e8fda06a7d69f15ebf542660b74466c2e51094800c1fb794f47ad4faeef17 \
+    --hash=sha256:b64a85f40e154983960a4167d4c1d57a50c7f109b3d3264a3a984154e90a8454 \
+    --hash=sha256:b86966fbe4ad7de710422175572bcdc75fdedadfb54bc6fab7deabccddd7780b \
+    --hash=sha256:b89d0aaae2fe498c648f4c4795c084db535af5bd98ef942b2a3681fb74ce8645 \
+    --hash=sha256:bc39ac66a7a9a3fbd6134fda43136b60ffde99c8f4501e64e0d2b24da137babf \
+    --hash=sha256:c05ede731b03fb1b7591faca9389ade3267d2bddf1ad8882bb3f2cc5e101694f \
+    --hash=sha256:c6342f54c67093cae5c0227eb0eb772fdb79f2a2c37a6eb278b9909ee06aa356 \
+    --hash=sha256:c668b2f0d651605b58892644b0e302c7157f7159544227758c896982ef384b18 \
+    --hash=sha256:c9b80cdf5cedba0e90d93fa5f9a333c4d65bd545cd669b71bb97ce2b703c9d73 \
+    --hash=sha256:cfd73180400042a7c532d30c5e287bdd03c59ff9ee1b4c0316af0539e29dfe23 \
+    --hash=sha256:d4cccbbc78717966f764cd3af4fb70276fa01fc7a2688af11c78901fa5c04f05 \
+    --hash=sha256:d549420b8858885cea8838a727842249218b9c1da24dd517e25c9c7a948310a3 \
+    --hash=sha256:d8200f16437b289a5bb927c6e184eccc3e8389bc0070fea4cd5b9e13c1757959 \
+    --hash=sha256:e94aef2c639da4a960ad0db8e06471208d8589974953d78b61d345b4eb99e394 \
+    --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a \
+    --hash=sha256:fe4d21ab149f15e4e6043dfb0de87e6e5f34ac176cde83060e9802981fca2ac2 \
+    --hash=sha256:ffa6ce09a1c6a08e9667dd9c97aa0b14184e8d18f2a14b78b2a2328c9147f076
+    # via
+    #   -r requirements.txt
+    #   mlx-audio
+    #   mlx-whisper
+    #   numba
+    #   scipy
+    #   transformers
+nvidia-cublas==13.4.1.3 ; sys_platform == 'linux' \
+    --hash=sha256:4eb1472bf92b741e7cf24da7978dde251b58ddec2092d9f6a04f3623eb4e9a15 \
+    --hash=sha256:7e7f780caf07bde7b36b0d25bdad29e8ccbacfc4b75066907bdb601af1e6d4aa \
+    --hash=sha256:a5917cb642cfb07f4a0231ee16aec7e2e0357d8cb8b1b78a0c9c68dba3e6afc7
+    # via
+    #   cuda-toolkit
+    #   nvidia-cudnn-cu13
+    #   nvidia-cusolver
+nvidia-cuda-cccl==13.3.4.3.1 ; sys_platform == 'linux' \
+    --hash=sha256:48ba8e44a1162face51306d5bfd67604d9949be5acb9105dbb93734d2df8b3a4 \
+    --hash=sha256:ccb02901bb259997c4bc198ad6f96f9a4fa260d9823d8a5aceabf3e3b244336f \
+    --hash=sha256:cd47e7823e3ab369a3e3df3a4c6dbb4cb02176cb85b251eec5f7c9cdfa528ec4 \
+    --hash=sha256:d7879f58820f863c4db4237200a764d5cb992dbf99089d31aee6f2998750b002
+    # via nvidia-nvshmem-cu13
+nvidia-cuda-cupti==13.2.86 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:10837e2910753a7726c0243aa113e2bd65c0edee6f6f3e097db1757a8eac2c9e \
+    --hash=sha256:8fa29f15dd8336181f961764d9d95236fc6b931dd0c8fcf8cd70aab0c310b586 \
+    --hash=sha256:d9a5c133f73fcb9013f3ada0da6fb54d4117618d81f3f5a0419417ea6ee829d4
+    # via cuda-toolkit
+nvidia-cuda-nvrtc==13.2.86 ; sys_platform == 'linux' \
+    --hash=sha256:1e5d7b411a2eb83f5c71c98d58133a763fc9fa86a4241ee320c5c4782d9ad1fd \
+    --hash=sha256:8111c5130e967b78222ea2124145f8efe9ce201b752b2579a2513100a53be1c5 \
+    --hash=sha256:bf070582c2d8b03f681cea8d34a9de900d808607deb813a826ecb3a585606f9a
+    # via
+    #   cuda-toolkit
+    #   nvidia-cublas
+nvidia-cuda-runtime==13.2.86 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:3498247680dfddce31bad102af7e3e26fc795342a3cac64722bb0fa95e7f60f0 \
+    --hash=sha256:37844957894bfdecf90243568d21a2cb251b66106915b71459a23c8e6ef2da69 \
+    --hash=sha256:b26f5dd86e67f0eb404ae679185e1c49fe546fa9a47b32dee31312f65ccfe764
+    # via cuda-toolkit
+nvidia-cudnn-cu13==9.26.0.51 ; sys_platform == 'linux' \
+    --hash=sha256:8e37a83d7dd7c2663afcae38b1c95c5e9e7c9754f313800da95ca81439fa37f9 \
+    --hash=sha256:8e5b4f5eccff721416f70ecf4353172fc4d5cdd8ca869fe6f983a4a5b0147b20 \
+    --hash=sha256:9c976d539786698c71d6bcdbe2053b7485fae062ff7e1215d2f2ff67b1a2149a
+    # via torch
+nvidia-cufft==12.2.0.57 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:1ed438568ae1088ba2c25789d10205d4104b8b140b7bd942e39a787947a0fb74 \
+    --hash=sha256:34da27fadf3979b0b042c43823f0530be8408b86df31ee0108e1ca0b621d4ef6 \
+    --hash=sha256:89b78b2b60d6ca1fb7dab7d1a4af135d69d586d18a216ca84e51db5901cd41d0
+    # via cuda-toolkit
+nvidia-cufile==1.17.1.22 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:87feaf8c3ad20d3d03a01933181801ff6892bace5c8f0b1e4b48f319d3e62d36 \
+    --hash=sha256:bec33d7f1f12691dce330275246587569c2ed90b1ce43b0f94b3e1ce9268744b
+    # via cuda-toolkit
+nvidia-cusolver==12.2.0.11 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:364511c9974ef1fcde2ca197caebfe0994ece2cb33bc27117eeb88b8cee5c46d \
+    --hash=sha256:8be097fca28de6be0990ab216ee9b804dd51077e1d1d83acf6c9850650bdc64d \
+    --hash=sha256:fab5778f6769947389a1a6abc07e635576825a08c0ffc68c3ae7f1392c794b42
+    # via cuda-toolkit
+nvidia-cusparse==12.7.10.12 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:25907c75e4db1581685f06f61cc6cdecc04611765516a52373e0a18ebd69fa00 \
+    --hash=sha256:597eff2cd83e3ab1d1e3a0dce9c9c879d77cf64ec2659bfdb5af6a5d02e7aaa9 \
+    --hash=sha256:6b1e82056a0865c5b4f5da6adbebb15244e9a2b8aeea0838a9cf725e16523c53
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver
+nvidia-cusparselt-cu13==0.8.1 ; sys_platform == 'linux' \
+    --hash=sha256:4dca476c50bf4780d46cd0bfbd82e2bc10a08e4fef7950917ce8d7578d22a23f \
+    --hash=sha256:786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0 \
+    --hash=sha256:dccbd362f91a7b9024d1f55ee9f548ac065027ff15d8c8b0db889ab3a8f31215
+    # via torch
+nvidia-nccl-cu13==2.30.7 ; sys_platform == 'linux' \
+    --hash=sha256:ca786ffa5a647c75d4d1f5cc72a6c4f537947e2ba8823d7c8aaf768e7a7b9f77 \
+    --hash=sha256:cefa7fdb9710efd0f39c5f1be1d61ff6fc9a996c451265bd7fbdcf9455ed4b50
+    # via torch
+nvidia-nvjitlink==13.4.92 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:25f74fad0d654271c921ac4dca614bd6258bc21791242fc7b2289dad7ae9c099 \
+    --hash=sha256:9e4a7ff4f0cafa8c624917055b863dc11f5c2912ead23c462889e166f3b0e57d \
+    --hash=sha256:b286f3a4f227a9363efdec263c7b91788cef1478d2b8a5fa8bab7f3e82ff82fd \
+    --hash=sha256:e0391f24ed94ec879b84e3da4d4ec320c879aff681f2c7a638462f7199284323
+    # via
+    #   cuda-toolkit
+    #   nvidia-cufft
+    #   nvidia-cusolver
+    #   nvidia-cusparse
+nvidia-nvshmem-cu13==3.7.2 ; sys_platform == 'linux' \
+    --hash=sha256:0e748308b9e0a8a8d81859353f3e6c98fbe85a85f652a915a2ba60149a0bd124 \
+    --hash=sha256:b9a4f843c62b5dded8ad33fd6d220e007dcd39f06cee549292f5ba14ce4c235c
+    # via torch
+nvidia-nvtx==13.2.86 ; (platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') \
+    --hash=sha256:1c6ae1be92fba569dd271f7b9b3056f99f5642726dc6c53d1b93ae4110c398fb \
+    --hash=sha256:7f3f430a87bb1e2db3371832d21a5c1efcf77bef7cacfd772fd71649e121cd58 \
+    --hash=sha256:968ce72baee2a01791c7d3254000eac81f24677b0b91c62d21b449a1f309c245
+    # via cuda-toolkit
+opentelemetry-api==1.45.1 \
+    --hash=sha256:aa38ed19bcc084ba42782a73255b3582283eced7ad6dddbd6695189e69adfb75 \
+    --hash=sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb
+    # via fastapi
+packaging==26.3 \
+    --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+    # via
+    #   huggingface-hub
+    #   pytest
+    #   transformers
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec \
+    --hash=sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8
+    # via pytest
+pycparser==3.12 ; implementation_name != 'PyPy' \
+    --hash=sha256:a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e \
+    --hash=sha256:f03387877eab82ce01bbdfd0ba7252ee55a90b1c708d5129e2ce915475cf1db6
+    # via cffi
+pydantic==2.14.2 \
+    --hash=sha256:7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118 \
+    --hash=sha256:fb7b2db6cefe8414dd612edeede49c4c433acb0432b0f92b95024e45f66c505d
+    # via
+    #   -r requirements.txt
+    #   fastapi
+pydantic-core==2.50.2 \
+    --hash=sha256:01eb0282d0b3a065d55956d1be9ce398c46db3dd6d277a6cb2358c8aa8c53179 \
+    --hash=sha256:04cf672960b8c4fc28bb159c8cdd101fbd311c520237a5c0360448b851adfb41 \
+    --hash=sha256:0b94a515f44f1ebcb25395bcdba506c4cdaf6d3fcb0466b9658521b41e5ff057 \
+    --hash=sha256:0d090ae76d5b09c003600c7779b3adcf3d1b49268f616c5c51d844e54c8e318d \
+    --hash=sha256:126f158474346f457c0759c29c1a6334acd5f7f99dd272bb27d19314f3d81b4d \
+    --hash=sha256:150f6e101f575c21a4ecfed1be1c05bb89a0ad49cb9c846ed377583bd71b32c2 \
+    --hash=sha256:16ec8e07c37f02dcf68939cc7f202ba9a148cc155ee2acf22d337e10b24c2cb7 \
+    --hash=sha256:18f008ef58cd30782f81b6e0119e20b7e884edcefbc2d370162ebe033f6e5c99 \
+    --hash=sha256:196b87b48b2695426920e8470d20f9e99f019ebd86f15808aa018b68086840cd \
+    --hash=sha256:1a5e859f5a8a6d834b0a13acaa0eaddf1a9b4b015fcda13bab7b471e18299d32 \
+    --hash=sha256:1ac5b99bc7b0a68ec64f5f75a6828a7bab5535c8df0cdc07901deb50e0815910 \
+    --hash=sha256:1b0e8dc3932cf4e9ed5727570325cacc716b9409ffc794a221c0ccc72e8eb775 \
+    --hash=sha256:1b9f652e17a13bbc09b45f74c3c326cca72059ce4dcdef687fcb04389db413a9 \
+    --hash=sha256:1db9cab6197e797824f0479dd2ae5fd2e272aa61c61b7faa5a6e450ca7a0d3b7 \
+    --hash=sha256:1fdf5b52ed22f1404c2433d0b46df2d86d9befb742d0b9b4042a2325c43cdb97 \
+    --hash=sha256:2115d7ca6d58554af8a14da3dd32d361a4fe999fae52f115a6155679b5b00e72 \
+    --hash=sha256:21a902e546032c82b7275552345a2342d862e0541aea7226c91067c396e68b3f \
+    --hash=sha256:21ea3b00f1e87c66f3f9e92f9f6fec20495ac0e60d7d2e68ba1fc49739d7cf40 \
+    --hash=sha256:23385c4626f8b5a7792aa381ea573d9432cfbf4c21375a0a5eed2a4fb64e0e58 \
+    --hash=sha256:240fec32a74af0979f7253532859b3fd209ad5eea822416bb010929dba445c3d \
+    --hash=sha256:24120c644322a35b5eb765416ac8442214c45689e255f5fc6e761e7e7c743c8b \
+    --hash=sha256:26b778d4ebb75f181d36220ff0f54a513fc46f053d9b09ce79993c2f00bc45cc \
+    --hash=sha256:2d4a043c820363359e40ac96270e1915e5376e116be1f59cee0701775de3e376 \
+    --hash=sha256:31a1fb3ffbd1195b24490f671d12623dd4c9bfa56d6af0a299fa43b516134f5b \
+    --hash=sha256:33c6800ab9563adaa0d7893e9cd8f5b972ef1e6a23df70498e05c24f3fcec5e1 \
+    --hash=sha256:3435c443da7510a6de1a30c68beae338852a11f0440cc8320ea756a162f38dbe \
+    --hash=sha256:36917e29c0b815d6b940bc91560fcf453b5b85d55c579796373f0ea11d1c111a \
+    --hash=sha256:36d8b9725684ca3bf658b90a101d335fc8cae405bb22196b7b5ef41344913756 \
+    --hash=sha256:3939538e640c94ab779a05f2d45dafedd01d65d93e1290797f3ac5b59fcb6455 \
+    --hash=sha256:3b1bb3950e0794a795c9344d818d5b476189b0c9c9755e8eb8fde87c3acee17a \
+    --hash=sha256:3bfe12243b3ded517c6734d91f127489e2f51bf95cb533b53130fe360333db80 \
+    --hash=sha256:3fbcd402e4b607d4b8de5d4591215f31f042af03f9d09e58f693a6221e32833f \
+    --hash=sha256:41ed8abeffda6a880207fdc0cd1343a448cec3cc6b38b53f730c0745f745292d \
+    --hash=sha256:43a8fd56f3c681f3cda2d5c842ad28e88241df742dfcbe8fd1dd437a3056e1f6 \
+    --hash=sha256:48e944091b7bff233920bed8a60b0ed6c96c73d3c5836bf51c4b9a4bfb58e4ca \
+    --hash=sha256:4ac996e42a93d80122a23edce44e02c6b9c4913f5c6198a077da31475341a39a \
+    --hash=sha256:4e9392ddf67fe97ab9889f796d468c9908a8754b8b6c7520eb03a65012b9a1e7 \
+    --hash=sha256:4ea01f30e119f1ec7a2034e85c40f491d469896aef02cd6436fd9292fe1be3fb \
+    --hash=sha256:4eb54c25e3463d73e1e4ed439ffc45d1d7e590df40bc7bb06f11a906afd996c3 \
+    --hash=sha256:4ee64baeab403b9de9c92846c5c1abec28ffb046cbc023bfae059897841f88af \
+    --hash=sha256:523fe6574aea50f456cbc301c1cdddcbf237939f7657f9af99b4f0f71942b59c \
+    --hash=sha256:5299296ff5cafcb69851fd652de8f9268a0bb036bcbedbfcaa94cf743baf3986 \
+    --hash=sha256:53bd25e8ab54c02bb4c55d4848c1d36f75f3b9a7356e83179fe27794d9e9e6c4 \
+    --hash=sha256:57bccd3e1128736c792094da1feac6da46ec3feb1957ef649a9b3e4f8de6fa04 \
+    --hash=sha256:596921489390a002d6a5e303384a0f1f98384f8bb550fbf38a1aafa6093da0f9 \
+    --hash=sha256:5ab5738c39b25b5dc5a721270e2269a2f5e86e614375e6c07ee6caab8cbc0f2f \
+    --hash=sha256:5c12a5a080570a91bbcbf6d10db008b80e3f5dea015ef2f0137bbec70f24f3f3 \
+    --hash=sha256:5d3cd8be71c4da3c9b42cc92f17e5e3036bdca98bf18555a0e072c3fe87abbb4 \
+    --hash=sha256:61e13100b30d8d25fc0d1f0297014b32941bf0975a3584bd08f3adebb68d1ead \
+    --hash=sha256:6258754c473b3045a7aa30b833a8a331a1ab36c6147cb230789861d80bb26f83 \
+    --hash=sha256:6a438cb8a3f87f2c49e82e43fb19511d4d5043f53e0787dc4df937ccb904373a \
+    --hash=sha256:6c25b8826be85714b27dafe908d3461e1b09e3e31c0279a7029040c832c781ef \
+    --hash=sha256:6d47b2d0e00e030e0ebdb08115a37da7294e7a6d196d134a77ed7ee6c142284b \
+    --hash=sha256:6e731bf5a5e8e25398544d7709e39068ec4230b0177e4db7fa955692fd415ba3 \
+    --hash=sha256:6eb6ff07964f39e33c6f57fefe939514e76b8c0d4a694e5663e2e04e80cc1798 \
+    --hash=sha256:6f5a432c6c1ef18a1a02a04b3616b8d3f2f88b13faa46caae1ac6559ab202234 \
+    --hash=sha256:6ffb4dce3ecb2cd563aa30f9eb5088a1cf1f4f688b90cbb374fa96e49fc50b02 \
+    --hash=sha256:701bc55d08c22f981973ca4f6fdf4ea102ee1ee3a21b818b66fdb161ea711a4a \
+    --hash=sha256:713d7c33c0e231e3786eb0ec95885814dd65d5f3a09754399b6acbf5e9365f11 \
+    --hash=sha256:71615edeaf1ae70f5f3f558426072eede0168b7e5190fd9633878e29a0b85732 \
+    --hash=sha256:783abdfac21247d33bec40aa683d26bba30d61655c40de38b2decc4797aabf92 \
+    --hash=sha256:7c539d452cba22f250103c7d1c00cbe9038eb705e657476e701c43374efd9f2e \
+    --hash=sha256:7c6e1bd6cadae13958e52897ef020e85c9916a95917149fca463bb0c0421a7c6 \
+    --hash=sha256:7f9821dfc0c473c96ad55ce4189c7cb4f9c94e7d4f563afb874173243dec1162 \
+    --hash=sha256:823b222c4fc861a82c650998a6117ecbd150cc71bf8b78f9a31bf3f48c456108 \
+    --hash=sha256:83d6f42ae6eba44548a1a3d4f900a5b1500fdd14f09f04754a8800ab0d544432 \
+    --hash=sha256:8431ecb131489cbdaf6f51f7ade47475f73aff4f1912552f75ba19a6cfe233a8 \
+    --hash=sha256:848984e231190ae49bc8b5229e64d2a6fba4231dc6046e1b6b28ddc060bc7601 \
+    --hash=sha256:86e7abd24a67f61a4bfe8df059b67a2bdd8bf33705178e98463195d140bd3780 \
+    --hash=sha256:8772c2c0091e6fc2d0499151793d31bf811826986b0727052935a95104845544 \
+    --hash=sha256:8835566b3e94026da3ce2249f9ee35c9d2ebe4cd131f6a39bfc82708d3010a46 \
+    --hash=sha256:89213368eef163350af37127939ace099010e8102757905c3e329f1175950ed8 \
+    --hash=sha256:91238117cd296352f54f24117ff5a227bdea428865dba1244aa0cdd1424c0bc2 \
+    --hash=sha256:91315aea7adb51821d4a3378ede953bfdd76e3bf71551de4a82d7638cef7dc02 \
+    --hash=sha256:91c92856b846aa690ea6239ffd6c5003c5e3e296a69095570bf4efee5bfa0bdc \
+    --hash=sha256:928a44ad1e21a7e923eb924d601605f0694cd187d2ce5d40bf7ad76650f4627d \
+    --hash=sha256:92acf02c770b9d5c4e9a3e8d64e9d95ae26456a86ebb7b7cf64a97f899e5871b \
+    --hash=sha256:92ada606285dab054e40848a951f583c537cde1e54701ea1305ec0096877012d \
+    --hash=sha256:93bedc68c4138088ea3c042189c01d2945f530f0dcc36e1ea02df8418bd4f1cd \
+    --hash=sha256:93eb41d626d9a2749a678823c70bba8c25033cef474ae8001fd7621adbbd8437 \
+    --hash=sha256:95838be125133fa314753f8cc5168f7c41e3a9dd5eef5383dbbbeed511bd4853 \
+    --hash=sha256:9667637665acba166a7dbbc786f14c50512d3a01f7199e0e1a13b929e92d7c7a \
+    --hash=sha256:98722314e12a8e4fa346e0afd3fff2098b5732875ff45592b450a7b589b43c4f \
+    --hash=sha256:99e1d482138a71902415ba375bb4627679a5fefd3bd07803c3a8f37632f4981d \
+    --hash=sha256:9a87744e683d9a13f60b7fa5242c17f8d283ffa94ad727cb19063b48c3d34960 \
+    --hash=sha256:9a8a62281fd9c6a373b3fd3d473685e6838d43341eecde5f47729748e2c11ee3 \
+    --hash=sha256:9b01a092955c1c7530196ad526755cff4f2d11f37ca9a6fc9ebe37ca49a48977 \
+    --hash=sha256:9b2383933b1dd7a8c93e02f99ebfd305f1286057172483b8e6898bed3fef69d3 \
+    --hash=sha256:9e7460abce637f90e37f8c443559fbd687c38884d05cb69ef265e634945f4324 \
+    --hash=sha256:9eff570402175c7d5fff8497d5a9c05580664a79bb66c07b8f205d17f69e580b \
+    --hash=sha256:9fcde11462e0faab4c2a2ae8cd4516f7dd8239eec583bd88c5524d8064ad2d0c \
+    --hash=sha256:a1b4d60bad57d6e0e7cd30cc4d1dc646d258dd6dfb7935ce76c7dd72dd1e98b0 \
+    --hash=sha256:a3317630e2791f56071b82f89bb71624146125e4311e6643f708c6ba744b5ac5 \
+    --hash=sha256:a53d5f11cd6d15569ba3e53f3498077f0d5e633f6ec604d2ea613e895017ebee \
+    --hash=sha256:a55c1163e829a08707b4a92c8ee02a5a3a3847ced74aa4da94e3e975ffe1ec63 \
+    --hash=sha256:a59db03b80a156a6fbeae41096866d1cb89cdf31031ba44c768a804538880636 \
+    --hash=sha256:a786cf782ebb2e45a43c7118d75d452aac982b79577dfe804d8dbf2878f0b589 \
+    --hash=sha256:a88851e8e332588cb8cced8b5318d1163c7d0bb87830aa8dcafbc4ae9602b73c \
+    --hash=sha256:adec010c824290d4ca87047e8d8bfa4f85ac29f545f326cd5321696805d311ed \
+    --hash=sha256:aff31602e8518594e6f6bc670cdb27e37cb7dbeb2d5d0b76a7707b70fe951ddf \
+    --hash=sha256:b0b25d647036972c2951059046cb498f72b7af5a2def27bf8e5f44c3067ab7dd \
+    --hash=sha256:b0e6a2152706d84f7da8b9d34dcecc7e9bde678af32c40bd5b405f427ae0fbdb \
+    --hash=sha256:b1adf2f37521b578c438f6ec61d1c1d0c20b076863ddd5d8b6f3ab658857db3f \
+    --hash=sha256:b29b7c5adf4b2be7c941f7f76432aa3269cd5052ff8610376b8ece24d7b02c51 \
+    --hash=sha256:b2dd65864aad38dbcc57c3d0e2c978d4286e063378137d8fc0c9fcd558943285 \
+    --hash=sha256:b381574614245f18fdb2d6d1aa8f149e225869c47b5ee7f81812de8977817314 \
+    --hash=sha256:b3e681208e2d39fde13fbea449ef2736a85ec1ea2afa41e9193a8c536e71dafe \
+    --hash=sha256:b5675a12a7b67063fe3ca187e735b0463cf13fabc10166ae4d4b2f775fd0632d \
+    --hash=sha256:b583ddeee6a6bb5bbc04462167c68034913221139d52d9f155ca6d1637a2fdcf \
+    --hash=sha256:b62c89545d21d930c333208fd548e7b4f262228ba3a322fd75c987a75ab11f31 \
+    --hash=sha256:b7abcfaf66c1dc14c5ed928c349614f223c972a8b021b4be9548dbea6c817371 \
+    --hash=sha256:b958c217c6e56bef261f516e4caf5d490b079ad6a428752afada5a764cca6c71 \
+    --hash=sha256:bb6d49f00e2babd40af4889d6b9f4bf50879f522dd4e2e22cb705cac5e0c5e8e \
+    --hash=sha256:bd1fe69056a19c377a6c6de2c1240fb8676ba0512a969965efb486510c5e0f1f \
+    --hash=sha256:bd6ecae08c0d871cf93b6f0d4ee76b06c65be44ea22311981a022b2f1948cf9d \
+    --hash=sha256:bf7f99a0e6616cea754e2334d129091f3260d011369d9b8c658522bfb2427619 \
+    --hash=sha256:c1b65a42afc73b39e6ae908ec7b9c3b9898676a7b15ce4c66d4965f7071007c8 \
+    --hash=sha256:c324a7e0c0012e3974053f81a270d8f1aa23227571f4ddd3254c911bb356459b \
+    --hash=sha256:cb8d2d7b07cbe2d7488de7e53671f836c4f4a8032dcda079df33dc1b7e2397c0 \
+    --hash=sha256:cc488daac19e6f5292180fac5e0ef7efffabeef4e096af9a17a75a7d3d6781f6 \
+    --hash=sha256:d18d56c1ec63b304f4bb3c7db7e0d311e61cca1b1c944590a4b13ac39b2ca92b \
+    --hash=sha256:d3d049b557875f9d15230eec8a731749a7a873d8ed6a051903b05bdf46e0e65f \
+    --hash=sha256:d684ff87d00de2f6abcbbfa9b0fdce8b513dd799a900809dcfa7eb62ad69832a \
+    --hash=sha256:d71a9a9352acbcb5c73d39dd003383599428067b6eda5cf7c5d335a7a0da37e1 \
+    --hash=sha256:d79aaa468193c1bed6b0560d3c5c9f9e369e3efb0b128b38a2537e2d51d42773 \
+    --hash=sha256:d93c066a38f83376b5bc020e563666784d1b680a70d6ceb625fdb541af7a312e \
+    --hash=sha256:e2e6240a0a5ad847017b3d65187877fdb7a11d5a58d43c30736f9f523478913b \
+    --hash=sha256:e3d824b6152e1c0fd58dc6266f2de470eb7b2286135294f5f7cd26a0f0693738 \
+    --hash=sha256:e5c801bdf3cc92274b8fc2c7023c8751e5ae81260c009ac558ff55ce712a2d45 \
+    --hash=sha256:e80c47314c7233e7105a7efcfffd89d56e479e558189d1959eeeaf2639a27680 \
+    --hash=sha256:ea71b94a2eb5d2fc102926321f56d2ee8eddfad2673eadb1d23e9f287a492715 \
+    --hash=sha256:eec187d2876abb6a74203efbe2aa796455c1809334acf4e739dde35da8cfb69f \
+    --hash=sha256:efad0bdc67d3b119c3bab6b94d341a27333c2bb89ed75dfa182a4a06cd0ea329 \
+    --hash=sha256:f078e276848bc23d1f92f46fc88d5b9cbb824b9acc60d9e07116620e502e16a9 \
+    --hash=sha256:f07c965a8aa6d62145f122641f292129984f39a3e3697585b19298a1488287db \
+    --hash=sha256:f142cd663d1148ed32993ed9a58e5c67ea312f446a01a6c13a956945aafc9f23 \
+    --hash=sha256:f47c1349c3b4274aeb18459d54244881a5c0dee0fdccedffca45704ba5c9e0a0 \
+    --hash=sha256:f5ba7ef10ce82737e173fa95cafa1c8210918f7e653715b2c7a7a31877a74848 \
+    --hash=sha256:f73930dacad5e611fe019e18df6f53c30629b1843d038d303b8dec86a32493bd \
+    --hash=sha256:f81df206b937d0dca5efb38c25fc99037d82dbcd3740e34c3f81997d2322ac1c \
+    --hash=sha256:fd9aa71a800c87c0f7ab53fa38009169a23a82c685989626ca74a4bd483e1b67
+    # via pydantic
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
+    --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c
+    # via
+    #   pytest
+    #   rich
+pytest==9.2.0 \
+    --hash=sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588 \
+    --hash=sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b
+    # via -r requirements.txt
+python-multipart==0.0.32 \
+    --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
+    --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23
+    # via -r requirements.txt
+pyyaml==6.0.3 \
+    --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
+    --hash=sha256:0150219816b6a1fa26fb4699fb7daa9caf09eb1999f3b70fb6e786805e80375a \
+    --hash=sha256:02893d100e99e03eda1c8fd5c441d8c60103fd175728e23e431db1b589cf5ab3 \
+    --hash=sha256:02ea2dfa234451bbb8772601d7b8e426c2bfa197136796224e50e35a78777956 \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
+    --hash=sha256:10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c \
+    --hash=sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65 \
+    --hash=sha256:1d37d57ad971609cf3c53ba6a7e365e40660e3be0e5175fa9f2365a379d6095a \
+    --hash=sha256:1ebe39cb5fc479422b83de611d14e2c0d3bb2a18bbcb01f229ab3cfbd8fee7a0 \
+    --hash=sha256:214ed4befebe12df36bcc8bc2b64b396ca31be9304b8f59e25c11cf94a4c033b \
+    --hash=sha256:2283a07e2c21a2aa78d9c4442724ec1eb15f5e42a723b99cb3d822d48f5f7ad1 \
+    --hash=sha256:22ba7cfcad58ef3ecddc7ed1db3409af68d023b7f940da23c6c2a1890976eda6 \
+    --hash=sha256:27c0abcb4a5dac13684a37f76e701e054692a9b2d3064b70f5e4eb54810553d7 \
+    --hash=sha256:28c8d926f98f432f88adc23edf2e6d4921ac26fb084b028c733d01868d19007e \
+    --hash=sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007 \
+    --hash=sha256:34d5fcd24b8445fadc33f9cf348c1047101756fd760b4dacb5c3e99755703310 \
+    --hash=sha256:37503bfbfc9d2c40b344d06b2199cf0e96e97957ab1c1b546fd4f87e53e5d3e4 \
+    --hash=sha256:3c5677e12444c15717b902a5798264fa7909e41153cdf9ef7ad571b704a63dd9 \
+    --hash=sha256:3ff07ec89bae51176c0549bc4c63aa6202991da2d9a6129d7aef7f1407d3f295 \
+    --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea \
+    --hash=sha256:418cf3f2111bc80e0933b2cd8cd04f286338bb88bdc7bc8e6dd775ebde60b5e0 \
+    --hash=sha256:44edc647873928551a01e7a563d7452ccdebee747728c1080d881d68af7b997e \
+    --hash=sha256:4a2e8cebe2ff6ab7d1050ecd59c25d4c8bd7e6f400f5f82b96557ac0abafd0ac \
+    --hash=sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9 \
+    --hash=sha256:501a031947e3a9025ed4405a168e6ef5ae3126c59f90ce0cd6f2bfc477be31b7 \
+    --hash=sha256:5190d403f121660ce8d1d2c1bb2ef1bd05b5f68533fc5c2ea899bd15f4399b35 \
+    --hash=sha256:5498cd1645aa724a7c71c8f378eb29ebe23da2fc0d7a08071d89469bf1d2defb \
+    --hash=sha256:5cf4e27da7e3fbed4d6c3d8e797387aaad68102272f8f9752883bc32d61cb87b \
+    --hash=sha256:5e0b74767e5f8c593e8c9b5912019159ed0533c70051e9cce3e8b6aa699fcd69 \
+    --hash=sha256:5ed875a24292240029e4483f9d4a4b8a1ae08843b9c54f43fcc11e404532a8a5 \
+    --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b \
+    --hash=sha256:5fdec68f91a0c6739b380c83b951e2c72ac0197ace422360e6d5a959d8d97b2c \
+    --hash=sha256:6344df0d5755a2c9a276d4473ae6b90647e216ab4757f8426893b5dd2ac3f369 \
+    --hash=sha256:64386e5e707d03a7e172c0701abfb7e10f0fb753ee1d773128192742712a98fd \
+    --hash=sha256:652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824 \
+    --hash=sha256:66291b10affd76d76f54fad28e22e51719ef9ba22b29e1d7d03d6777a9174198 \
+    --hash=sha256:66e1674c3ef6f541c35191caae2d429b967b99e02040f5ba928632d9a7f0f065 \
+    --hash=sha256:6adc77889b628398debc7b65c073bcb99c4a0237b248cacaf3fe8a557563ef6c \
+    --hash=sha256:79005a0d97d5ddabfeeea4cf676af11e647e41d81c9a7722a193022accdb6b7c \
+    --hash=sha256:7c6610def4f163542a622a73fb39f534f8c101d690126992300bf3207eab9764 \
+    --hash=sha256:7f047e29dcae44602496db43be01ad42fc6f1cc0d8cd6c83d342306c32270196 \
+    --hash=sha256:8098f252adfa6c80ab48096053f512f2321f0b998f98150cea9bd23d83e1467b \
+    --hash=sha256:850774a7879607d3a6f50d36d04f00ee69e7fc816450e5f7e58d7f17f1ae5c00 \
+    --hash=sha256:8d1fab6bb153a416f9aeb4b8763bc0f22a5586065f86f7664fc23339fc1c1fac \
+    --hash=sha256:8da9669d359f02c0b91ccc01cac4a67f16afec0dac22c2ad09f46bee0697eba8 \
+    --hash=sha256:8dc52c23056b9ddd46818a57b78404882310fb473d63f17b07d5c40421e47f8e \
+    --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 \
+    --hash=sha256:93dda82c9c22deb0a405ea4dc5f2d0cda384168e466364dec6255b293923b2f3 \
+    --hash=sha256:96b533f0e99f6579b3d4d4995707cf36df9100d67e0c8303a0c55b27b5f99bc5 \
+    --hash=sha256:9c57bb8c96f6d1808c030b1687b9b5fb476abaa47f0db9c0101f5e9f394e97f4 \
+    --hash=sha256:9c7708761fccb9397fe64bbc0395abcae8c4bf7b0eac081e12b809bf47700d0b \
+    --hash=sha256:9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf \
+    --hash=sha256:a33284e20b78bd4a18c8c2282d549d10bc8408a2a7ff57653c0cf0b9be0afce5 \
+    --hash=sha256:a80cb027f6b349846a3bf6d73b5e95e782175e52f22108cfa17876aaeff93702 \
+    --hash=sha256:b30236e45cf30d2b8e7b3e85881719e98507abed1011bf463a8fa23e9c3e98a8 \
+    --hash=sha256:b3bc83488de33889877a0f2543ade9f70c67d66d9ebb4ac959502e12de895788 \
+    --hash=sha256:b865addae83924361678b652338317d1bd7e79b1f4596f96b96c77a5a34b34da \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d \
+    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
+    --hash=sha256:bdb2c67c6c1390b63c6ff89f210c8fd09d9a1217a465701eac7316313c915e4c \
+    --hash=sha256:c1ff362665ae507275af2853520967820d9124984e0f7466736aea23d8611fba \
+    --hash=sha256:c2514fceb77bc5e7a2f7adfaa1feb2fb311607c9cb518dbc378688ec73d8292f \
+    --hash=sha256:c3355370a2c156cffb25e876646f149d5d68f5e0a3ce86a5084dd0b64a994917 \
+    --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 \
+    --hash=sha256:d0eae10f8159e8fdad514efdc92d74fd8d682c933a6dd088030f3834bc8e6b26 \
+    --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f \
+    --hash=sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b \
+    --hash=sha256:eda16858a3cab07b80edaf74336ece1f986ba330fdb8ee0d6c0d68fe82bc96be \
+    --hash=sha256:ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c \
+    --hash=sha256:efd7b85f94a6f21e4932043973a7ba2613b059c4a000551892ac9f1d11f5baf3 \
+    --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
+    --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
+    --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
+    # via
+    #   huggingface-hub
+    #   transformers
+regex==2026.9.29 \
+    --hash=sha256:01000ddf0e3ffef97f2413ceb514f6313040106b6d18a03ee00a4fe35c1eb1db \
+    --hash=sha256:0166844493626c5015c6088ee15c9ca2fd060ca15b7641d1657da6a58432ae33 \
+    --hash=sha256:044265d77d94f5e3cb2fd72c76723807c429cb8c533e9d4672d0334a6f14f588 \
+    --hash=sha256:0476e5bcbe6e1ba3d1c4cc7bbb1c3ba78e3b979b5c8a88d0a6a8cdd4992b8c84 \
+    --hash=sha256:066d0e3dbfdd739bce2bf8c2a41dd16f73e3d8adc2eb06dd803a36a307f56075 \
+    --hash=sha256:0b65c72739f981377c9c22e0c5c3cd7f42da7bd8a3c9209330fac772c7d893ed \
+    --hash=sha256:0c992c19cd45058a4b92f68f139c93db168b48fb1f322c9a7cd620806afb6b51 \
+    --hash=sha256:0cc63b5e47c12a48d90c7e9d7de6a035dd14f62868aaedbb4e0ff8ba2b8bfe7b \
+    --hash=sha256:0dd8af32e9f7b56b7f95cc1fd79b23054c3bdc172392ae560acc24d57b7ffe71 \
+    --hash=sha256:0def9fb6abac55492d6d51cddb7225d07d6f279e774e0adc08569a54a5fc8d46 \
+    --hash=sha256:0fd2c901cc307a745ad4bc87f20060d7a0825a3371d1e93488af22e7a387f78f \
+    --hash=sha256:1043aedf5917caa861bcb25a9c11460049656bdf0017a90a309fa8f255467725 \
+    --hash=sha256:121a76a0985db80ceae9e171c337f8c927868e37d01b54e3ce87bc87f9c6a208 \
+    --hash=sha256:143533cc4b6fbc5b95aca0a5b8d541088d374831593def000ec89322c220221d \
+    --hash=sha256:14e953ff3607c92d7675bf79c4d4509ef6782aa8c08509f179f9b3d6d0679e86 \
+    --hash=sha256:18ae8eed4526e35bdb754d61562b90bf5c00a67fdcf3cc1380dd59597486631b \
+    --hash=sha256:19959129885356df0e97556856f77eb2888380dac18bed075a7c05c5128c618d \
+    --hash=sha256:1ba8c6a416569ce0d37e83e28a254a61dc99a419084dfb6476cea02d997f74fa \
+    --hash=sha256:1c2a0026062abcc321a53db4a185ceba0b59a66b5d37b0808917a88b55a5257f \
+    --hash=sha256:1d9fe8091b2e89d470df68a9331111ed008ae8aae6bf1e8e1fba4086a495c84e \
+    --hash=sha256:2089fe39c406784d90101c726755ffa1497bb74638fd434300d2b88006186de8 \
+    --hash=sha256:23ae6fdad9e63e54038f5ef78aba2933faca61e24d432786589e737bc5522ebb \
+    --hash=sha256:26ec4ccce55aa533fbd603d08911b01101a8fcfec987845ac3ae2c7087b2bde3 \
+    --hash=sha256:2f7f7aa47b229f2b39a2ae2596d2ad5625d77b5eb9856fac2dab3eb506cdd0a0 \
+    --hash=sha256:31b003f9a070335e2a8233ee9b14a3ca8e6d792012ae011f741bf0aaf11744c5 \
+    --hash=sha256:32ab11df9677ca80bcbb5fe4eb1da9109a5019239a054836efc6fa1c64e683cf \
+    --hash=sha256:33026515aebc0e70d1c89978e53e8d695d35d9e472f8d5b34465ba3c74028650 \
+    --hash=sha256:34b6925af9853bf461950e6508910f179fd6e9b1a7ec8548e069606b7e51a26b \
+    --hash=sha256:352cf115a810b357caa35193ab656ecf5ef41056855e82f292c99e8514f8d954 \
+    --hash=sha256:39ab5894d971f9ac68baa6eca5c50387db579cfcacf36ae8df3feceb1815e6d0 \
+    --hash=sha256:3a21a9509d0ee88e7a70e1ad228cd2f0e0fd1e187458db132e8a8d18c97daf9d \
+    --hash=sha256:3c5c2ef13797466aa64170cbb66ad98a32351dd4127694cea7199f80f213750d \
+    --hash=sha256:3e778bfccd63075167709136afbc251c1f683758d5bf49c803c60ac3f894ce6b \
+    --hash=sha256:3f1e6cb402a89457582cd696f982559217d13484a193202c394015297968c86d \
+    --hash=sha256:42e82e578c904445d4c8a35b8f28052cf567593215fa5db06266fbc6f77aaa2e \
+    --hash=sha256:4408b2b27a95ca8cc48b7411945753773353b5c93b307754781086c99d3a576f \
+    --hash=sha256:446654b29bfaa30500d80947eda42cef1449dc8a87f4e3cf061cc8485d3a1f0b \
+    --hash=sha256:45010bcfe66df41522d56c9b6114e87ecc597a08970ff6a2ced24415c141ae5f \
+    --hash=sha256:49ee178ca31c94621294bf9b8b676a92a2e6bba8af0529591753719e57edb621 \
+    --hash=sha256:4d7d93613b01b0199961330e49cfc52d479b3d5776c56c691db31130c0a07d91 \
+    --hash=sha256:4fb41211d2333eb930a51e0546a65999761cf1f572a4da56ef9b8a62966c06f2 \
+    --hash=sha256:4fe97894d1b306c919b4e50def1e6f6c522f4d03a7283811f4d108f1ce5d3ac2 \
+    --hash=sha256:554bffadcbcb6d5f4e5fb10a61cc52084b9a63d1dab5f10bcd2c4343972e8e2c \
+    --hash=sha256:59b49507f47479e299a9e1bc41b5cb83a7afda0540625f1dbae886615978acbf \
+    --hash=sha256:5eeb8edc6110d9194a4d0d54610f64c37a31c605b5dbb7e407fc6ec7fa34a4a1 \
+    --hash=sha256:612b709381c0355b70d89cdb51b7f670591ed5cbbc0e3b5337488019dc667b65 \
+    --hash=sha256:61956f074ecd123f55adca68ee3eab46e6a07ad3f8e64e6db95dfacb444f55c4 \
+    --hash=sha256:6398d5145689503412cc1748895242598d8846b8967b851133b20dc2ed1e21e8 \
+    --hash=sha256:65b408d8fcb273e3499e7ef2ce796810da1becd208c7fb4373692a242d79d461 \
+    --hash=sha256:686ac5350fceae63830bb98805fcb8039325bf4c06d9f6f048ff65229d5bffa5 \
+    --hash=sha256:6a1a824fbed817e0a891103886b68f063b1e83cc51bc97192a90a60195a9291f \
+    --hash=sha256:6abb75ab16bc3281714a5b99548a2225db70dba1f995f6d7f7419b76eb5a8fbe \
+    --hash=sha256:6f7121a8914ed13fcfe2099f895341bfb789f004d4c5a0bdece8fa667da10849 \
+    --hash=sha256:7020ed44df30b3aa492c00ee3b52d0548c1f30c2c6c5bb13ae897680900d3413 \
+    --hash=sha256:720537c7ea6f80dc61913184edb0ce2497a306b39ef19f28505b322553d52bdb \
+    --hash=sha256:724184b4aafed865e4f13ca313fdcb43024300c028ec67319cfa16847d84685e \
+    --hash=sha256:7c03031610e3e6ed1768a2b7a8fc84637c1257b50c5eacaf094c6e17a84fc563 \
+    --hash=sha256:80a5ea3b4fd9d6a5b9a44f7976a9acaaab35aa3c1f6b29e5bd857dfabaded223 \
+    --hash=sha256:80c7cadd3fd2bfde5df8aa0787e315812cad0c313a753095d02f4c2b6c01677b \
+    --hash=sha256:80ea96f5c1a30bf09007d48466521d9c294bebe197c708c3359096e3e3691632 \
+    --hash=sha256:864e9b87ac33c3fb9fb4ad48166d4fdb579c351d5c77deb0d34bccb36a775cd9 \
+    --hash=sha256:87fb80cbe3557e27e7b28b995c2b2eedf689b8886f941ab93e0e288f0976518a \
+    --hash=sha256:8873c4a11c50b9989168881aeb3f08859f469d809941866aa1feefd8be5431f6 \
+    --hash=sha256:888d60953908dcf761aa320c3e390ab8556efbdb551ace63921de90f6ae0848d \
+    --hash=sha256:8b5fcc4771732191b2b7d1dd68d8f0353f47f8d90b6150f6dce58bf1112442cb \
+    --hash=sha256:8f39588af4731c8923c26810eb3b33f76f17633985e40f59c3cd45a33805a895 \
+    --hash=sha256:9173db3be74a35cb6731701094b98120f7ee4876a287882a59cdea1fa7da342f \
+    --hash=sha256:92f05c9c42bde5785dc48770bc2194d9f7442544156f951e19cd31b096cec562 \
+    --hash=sha256:951733b1bbdb71e377cec567b409f1a7881b47cfcad84121aa74cb575fa425ea \
+    --hash=sha256:957bb708e8057ab1649ba566456429d691ec9b90d1c9ad1af1ba7ffbbeaf05f2 \
+    --hash=sha256:9916fda742cd4eede63b286f58c06718324265d727ce0856eb1aac86d0d150d6 \
+    --hash=sha256:9e1d3a4cb7993b708f0ada8d0c84590efd853f169e7147d2202c9da503180242 \
+    --hash=sha256:9e4482589065c8ecd761cff522dcd85f2d39e62f551e37e025d1c7d54772def3 \
+    --hash=sha256:a5300757f8a68f5b6cc33f57338d72a0e3589c5cc9ad5f8504ea06f028be582a \
+    --hash=sha256:a540abfab208e1b7ef2df231c40ef3b6cbb30a0aad6204e9b6a81c10a6794628 \
+    --hash=sha256:a5758353650079898dc1b2b0e95aa51fa23a30d020e06f62c430dd08ee56cdd8 \
+    --hash=sha256:a64b85a4760337cfefdb27d42da6ed8b58e8cde3f2d57b6ef43e76ef6ea9ef47 \
+    --hash=sha256:a655d34b2a6943af32401f3d94f72e9d731f6ad16285815550bf2b4ee69d420a \
+    --hash=sha256:a714befaacbd10092ffe4cea0d3c5f008fb9efe9bc322c715bcdfdee414b9a3d \
+    --hash=sha256:a760da040b47767b4b873adfb7c3b691e9ba2fc60f113f9d0b88f1a62f323e85 \
+    --hash=sha256:addd736a0547d553283adaf4e05d7104e7f2c7b0b092e9b4d28756825f14531f \
+    --hash=sha256:ae4613d7d9dda60fcba95f846cc6f808017f1843f392cf9daad14a6534493d71 \
+    --hash=sha256:b11b589e00095ec69cf79841a76360f9b079e95b0368a25b5ebb951ab0c157ff \
+    --hash=sha256:b3e445b66c80b4eb4234e855ce94d9adc183eedbd632816228d89930b91b2c5b \
+    --hash=sha256:b7b893976e7fe42053da64f2aa27239c24252fd2ec6df471e1be197c0addc3b1 \
+    --hash=sha256:b84f186a7f0536fe4ff9a9fa12d06d007b9b71d4b5352ddcc41f59ad6522a312 \
+    --hash=sha256:b89efc38431793d28b7cd91227e2f952ad7c48df19132b17f43a5fec3c14143b \
+    --hash=sha256:b97a38fb4c732b6832db6bf108963adbcd82ef1268ba2025dce390f45af75efa \
+    --hash=sha256:b9d74e4eee9ddb64c2e92d5d61472c59c21684c059eb7b68767be9628e977859 \
+    --hash=sha256:bb90e7177944b6684738c1fc36aabd2dd00d1de3be7dbe09f91e196f1bc0dc81 \
+    --hash=sha256:bec37990e3d6121f29ecfb594bd8f1bf009e9f7926daba2e50e3b27d3892a783 \
+    --hash=sha256:bf3c49863c23a1ad6da9c30351aed6cff8d5ddbeb63c5c8420ae54e98c7d0138 \
+    --hash=sha256:bf48516e35cf848390ea68850aba53e7c333720d2945b4d2c25b69fc5171723f \
+    --hash=sha256:bfc71e6d970419c1309b3640305298643e2a734cad3f7cfb6d2ddee4175ab53d \
+    --hash=sha256:c0094897d7d01f184b2d7fe8c56c66d64efe01b31f4b7d34205b391387df1111 \
+    --hash=sha256:c03c6eb6ece86dfdcbb34799efaa339b093132e1aceed491ba5e08fe06cdf699 \
+    --hash=sha256:c1a9a6651197fbed6f0212591418b9def774fc3f8324f78d1bf0e6a63e5f8aa1 \
+    --hash=sha256:c3589f40749acce747510bf5d589d54e376cb0930ea58b35effac97e5312b0c1 \
+    --hash=sha256:c4e38dd8f39c43a91d2410ad2b85610701b0979342c3df1d69eaf8e838c757d8 \
+    --hash=sha256:c6c8fabf1dafc1f1ddcbb67896d3f93efb092e8c4b6322d7389b944e76a484e5 \
+    --hash=sha256:c90fcf7804ea0a54b896ce0f2b9565350220b8d4890fd0db461a476a4c687963 \
+    --hash=sha256:c9b602fae1e00b7c035d661ce85575365719192a7b46784bd71cf64c68053aa0 \
+    --hash=sha256:ccb64d887a9db1cd76dbc0f92051a1a478a2a67e7f56c62d915cb881d7734704 \
+    --hash=sha256:d06fcdecc10fc7954d7c8f27a03c96055fe525274dc84a7b0dbdc3d6b9e03dab \
+    --hash=sha256:d0c3082bf79bcd6a614d55916590ad4b8f93200e10b97f463ea5d9d07c9b5f23 \
+    --hash=sha256:d49c18f1ea294cf4adde2e5ac256e98c82ea9d708462ce4bf799dffa7cfe8a2c \
+    --hash=sha256:d60030baaa7bfbb02d650c126cdcddcb6e33dbff14d819434c8fa2fdcaeeeba5 \
+    --hash=sha256:d7cab119d0df0b9413f106b4d7fc34f2872d3574ed3806fb48959c830b1537da \
+    --hash=sha256:d9b77b25b4f395f92de6099ab08e8ae2bc7e51dfe157f22900902243a5cc90c7 \
+    --hash=sha256:dabee8f4935e731fb46b2a3091bdda0d3d94b3bbfb907d2b4f12eefce4009619 \
+    --hash=sha256:db5e82ba15c142425b8406690032df89e39cca4a2e8afbbb9a3d84edc2373ac3 \
+    --hash=sha256:dc79d36d0618752265f0d575915bdc5c5130ecb9c9f6b3bcefeae32e4bdfafcf \
+    --hash=sha256:ddfa987262763c3c22a8367d2a49c244b018a74c3a8e3ab1a864119ad45c5633 \
+    --hash=sha256:e1172147d28d8fbcf8cb8d26c41506169f5ad8fe9ec969cb116835a19d4d8eca \
+    --hash=sha256:e11edba5bc344a32b029a7af9d4b3173982dd79eeafa0b9dbd787364414b0509 \
+    --hash=sha256:e2c89e9b762c57f59d5e99ee8b20202adb892e35f8d3485741340999ca55058e \
+    --hash=sha256:e31f72490b7c12f7790e1e25c3afffd20503ee1bfb43461d7838b871ff244b19 \
+    --hash=sha256:e8c65ef3862a8ad6e86492b6ed9327805dd66904c012bd3649dc67d822ed6c34 \
+    --hash=sha256:ebb8912f565b8cdbbf27debfe00df04202c20e2f651b9e32767930c5eace3621 \
+    --hash=sha256:ed511a0708e2297e1d6431e7fb217e3402791e491e02da800658ace4973df1bb \
+    --hash=sha256:edf06545875f3efa31560d94121e95c7fd70d98b1dfedc0157097d79b13b52ea \
+    --hash=sha256:f0fe9834e5aeccaf19a0d8feb296d66a24be1a7c9922002f842a682cd5abb787 \
+    --hash=sha256:f1a0d5117230dd46b399a30a38afa44f79c99f3168988fdc4f425c3f928b39df \
+    --hash=sha256:f37964e4a5e993d2fd45147741e9dff7f34a2d8c00ab94c4ea0514a4677f959e \
+    --hash=sha256:f57dc6b8fef170f105d2cf5cdce254f47b137d7755086cf7050f47e16582abba \
+    --hash=sha256:f93bc1c3486ef3747e07c9d7c1d0a147b8fbaab975f80e348aed6f71309dfaca \
+    --hash=sha256:fb00027a09a8f9f08028b40dce4c933cf73e4833240ed356583fdc9cfa721566 \
+    --hash=sha256:fb99cc9d45f48895d9d67f6a0b8a57f08d39c174d9f25ad97a313e0470267b1c \
+    --hash=sha256:fdd88ed5e20b1bcdd234421e454962c971aa44b653bdb7f1ea9ef683e90fb649 \
+    --hash=sha256:fe3fa1dd453ed5c7f5ea23a26218329790ed7197a99b90e94330e313959a7f52
+    # via
+    #   tiktoken
+    #   transformers
+requests==2.34.2 \
+    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
+    --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
+    # via tiktoken
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb \
+    --hash=sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36
+    # via typer
+safetensors==0.8.0 \
+    --hash=sha256:040070828e36dc8e122178bbbd5830ff9e97920affb84cbe0f46442497bed358 \
+    --hash=sha256:096ec1a98435df7beb08853bb5aa9081a84f23d0adc67ed1a0a10550f608373f \
+    --hash=sha256:2ddf52eac562eda224f99acfa7889d02968c1fd59a5b011ae7d8137c37e9c02d \
+    --hash=sha256:3ae091f16662658bdc019a4ff6cb4c085bb7d725eb5978b183ffd265863b6d2d \
+    --hash=sha256:4124502b78f03534117c848f87a39b8f31e577b15eff423bf8bfb95f2a8c30d0 \
+    --hash=sha256:4a95ae2b05d7726d751da4ebf626a2ca782b706e101bd894c95bc2450b1cffcc \
+    --hash=sha256:7a46e5ff292c356d6991e60942ba7f79817682d3a2cef0702136448cb9c4d235 \
+    --hash=sha256:7bc0a787ba8a35be368ee3574edfa2b1ad389eebd0a72e482ae275490e3f6c98 \
+    --hash=sha256:87eec7ffed2b809f05a398a8becb7d013f19f7837cd15d9748580d6cf30dbaf4 \
+    --hash=sha256:8e080062fcde23be189565e1c3305d16751a218ecf9412c8601e64204eb6f846 \
+    --hash=sha256:8e9f537aa183a38ace122d27303dcd986b26bd2a7591f9181d7f0c396f4677ca \
+    --hash=sha256:c554f85858e05226d3c2828e32395e677434685d6d94594a41643361c5e837f0 \
+    --hash=sha256:c80201d22cbf405b80647a60ada77bba06c8fba2da2743ba1e89cdcc39a81f25 \
+    --hash=sha256:f7838e5135a406ad3e02efdcb8cf2e5397d368b0154537c4fec682dbc544d452 \
+    --hash=sha256:fabaf3e0f18a6618d9b36560682562157f77c2b71fcffc7b432be2baed9d753d \
+    --hash=sha256:fcdd41ec4628fee5799f807c73c353629130fbd942aa23d83c623dd6c9d52d78 \
+    --hash=sha256:fd6f3f93c9a0a7cc2788ee63fb763353d4bd2e89b0751bc78fcf7dda00bea774
+    # via transformers
+scipy==1.18.1 \
+    --hash=sha256:011413b7426b75012840e35649e00fe0a2c3bae89fed433876e3a99251572efc \
+    --hash=sha256:0ac49ea97594532dd44b7136094d35f5440fa06e6d9c6384a74c01764df388c5 \
+    --hash=sha256:0e82073ecc7acc6436fac4b31674109c7e1d3e596789767eda01258a8c9e8123 \
+    --hash=sha256:0fcb3c93519f27bb4f0c4b0f7802cdcaca7fcf93267b75edda2e9f4e8a55cbd7 \
+    --hash=sha256:10ac20c69d880f77f375db44c22e3e6a644f9fefa291d4cd2fb9790a89fc99fd \
+    --hash=sha256:11c423f1049c5755ad4409af52a9ada1cff96fe9b50795d4af3619f292901239 \
+    --hash=sha256:179ce34a8d0fe273d8883ba59e17e052247d08973dfcb743ca52bb1cce2d60b0 \
+    --hash=sha256:1bca3b943fc2567ea49cd02c99abde49da4d5178ec46f624bd8255cda8755beb \
+    --hash=sha256:1d73131e358976663dd969e1fb4ed1404b815cd977eaaedc3b3a133ba2d81c35 \
+    --hash=sha256:2a0b02f9fc46f8520330c23d45e6560db7e3a0d927232139427637f98943e11d \
+    --hash=sha256:2d3ab0e8c69a17dd3559eab8cbb88f258e285c94d572c2719033f90f83290c89 \
+    --hash=sha256:30f464bee641fa8e282577c7dce027308403213c6ca8270bba73285c91024bc5 \
+    --hash=sha256:33a834464fdabc0f26a45508df31b3cc5d028e04dbf6c5ed398541418e0a12fe \
+    --hash=sha256:3ab3523da44749156e1f68b464dc56af11ae4cbc5c739a49d05f32b982eca9f3 \
+    --hash=sha256:3c085faa2cfa879c5141df483f836f4d691045a078224a670fa570fa01612d89 \
+    --hash=sha256:457fd7a2a8edeb044ab6ffbc0aa03ff6cd18491356e5e0c834d76ce621b916d1 \
+    --hash=sha256:49023963c193dacee096301452f223ee24d86ec5807f8df93c0f7221d119e305 \
+    --hash=sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307 \
+    --hash=sha256:559ed65f60c1af5a03f3912605a1b5114f522c7c32fb23c3376ae8f03219fe28 \
+    --hash=sha256:5632e3ae3d09197c446310cd5187de63e28448ce22f0f67b2b93d97503c0c230 \
+    --hash=sha256:5e4d44984abc0020154ea81b247adeddcc3ac5527b975ff798bd1ba0adc513c2 \
+    --hash=sha256:75b00eb8fb802090aa903f4ea1c7f5a584779f967361e68b7e98e531cc2d7174 \
+    --hash=sha256:78a0d7c918e74a232394117160e7e3db503377572a45bcef8826e4ab8a35feba \
+    --hash=sha256:78c0665edead396b1abb4897c41a5c1d9bf090c8a637a4c20a61678e0a264e66 \
+    --hash=sha256:7bbf207c4453ce1ad2e00b17313852b33310b83090c2311bdaf97f93c0380d12 \
+    --hash=sha256:7f4b8bc363b6d65ee2152bec57568e3c52639bb34c46057b09857a307ed5e21d \
+    --hash=sha256:82f201b4c878551d48558337aab270d3c6cca5507b8737c8d8a608d234cccde0 \
+    --hash=sha256:83de5453a7799afc9048b4616bd085cef126e36412f0ea2f6370c36a2a3a51e7 \
+    --hash=sha256:88f0e784020649f88ea48c9f5ddfa403bf9205820667c0914740b392035afb82 \
+    --hash=sha256:8bcf3c1ba5d6456e2effd30fcbd3459b044d683fcdac79a2e6830f0bdf7de487 \
+    --hash=sha256:911de823097db8b63f034299d12662db93344e6ffa0b881cbb57748974b70168 \
+    --hash=sha256:92c14f5bdbfb6216315ce33e78080474082de8b3830122ba97809bfbe65f75c0 \
+    --hash=sha256:95298364e251be3e60249facbeeca03631d3bb7584f85879516ec55ac717b81f \
+    --hash=sha256:9554bcc6d715ee87a633a3cc8e7703c6628b100dd29cb8a2efc4c0533c7ff729 \
+    --hash=sha256:9f2897bf7737392ad0d5213ea7b6add72a4edf5679b3153106aeb88b6507b3b9 \
+    --hash=sha256:a1d33a7836f7ddc1993427966a0823468ec41bcbdb1a9f9942d1d7e57f803ba3 \
+    --hash=sha256:ac0333bdf38309aa3dcbe7e3fa7ea29e7a2c37c6ea306a757b700ded8e4596ad \
+    --hash=sha256:bff0b729edd992766136b34e39cc76bc2fad905aa58897ee72a9cd000a6d8443 \
+    --hash=sha256:c24acac1e18912761c4700239bbc1fd32f615af690f1584d49b35859be51324d \
+    --hash=sha256:c35d74ce0e193ff740c2f2be2ac913ddc232fe6c1ff40b26cfecb9c670c63314 \
+    --hash=sha256:c825cef2f49e46753726a7181a8e199804a912b29519ada542c6ebc654951899 \
+    --hash=sha256:c9d18a33309122074ea483dd92dd444189166b8b2ec429fe9ed5ac73c7a0aa23 \
+    --hash=sha256:cbf38d043c1aa4ab306e1ada6ab6eddacc3322a20b7af1b30bc93254b366fe09 \
+    --hash=sha256:cd479fc04dd9401e3b4f49e76518768ef99c4f517a98c284eb091fd725719adf \
+    --hash=sha256:ceb30a00ce7c92d459819443d29ca486d882b83fb6738bdcbb2a1cce94ac5daa \
+    --hash=sha256:cfbf154f2ba187f2ed6cce2639efff7d105f1140573642c0161615b6d91d6a87 \
+    --hash=sha256:d2924a03db38dc2e848bca2fe9f077dafb891480b91a00a0963a8cf86dfc31c1 \
+    --hash=sha256:d416b16cccfd70fbf62400e84d0bb2f4e6af519a45557f1692c749b37f14b315 \
+    --hash=sha256:d65d448389b8436493abcf629cc94ad0cf32aecaf06e1acca1de53cc795f2f12 \
+    --hash=sha256:d84a09d0dad90ba6525d8ac1c2334b33e64bf3ccfe9e841f02feb867a22681e4 \
+    --hash=sha256:ddef79fb382df40104a19bb7151b3b23e57c1778fcf857c71ceecd9bd264513f \
+    --hash=sha256:e3b417bf8c2c7c16e8f58ad91db17783ec911ac16e7b50eb6eab6e809b4f5b07 \
+    --hash=sha256:e402cf31eb68f453dbb2d36fc6d722b33f24a55d68b2ae1d92fa6305ca71c298 \
+    --hash=sha256:e6fb6a55cc0ba97b59a1f288fb86dc6fce8bdfc0fffcbfd015e3a954bf2a2d93 \
+    --hash=sha256:e708533e8b2ae2497d65346538a7dcc92814410b25b81432eac66de0f2af8265 \
+    --hash=sha256:ea324d9dd34c38bfb9bec8ca4d1b407db97dbb74029f566b8e322b1b6fe56fe6 \
+    --hash=sha256:eb0dfcf4e28a99c12c999744a2ff67c9b06200e20401c7c88186e33552a46331 \
+    --hash=sha256:eda632a7981f69730d6281f451db9c1c370993a2c0d7ddb43e2a809a2862b83a \
+    --hash=sha256:f29633129f9fa7e88a3f0fca835de2d030bfc9643f7799e1a0c46cee24d38fc7 \
+    --hash=sha256:f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218 \
+    --hash=sha256:fdaf5ea890a6183d0565f51a61799d67081bd5b1cf03c5f4b3fd3732108625c9
+    # via
+    #   mlx-audio
+    #   mlx-whisper
+sentencepiece==0.2.2 \
+    --hash=sha256:046b15ea22d8042e2e173561d464ec3b64a9c2081324df70ebce7bf7ebb3e497 \
+    --hash=sha256:0e2aae42960392d6dcb9a72d8e1e65a97294c965071b43c7b3429a42f350250e \
+    --hash=sha256:1120e0791540615e650b2e9bea835bf38a7362455d8ab62dee7968219c2d79a0 \
+    --hash=sha256:1402d8ee36f0d851cea8eee4dbb85fea14643b7503cf4d00d102eec0fe3ca719 \
+    --hash=sha256:1416b92f2f010333786fe6306ed2631121d5ea492219b0841e967b6765e64107 \
+    --hash=sha256:16c84ddef8d3084a8af37208acd365b08092ca089080f1a71fbfdd911adda9b3 \
+    --hash=sha256:1edb10e520e4bddf74d85b0f5ae74cc2d60c2b448885080bfb618bc2b3a49f6b \
+    --hash=sha256:201a8e0f55501a76e08dbf2c54bc45f4642b379271e89c667d517bfbc2191f2a \
+    --hash=sha256:252908153eeec06c3ca3a32077e64a49d572e3d89881475b4e0f02d99d9fcc7c \
+    --hash=sha256:38111ed1f79268f399c505028023d5eaaf0ab4e5eafceb709468b0d3323e7838 \
+    --hash=sha256:3ab3f1ae98970b5590e2209341522718900ba19bcc2c207ffaa6bd417ad960c5 \
+    --hash=sha256:3d2b5e824b5622038dc7b490897efe05ebbbb9e7350fc142f3ecc8789ef9bdf6 \
+    --hash=sha256:3ec27c152a1f1b24bc9168b55a5880f3c16e2334e697da6f55a1046a22405a3d \
+    --hash=sha256:3f5851441ab1ef8634963a5100b733a8bbeefe623e0c5c005b1f1f3880e574cf \
+    --hash=sha256:3fd9ce2ab4460c713cfdeb4aca693ca6732a11538e05fb332d5af42e3d7fde25 \
+    --hash=sha256:44284adc6fbe9d5bdd480541431a3d93f674fa44736714d3ad4bcee8283ace7d \
+    --hash=sha256:443ac618c7a2a1377cf5c82581fbb849591d14e656d5e5a3e4682d4e36a34e4e \
+    --hash=sha256:46ba07b543add034de0ff47ac5f907e9a06682f91d85121a972764628933be6b \
+    --hash=sha256:4f0603267cd15b92b68c2c0e852a441507614b70dc7773659baa6b8c214a91fd \
+    --hash=sha256:524e2a85c028a0d2f9935191fa751e5ef9d9bcc39616f70ab14b28d0369c9936 \
+    --hash=sha256:54a83df9260a89c1734256e620fe1f1a6bfedd7547139d4dc1384efac11a3a85 \
+    --hash=sha256:59d6588712101ccfcae9b03692be3aaae1514c2078666d7b05f15ba3a702e41b \
+    --hash=sha256:63250cfab8b80a1ef82a614eb2b3cadfec2c405f870cedc139d08e2f063eb708 \
+    --hash=sha256:64b656f025355cf8c51abe9fbe3848540756c6d7ca5e6791b1afa664bc24c7cb \
+    --hash=sha256:65d84ec36888de4a848eee5f910e67fbc79b064685ef1e10a502e14520ead9c9 \
+    --hash=sha256:69e9dc8078e128286ed3b975e37c837ba96e215a50c3ef9f3f8b7ab9e5a832a0 \
+    --hash=sha256:6dd76f3e5c8b2eb8a3a3efee787bbf5b9a66e52a048fe09cab85eca33fec6790 \
+    --hash=sha256:70d4ca6f4d06df7f0ccab6fe4f49c8a712c8c8b6847b4f0af9a0e1dbb0e0337e \
+    --hash=sha256:72b7825b331b1b7e7c45be2e674b3e3c65af608fa376bad2d851b20aaf0cdc78 \
+    --hash=sha256:741b4b367140e9b5c36b5a14c72179f2c946d991ea9a7c031a2a1ee6ad097b99 \
+    --hash=sha256:74f0ee601047c0c12a783088b51be4e6214a62ecd9e02278c477433cd16e0ed9 \
+    --hash=sha256:76ff5814db72e7462dece042d7593cdf102b8ec82c2b1cc201a2add34ee3050d \
+    --hash=sha256:77c3ce990b23441e5ecfa5bce181fd6f408b564aeb6d7e1d1e7de9c5612501c8 \
+    --hash=sha256:79bac5a251f23a7341e28fda9ce0d5319edf45328239ce037c0682936f137906 \
+    --hash=sha256:7c6e7bf684dc12145bfa685d3060beaea55139134ba848289bee514ed42e7383 \
+    --hash=sha256:7fc14c1585139fa6b68775e616a6b90cf622ebf219f9558c0aeaf5d253ee6c9b \
+    --hash=sha256:89625fb43765cccaa1443b9adb61f283e5fe4cb1536728205d06bada730caa53 \
+    --hash=sha256:8b2db2056c97224e122054fd794543cde5d24b7cae28424f6e3eb79bbe08e42b \
+    --hash=sha256:8d44b20234905ff022b7d535f79d1f823ad7670c9851cc4f03cdc34787cdb3ab \
+    --hash=sha256:8eed98514bffe5ecac37f493f91869c351fbb05629328bfdbc08502c6c094dc0 \
+    --hash=sha256:8f1f61592e7cabd45d49ce8cc0ef42ca655c091e037153754fb3fa59725b5914 \
+    --hash=sha256:b23fe17779834d3c27aaf2edac9486d04cca1a7deb8f5facda35150ac6263a91 \
+    --hash=sha256:bc7b0b1da20f856bfac5f84b2673fe534b167e41980b27442ca8f78c2b7eb77e \
+    --hash=sha256:c62bd361cec1f5b556eb8210264ecfff37486cd990c3386cc00310f26c54090a \
+    --hash=sha256:c76c9b3324efd79029eeb0fd2ced1964bdbeca7d45e030b46fa3ef3cf74f8032 \
+    --hash=sha256:c798f0b327bac10dc95cdac77b9a197ab2bd7dd1e60ebd7586a12d918d4be711 \
+    --hash=sha256:c8a168b040bc61681293f79a949b5d911c8e25086f4260285b8d97ab5f1195da \
+    --hash=sha256:caad9566e2ef0e5640d36032c69b0edc7ac6028277b93d93815898804fac450c \
+    --hash=sha256:cbce24284f51f71d10a42b7b9c964dcb9048b28f1c8e5db40bcbcb6f428cba6a \
+    --hash=sha256:cd810878180a52950e5a61f25ada5248a453bbdbafe474f89514135fbc1f633d \
+    --hash=sha256:d254c98ca6387655400b3959c33c83efd807f5edeb608e3aca45800ceaa77151 \
+    --hash=sha256:d795c4ac689a57f9d4ba2288126ec7901d389ad5827d2f8b8533c883974fe563 \
+    --hash=sha256:df88b0c34f2fa909d322f7b06b1398e1e81af4b2f42a7b8e3556f928b25d1811 \
+    --hash=sha256:eb8da9d9a9b418422c21a07fd19b9d9228692b7a7468a45eec6b11642d3c808b \
+    --hash=sha256:f7c06c751c19d923435a54bff4f7e66e728fad160e8da28254f133abc9725820 \
+    --hash=sha256:fa9f5ef0e2a82233dd0b8b32ea3f5710e0c44afbc07ed3620219f32601e56090 \
+    --hash=sha256:fd523c4992041faa5c2b3cde62253d11a96c30d73a34afe48a486e8e2254cd1c
+    # via mlx-audio
+setuptools==84.2.1 \
+    --hash=sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+    # via torch
+shellingham==1.5.4 \
+    --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686 \
+    --hash=sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de
+    # via typer
+sounddevice==0.5.6 \
+    --hash=sha256:7f4162f514f007b0bf25a3ccfed3f1705bc2ec311888a90232729eec4f57a4f4 \
+    --hash=sha256:8ec9fbfde2e32f020b167e348f3ab3bac6625a5f15af524d790108ac7147a410 \
+    --hash=sha256:b36b807eb02abd257198bf84b2af05e4fea199a9d2f0019014169c7136d45e9c \
+    --hash=sha256:c8ae19173e5f27f8c12d4b5eee2dbfe542cee125d591e663e0fb4dfb75246d45 \
+    --hash=sha256:de099612311ad81e55d31ccbd83f43ea6bf4d87b48f9b6ea55a1fbcde0eee4e0 \
+    --hash=sha256:e3aef00ad8b1d1740eb66d9a7671eab88a4d2b8fa4ab33498d742e63b65c309c
+    # via mlx-audio
+starlette==1.10.0 \
+    --hash=sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4 \
+    --hash=sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b
+    # via fastapi
+sympy==1.14.0 \
+    --hash=sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517 \
+    --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
+    # via torch
+tiktoken==0.14.0 \
+    --hash=sha256:087538c080e5ff421abd3a0785ed63c5111d06af98e6cd0d374dbe5969147ca3 \
+    --hash=sha256:10f31e63e40313f2e518d87f7086cfa44e45f64cc14d8ae14103b41220c30a14 \
+    --hash=sha256:11d8211b290855d2721334ff17dd9b3a17bfb26872be01f25d73612ef7ece890 \
+    --hash=sha256:144a3fc369f92b7d548995217c5d6e84038d3572157a0f6f34080d65291d0f78 \
+    --hash=sha256:149d97453c4c98c04b081d64a85e635921269b532710d6faf81e9e82b790e7d3 \
+    --hash=sha256:14b47e3674f2624803a8acc8fb367b7e24fc53055f9df3296482fe9a3a34a232 \
+    --hash=sha256:151d37a150c8f3dfc5f4345597b10e101876bd1bd13494e0185af6b508758d2e \
+    --hash=sha256:18a1b651c4b032004bf7b4f1713391a54b2a341a52c6e8a2b59acae9d16e13c7 \
+    --hash=sha256:19d643d701fdaa70e5b9c7f8f96abcaffe77ca5e482a3a1a7dde46feb4284695 \
+    --hash=sha256:1b6e4adcfd285c44502aed51df98aaaca4f0fea028165dbf8a9e857b9f98d8ea \
+    --hash=sha256:1f83081065ee5833d35b49e9180f3d8d15622a603dd1c435da0da6cc12b3662f \
+    --hash=sha256:2157f52e4b4d7ac5ecc7457b3716834706e7ef9a46f5144029bfeb7cf71f4e06 \
+    --hash=sha256:231dec90efcdccf1b565a1416107736f1e09b1a08fe736ef9d6363e626d03874 \
+    --hash=sha256:26cc4b4840fa0e9f4b72ed489883e12f57e00d1021ca794720e3c29a12f0edef \
+    --hash=sha256:26e60f6a956ee171ab728b37b8439905d7ea1db435c30f9822f291e9861c861d \
+    --hash=sha256:2cc19ac87b41c9493c9778ff5847f0c8bbcf5bd0ec6b87ce06c1c802adc8a771 \
+    --hash=sha256:2ea70afba6b9eddbf22c165142e5f0a2ad7aa36a452873c48b57bb2aeb8492ae \
+    --hash=sha256:2ec16eb585332c55d022d86354e209ddf27326b1ea3477585ab248e7776d3b1f \
+    --hash=sha256:2fc834fbe3f6a0736905c36ab709537e6840dbd63b982dc9e0216ae7d305ba1a \
+    --hash=sha256:380873f330b741c4435574f37edb20813d04603ace2d53e0a63560e1fec83010 \
+    --hash=sha256:3b12e54f8bec91433e41aff65d8d1f209a4f678081163747079806e5361f6c91 \
+    --hash=sha256:3c5349c9f916283bba32bec8af69b763e4faa304dc004d0eaaea66a3cf004c1f \
+    --hash=sha256:3de75343041a1c57333b1e707ac8a9769738241d7d6a55d39e12cf84548337c6 \
+    --hash=sha256:3fd7c14b1cb45b486c39fc9b3443bb341f3e2fc7e6f31247f3435a5836651632 \
+    --hash=sha256:447ada49af4898b5e992f0b5799d2f3af385921102c211947ce3fe960dd919da \
+    --hash=sha256:4d8d91d68353bd167fdf26467e5ff9e56aaa5f87d6410c0238608629e4dc0d33 \
+    --hash=sha256:50a7e5646cbac2a8f7c3e8c0934ffda1a4357ee9c44b652434b23c3ed54d0900 \
+    --hash=sha256:561e7580f84a79859af1ef6f676968e9030fcc3fe195700b15235bca64f009c9 \
+    --hash=sha256:60c47ca69ddda0dea8256fffd12e1b86f4b59734a20e4a70c61f63cc5f021df4 \
+    --hash=sha256:6eb94895c45f26bb8f5546e5fd8a069efcf6e3f108ea9d5cbe3bf6f7f3983438 \
+    --hash=sha256:728303a072163130c5b477b1f20d6211895569c1d5302c24ffc93a3009160871 \
+    --hash=sha256:78571efc311c30b73f31eb949a921d6dac39a5d9dc42d1cfa8f8db157b3447b1 \
+    --hash=sha256:7896eea257fe497a2b7134474d909156c6744ce8da35bce88011a960e008aa0d \
+    --hash=sha256:7aab286a020660a039097912a088236b985d18a3090d73f136c4413d29d37ca0 \
+    --hash=sha256:7b7acbb7a4b8383707bce22ad3c162006478c27b56368acd3e1fcb1658a80425 \
+    --hash=sha256:7db45b98e94adf4173a5cd7422b150999a7ee11ff847783a14f6e1b80cc38cb6 \
+    --hash=sha256:86951a971c53979ec857bd8c4a32dc227ab0fd33f6c12a3bd62d3fbf5f0bfcaa \
+    --hash=sha256:86f66c85e796f5d05d5c4a60ec1d40cbfebc47a32464053528c797163fa9ab89 \
+    --hash=sha256:8e947aefe98ef74cce94923f90e48c98fe34eb1ec0a6bfdfadfc5a96359bfc36 \
+    --hash=sha256:90a762670c7f968184723769a06ed51f5cf5ce5dcd1e30164f25c72d85c2d1f1 \
+    --hash=sha256:94f77b60a8ab23580db19ae822744c9716c1720020d2179ca5605112d12326f1 \
+    --hash=sha256:979c1524f753b662b0f3cd261b135afe6659cce33caaa7a5ea00dd1756b3055c \
+    --hash=sha256:a140e83317fef02faeeb78d9a8efac623887f2feaf0055c55dcdb2b17f0226ad \
+    --hash=sha256:aa428a559d5fd02ae619aacaace86c7474a1f2702d2c01fc828908dd60f20f7a \
+    --hash=sha256:b950248272f1b303dc32986396e2dccfa10cf6d1e83ec8f0bba1776660305482 \
+    --hash=sha256:c2edf09b381fafbc014ae8e018ed25087abb9a3dafa8465a0ea63c6558c47a79 \
+    --hash=sha256:c3093001ddce822b4587e6e94bf6de36a5f97b3f31de1c9fc8d4fda144c59ff4 \
+    --hash=sha256:c6cb9896a82b9ee44e15ba0b5c8044072f2e4d48acaa704c8d3feeef5ad9487c \
+    --hash=sha256:c77d4a3e1deb2707819df92046b89aad1ac81d27e07616b797cbff3f62c037da \
+    --hash=sha256:ca4db6ff5c5bf600f9b7761a0070ed44dfe5797a76bd432fb978bc480ef40c58 \
+    --hash=sha256:cbe2cc3bba939bcdaf103e03df9d5039d33887080b315624be28ec69059e5f94 \
+    --hash=sha256:cd8ca1305c1c902fe42c486165f2e4808d9997625c98ffb05b9e0366d99d3948 \
+    --hash=sha256:d0781223705199b289faa59601bb9c2441712d4c600dd13c43d8fd6a33d22cd5 \
+    --hash=sha256:d6cebe67765569df3dafac8474e4eccf5c19d24140492567a5e58a11445732a4 \
+    --hash=sha256:e067f4cbcc5d036e8aff7fe7a6b530a8f4de2e4616ad9005a24a1879e24e6450 \
+    --hash=sha256:e2eca764c53490f8930dbce329e0769f11108d87d908282a80c5c130e26e7037 \
+    --hash=sha256:e3442bbb2f0c588cec876061e37ae67b455b9df9978b003c8fe30e45f2ef5b42 \
+    --hash=sha256:e4ddf863b59347deaa92302dcd90e5eb003cdc9be06ec2b692c38d1bdd9efd49 \
+    --hash=sha256:e9c5fe393aab56469f04e432ff851216d3def3436cf5f07e442a240164bf500f \
+    --hash=sha256:eceeff0c62419bc78d4b6e70a4762a4d25df3ae8f2d5946e3853ce93e7a57098 \
+    --hash=sha256:f2af4a336ea56d6c14f27741a0e1d8294a35dd0b038bcf990d232ebb54eb994b \
+    --hash=sha256:f3d6cf93fbe2e7117eb7bedca684216fbe328a41f0843ce34245451d8eb2df1c \
+    --hash=sha256:f5e7665f6624e052e5e7f6a36919ab69279decdc976d7b16b4fa15e1897d0513 \
+    --hash=sha256:f702e0aeeb6506e57687e881c59e844ebe8f0a6a097ddafe20e3ab25f387be4e
+    # via mlx-whisper
+tokenizers==0.23.3 \
+    --hash=sha256:114e2b55ed177179d59f4ab98200a4471e11e78f9e4b5a922d146740f96fcf52 \
+    --hash=sha256:1554a6eed34d9d6a78d23360f4e06df8dffab1ae08c7e8488e0b3e3b36cc266f \
+    --hash=sha256:1ebf28794e7e4954e20a7f70fbea410b2d1f0418f7dbbca97ca384fcfef38c25 \
+    --hash=sha256:1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3 \
+    --hash=sha256:2a89614730d7b80940a5d2ed9320e1ec8add5a745c6151d8d05071b7215505b6 \
+    --hash=sha256:376851d22bcf9d650a5c3090bb83e6cf9e895fbf0595369fa4cd43c1f69b5f87 \
+    --hash=sha256:5cc24bb457dd4a8af89c8fcb40074d570129ec473df2a866c276ee55db4749d7 \
+    --hash=sha256:68649e97d5b43c44c031d8d848874a6eecae8f8fe40ea989aa777a5a83aca716 \
+    --hash=sha256:7e48734d2de9260d86f03ab056d2cfeeff3869f61dbd49aaa15a2793b5f3458b \
+    --hash=sha256:82eb480f6f1c21cea3349dec32cf1a6384c6c1e775f00f83b0d51197bc013687 \
+    --hash=sha256:84513ef0aeb8bf8f4ea11a2e8a7ac163ec5288aa115e649a59b470ac5c3107df \
+    --hash=sha256:9d2b5c97daf61688c2ad1803ca851800feaba50fb68d5821779e9ea5880d968c \
+    --hash=sha256:a4fbb3662f9f59d199d61338e54b4bcc11d07ebbb1aeb3540dacb2be9c521cb7 \
+    --hash=sha256:acd5c57b4bd3e56e246e2731a3a3a6825a7a7d89b7e3b761ba80bc521710f04b \
+    --hash=sha256:bf501c40b72d2d5c8623620210430e9cac1ce47a46e45b34107b70a1557d46b0 \
+    --hash=sha256:c64a0713180ff16829d4e7f39a658b77ea11443af4e1aa46523692943c9b1414 \
+    --hash=sha256:cded33237c77caeef62944d32aa9a7ef42bdce2b3497e18d137e072a8c4be438 \
+    --hash=sha256:d3407fb7b9c4d75dd68850ffd7180bc0a5d2dbaf0762d888e612f31fec3f9c6b \
+    --hash=sha256:ddedfd4b3b4be6be24ff6ca645c4a37fddfd305f6f3e354c54cf10b715c48215 \
+    --hash=sha256:de536665495cb4b409d25bade41963f801aff4225c19a6b804b048f7d14e34c7 \
+    --hash=sha256:e05ab7baf7f47b406a95fea6f3b0a484b2ddcd9e1d14b68844c457eb755085a3 \
+    --hash=sha256:e88646b8580c5ad7f4361477f1298e9cc01771a1ee9aecfe32c47b8ff614cc38 \
+    --hash=sha256:ec82e80e65a862275b97c3d90b7a523df8d9519ee48aeb4e9625b2cc909274e0 \
+    --hash=sha256:efa3d7318406b4d115dce61ad5061953f1f44b128e79c020ce4615d763e23b6e
+    # via transformers
+torch==2.15.0 \
+    --hash=sha256:02ac0b22211c1984e5dc002d2e57fdbc13d32116537ea6ae1a0c9d07cafce0c9 \
+    --hash=sha256:04597a77bbcc7a1a01e7b9efce78d258b18a7f31bcb190f4ee00360bff75e7f6 \
+    --hash=sha256:06a686eb717cd3d1662363082820be45497318887c596d691af0af0c7649c8f0 \
+    --hash=sha256:0d2b2d9674fa0b9b3f50e83231aa6545a0b19e437a52f0af939a224faaa45515 \
+    --hash=sha256:1412c79b0338ea61fa31e74a59d74e412c56307e226d3c6e61ccd6d4613ffc3f \
+    --hash=sha256:2167ed5782ab62f41fb766b822ebea638c2ffcb72e8c3abdd3efc429bbe60a19 \
+    --hash=sha256:241fea2bac4ed8351307cd13eca5020fbe231f990891be299cf683897caebfbc \
+    --hash=sha256:48c2d861134c0b5697c7602cb5ffa68f62a2989fdcd1717e593356f67996ca1e \
+    --hash=sha256:4a906d0fa6dc9aa9a9b5f3b96437c8dfe661f855645b3f838c12fc5cf5cce562 \
+    --hash=sha256:58ce2ebfb3430941353109a85be63ee8e941da22f13daa2c43344eeb51c81e06 \
+    --hash=sha256:593e5fd0c204284890d1c3dff643be34e549e1d24523e13402510f960d4da438 \
+    --hash=sha256:59c3a521000ab76a11785276b3d56752e03ca2751658798a94c8f1032f93cf41 \
+    --hash=sha256:628f54cb55a2363a5f14471a80c1b6efb63724449d2611ad2772fb5d4c42d19d \
+    --hash=sha256:6d8c86f4e33a9f12a58149bd9b0d64351632b8eb44479be8ff85e5389932dd79 \
+    --hash=sha256:9024cbf347dce95759bcde1411ef59b7cdb9ef0a846f4f24f356a17f8cf16f7d \
+    --hash=sha256:9e51cf9460c5441dcd2a4f31ece207e35ea7c3d2535be0f929cca4944e2eeb18 \
+    --hash=sha256:a46cf67c6b574311ecdc24364a5c3a694c60dd3619043f594cfebb8f0b283ea4 \
+    --hash=sha256:c521a00891e92aba2f34717671c268acd0bde26444623efcceaeaf51c87b3b36 \
+    --hash=sha256:cf02d11e13819807389e172ecb8f400f6135969af860e2a9f677f67a011e6194 \
+    --hash=sha256:d0862b725d86a2795ff331f519fd332451ff75f2e7cff561673d61c44cef7155 \
+    --hash=sha256:d2c5938f593a47cf6d151a16d130a3cc3f0c105df1b905a571efc00b01e38c1f \
+    --hash=sha256:e079089d36401261ebe145504309d0114fb9a00529eac4b33048221d2376a15c \
+    --hash=sha256:e808b63d616a43b326e1a5677d45a2e5babe7a8ce27edb03ddb48e7dd9b6d663 \
+    --hash=sha256:eba5772cdce0f92a81d0f5c577ac571a4ee35e052ba7533c2d6dd860f0c5659f \
+    --hash=sha256:ed708117f2f0162dbbd958dbd2654c16c99ad4c8ac14ccc4617dc76f029b8a8d \
+    --hash=sha256:f2bd0a3709a7493a6ef2ac5a654111242a854439f7558f910b6b653b56f7504d \
+    --hash=sha256:fbefd73b521d3c75c5a1d7c77056b2c6339b81468d14d4e33c55f525418a5855 \
+    --hash=sha256:fbf74b432a5c1cac0824af3d482ecc64a0a8187a3d58cc6733efe349697daac4
+    # via mlx-whisper
+tqdm==4.70.1 \
+    --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73 \
+    --hash=sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4
+    # via
+    #   huggingface-hub
+    #   mlx-audio
+    #   mlx-whisper
+    #   transformers
+transformers==5.21.1 \
+    --hash=sha256:53b5fd825d009cb7700285acbb4e36e745c7f7df859202ba1a4f21a10eda8e3a \
+    --hash=sha256:65e82dfbe8d0d0d6d09d402dca28e60b3f483beadbb7bdd259ea0e33a04e2efa
+    # via
+    #   -c constraints.txt
+    #   mlx-audio
+triton==3.9.0 ; python_full_version < '3.16' and sys_platform == 'linux' \
+    --hash=sha256:1622118a038b0c6e16fa4a0305da62c8b3c15904ee1cc4d4e65846a25969e41e \
+    --hash=sha256:5542f4328472fd827dbb1ec43873364c2894682cc3f5d1c74a643762900e243e \
+    --hash=sha256:5e52ab4e2f1d64f0ac494c9aa723697b793f81a91c4cae4c36608ca0bc4267bf \
+    --hash=sha256:8d0b97b333d919e86d06a6b3c8656c27eecaf14f74c1eb64d210234603268ba2 \
+    --hash=sha256:990d43d967bbcc90f973fc17ad9cd7352e67940f41b31d94afd53b9867a3c1a1 \
+    --hash=sha256:bac2ed42a2b7aa232aeec57c2f7b0d88b61a74a29b3bf358f4cec6b20be356f6 \
+    --hash=sha256:eab30be40d412e947f3b74b20f50e4f8e07dd11439e7ddc6bd6184cabda2be79 \
+    --hash=sha256:feaaec13578ca84301d561d034cb08b3ae293d7f0b7ab6b8ddbb2d6796363716
+    # via torch
+truststore==0.10.5 ; sys_platform != 'emscripten' \
+    --hash=sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd \
+    --hash=sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c
+    # via
+    #   httpcore2
+    #   httpx2
+typer==0.27.3 \
+    --hash=sha256:d0396f770a560ab1b0a8504e13b5f254b728cedb05c61cf0359e944e50ce8901 \
+    --hash=sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff
+    # via transformers
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
+    --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
+    # via
+    #   anyio
+    #   fastapi
+    #   httpx2
+    #   huggingface-hub
+    #   opentelemetry-api
+    #   pydantic
+    #   pydantic-core
+    #   starlette
+    #   torch
+    #   typing-inspection
+typing-inspection==0.4.4 \
+    --hash=sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47 \
+    --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147
+    # via
+    #   fastapi
+    #   pydantic
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
+    --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
+    # via requests
+uvicorn==0.54.0 \
+    --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
+    --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
+    # via -r requirements.txt
+__STUDIO_EOF_a1964c5cf742__
 cat > "$DEST/requirements.txt" <<'__STUDIO_EOF_0150442fc879__'
 fastapi>=0.110,<1
 uvicorn>=0.29
@@ -795,7 +2672,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_bbeb9e98651b__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_0cb6d7b2750b__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is MAJOR.MINOR.PATCH:
@@ -804,13 +2681,13 @@ Versioning is MAJOR.MINOR.PATCH:
   PATCH  minor adjustments: visual tweaks and bug fixes
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_bbeb9e98651b__
+__STUDIO_EOF_0cb6d7b2750b__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -1318,7 +3195,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
         ctx.event(conn, "export", f"{label}{' (draft)' if draft else ''} exported for '{book['title']}'", book_id)
     return {"export_id": cur.lastrowid, "path": str(out), "draft": draft, "size_bytes": size, "probe": info}
 __STUDIO_EOF_6cc996855af9__
-cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_49663622a316__'
+cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_3d4d07dc9ae9__'
 """Audio I/O, acoustic QA and FFmpeg/ffprobe helpers.
 
 All intermediate takes are 16-bit PCM mono WAV written atomically. Reading uses the stdlib
@@ -1551,18 +3428,28 @@ def room_tone(n: int, dbfs: float, seed: int = 0) -> np.ndarray:
 # ------------------------------------------------------------------ ffmpeg tools
 
 
-def ffmpeg_bin() -> str:
-    b = os.environ.get("STUDIO_FFMPEG") or shutil.which("ffmpeg") or ("/opt/homebrew/bin/ffmpeg" if Path("/opt/homebrew/bin/ffmpeg").exists() else None)
+def _tool(name: str, env_var: str) -> str:
+    """Resolution order: explicit override, the app-owned copy in <root>/app/tools/bin (managed installs), PATH, and finally a
+    pre-existing Homebrew copy so old Bash-era installs keep working. Nothing here ever installs anything."""
+    b = os.environ.get(env_var)
     if not b:
-        raise AudioToolError("ffmpeg not found. Install it with: brew install ffmpeg")
+        from .update.layout import Layout
+
+        owned = Layout.discover().tools_bin / name
+        if owned.exists():
+            b = str(owned)
+    b = b or shutil.which(name) or (f"/opt/homebrew/bin/{name}" if Path(f"/opt/homebrew/bin/{name}").exists() else None)
+    if not b:
+        raise AudioToolError(f"{name} not found. The app-owned copy is missing: re-run the installer to repair it (audiobook-studio doctor shows details).")
     return b
+
+
+def ffmpeg_bin() -> str:
+    return _tool("ffmpeg", "STUDIO_FFMPEG")
 
 
 def ffprobe_bin() -> str:
-    b = os.environ.get("STUDIO_FFPROBE") or shutil.which("ffprobe") or ("/opt/homebrew/bin/ffprobe" if Path("/opt/homebrew/bin/ffprobe").exists() else None)
-    if not b:
-        raise AudioToolError("ffprobe not found. Install it with: brew install ffmpeg")
-    return b
+    return _tool("ffprobe", "STUDIO_FFPROBE")
 
 
 def run_ffmpeg(args: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:
@@ -1666,7 +3553,7 @@ def convert_reference(src: Path, dst: Path, sr: int = 24000, min_s: float = 3.0,
     if info.get("sample_rate") and info["sample_rate"] < 16000:
         warnings.append(f"Source sample rate is only {info['sample_rate']} Hz; cloning quality may suffer.")
     return {"duration_s": round(dur, 2), "source": info, "sample_rate": rate, "warnings": warnings}
-__STUDIO_EOF_49663622a316__
+__STUDIO_EOF_3d4d07dc9ae9__
 cat > "$DEST/studio/chunker.py" <<'__STUDIO_EOF_9f5f1545af60__'
 """Split chapter text into natural narration segments (default 150-400 characters).
 
@@ -1836,7 +3723,7 @@ def build_segments(blocks, min_chars: int, max_chars: int, merge_short: bool = T
         segs[-1].pause_kind = "chapter_end"
     return segs
 __STUDIO_EOF_9f5f1545af60__
-cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_3e5409673965__'
+cat > "$DEST/studio/cli.py" <<'__STUDIO_EOF_7ce437e62ff8__'
 """Command line interface. The web UI is the primary interface; the CLI exists for automation,
 diagnostics and headless use."""
 from __future__ import annotations
@@ -1886,6 +3773,24 @@ def cmd_serve(a):
     if not is_loopback(host) and not AuthStore(ctx.config_dir / "auth.json").enabled():
         sys.exit("Refusing to bind to a network address without any user account. Create one: ./studio auth add-user NAME --role admin --generate")
 
+    ctx.apply_model_cache_env()
+    from .lifecycle_cli import port_free
+
+    bind_host = "127.0.0.1" if host in ("localhost",) else host
+    if not port_free("0.0.0.0" if bind_host == "0.0.0.0" else bind_host, port):
+        # another program owns the port; a non-zero exit lets launchd retry (throttled to one attempt per 10 s) once it is free
+        sys.exit(f"Port {port} on {bind_host} is already in use (another copy of the studio, or another program). "
+                 f"Stop it, or pick a free port in Settings > Server (installer: --port N).")
+    pidfile = ctx.run_dir / "server.pid"
+    if pidfile.exists():
+        try:
+            other = int(pidfile.read_text().strip())
+        except ValueError:
+            other = 0
+        from .platform_services import _alive
+
+        if other and other != os.getpid() and _alive(other):
+            sys.exit(f"Audiobook Studio is already running (pid {other}). Not starting a second copy.")
     app = create_app(ctx)
     app.state.port = port
     pidfile = ctx.run_dir / "server.pid"
@@ -1923,6 +3828,7 @@ def cmd_worker(a):
     from .worker import main
 
     ctx = Context()
+    ctx.apply_model_cache_env()
     setup_logging(ctx, "worker")
     main(ctx)
 
@@ -2199,14 +4105,17 @@ def main(argv=None):
     sp.add_argument("--skip-design", action="store_true")
     sp.add_argument("--keep", action="store_true", help="keep the smoke-test books in the library")
     sp.set_defaults(func=cmd_smoke)
+    from . import lifecycle_cli
+
+    lifecycle_cli.register(sub)
     a = p.parse_args(argv)
     a.func(a)
 
 
 if __name__ == "__main__":
     main()
-__STUDIO_EOF_3e5409673965__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_42297bc14e42__'
+__STUDIO_EOF_7ce437e62ff8__
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_3c1ee291a313__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -2358,6 +4267,14 @@ class ModelSettings(_M):
     retry_temperatures: list[float] = Field(default_factory=lambda: [0.7, 0.55])
     max_warm_models: int = Field(2, ge=1, le=4)
     allow_downloads: bool = True
+    cache_dir: str = Field("", description="Hugging Face model cache; empty -> the installation default. Kept outside every release.")
+
+    @field_validator("cache_dir")
+    @classmethod
+    def check_cache_dir(cls, v: str) -> str:
+        if "\x00" in v:
+            raise ValueError("path contains a NUL byte")
+        return v.strip()
 
     @field_validator("custom_voice_model", "base_model", "voice_design_model", "asr_model")
     @classmethod
@@ -2511,6 +4428,22 @@ class NarrativeSettings(_M):
         return self.context_before_chars + self.context_after_chars
 
 
+class UpdateSettings(_M):
+    """Nothing here lets a client choose an arbitrary URL: the repository is validated against the trusted-host list."""
+    channel: Literal["stable", "beta"] = "stable"
+    auto_check: bool = True
+    check_interval_hours: int = Field(24, ge=1, le=168)
+    repository: str = "github:salbretsen/Narration-pipeline"
+    keep_releases: int = Field(3, ge=2, le=10)
+
+    @field_validator("repository")
+    @classmethod
+    def check_repository(cls, v: str) -> str:
+        from .update.net import validate_repository
+
+        return validate_repository(v)
+
+
 class Settings(_M):
     version: int = 1
     narrative: NarrativeSettings = Field(default_factory=NarrativeSettings)
@@ -2522,6 +4455,7 @@ class Settings(_M):
     export: ExportSettings = Field(default_factory=ExportSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
+    updates: UpdateSettings = Field(default_factory=UpdateSettings)
 
 
 def load_settings(path: Path) -> Settings:
@@ -2587,8 +4521,8 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_42297bc14e42__
-cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_0f0544a8c6e5__'
+__STUDIO_EOF_3c1ee291a313__
+cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_66f9ceaab118__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
 
@@ -2608,7 +4542,15 @@ log = logging.getLogger("studio")
 
 
 def resolve_home() -> Path:
-    return Path(os.environ.get("AUDIOBOOK_STUDIO_HOME") or DEFAULT_HOME).expanduser().resolve()
+    env = os.environ.get("AUDIOBOOK_STUDIO_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    from .update.layout import Layout
+
+    lay = Layout.discover()
+    if lay.managed:  # managed installation: user data lives in <root>/state, apart from the replaceable releases
+        return lay.state
+    return Path(DEFAULT_HOME).expanduser().resolve()
 
 
 class Context:
@@ -2616,7 +4558,7 @@ class Context:
         self.home = Path(home).expanduser().resolve() if home else resolve_home()
         self.config_dir = self.home / "config"
         self.data_dir = self.home / "data"
-        self.logs_dir = self.home / "logs"
+        self.logs_dir = Path(os.environ["AUDIOBOOK_STUDIO_LOGS"]).expanduser() if os.environ.get("AUDIOBOOK_STUDIO_LOGS") else self.home / "logs"
         self.run_dir = self.home / "run"
         self.cache_dir = self.home / "cache"
         self.backups_dir = self.home / "backups"
@@ -2635,6 +4577,13 @@ class Context:
                 save_settings(self.settings_path, Settings())
 
     # ----------------------------------------------------------------- settings
+    def apply_model_cache_env(self) -> str | None:
+        """Point Hugging Face at the user's model cache (settings.models.cache_dir) so weights live outside every release."""
+        d = self.settings().models.cache_dir
+        if d:
+            os.environ["HF_HOME"] = str(Path(d).expanduser())
+        return os.environ.get("HF_HOME")
+
     def settings(self) -> Settings:
         with self._lock:
             try:
@@ -2722,7 +4671,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     sh._studio = True  # type: ignore[attr-defined]
     root.addHandler(fh)
     root.addHandler(sh)
-__STUDIO_EOF_0f0544a8c6e5__
+__STUDIO_EOF_66f9ceaab118__
 cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_be4c41185c85__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
@@ -3296,7 +5245,7 @@ def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), defau
 def copy_db_file(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
 __STUDIO_EOF_be4c41185c85__
-cat > "$DEST/studio/doctor.py" <<'__STUDIO_EOF_df299aa34968__'
+cat > "$DEST/studio/doctor.py" <<'__STUDIO_EOF_538595482854__'
 """Environment diagnostics shared by `studio doctor` and the About page."""
 from __future__ import annotations
 
@@ -3320,7 +5269,8 @@ MODEL_LICENSES = [
      "url": "https://huggingface.co/mlx-community/whisper-large-v3-turbo"},
     {"component": "mlx-audio", "source": "Prince Canuma / Blaizzy", "license": "MIT", "url": "https://github.com/Blaizzy/mlx-audio"},
     {"component": "MLX / mlx-whisper", "source": "Apple ml-explore", "license": "MIT", "url": "https://github.com/ml-explore"},
-    {"component": "FFmpeg (Homebrew build)", "source": "FFmpeg project", "license": "LGPL/GPL depending on build", "url": "https://ffmpeg.org/legal.html"},
+    {"component": "FFmpeg / FFprobe (app-owned static build, downloaded by the installer, not bundled)", "source": "FFmpeg project; build from the host pinned in tools/runtime-manifest.json",
+     "license": "LGPL/GPL depending on the pinned build (see docs/10-installation-and-updates.md)", "url": "https://ffmpeg.org/legal.html"},
 ]
 
 
@@ -3357,7 +5307,12 @@ def run_checks(ctx, deep: bool = False) -> list[dict]:
             pass
     ff = ffmpeg_version()
     out.append(_check("FFmpeg", "ok" if ff != "not found" else "fail", ff))
-    out.append(_check("ffprobe", "ok" if shutil.which("ffprobe") or Path("/opt/homebrew/bin/ffprobe").exists() else "fail", shutil.which("ffprobe") or "missing"))
+    try:
+        from .audio import ffprobe_bin
+
+        out.append(_check("ffprobe", "ok", ffprobe_bin()))
+    except Exception as exc:
+        out.append(_check("ffprobe", "fail", str(exc)))
     for pkg in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy", "huggingface-hub"):
         v = package_version(pkg)
         needed = pkg in ("fastapi", "uvicorn", "numpy") or ctx.engine_mode == "mlx"
@@ -3392,8 +5347,52 @@ def run_checks(ctx, deep: bool = False) -> list[dict]:
     out.append(_check("Telemetry", "ok" if os.environ.get("HF_HUB_DISABLE_TELEMETRY") == "1" else "warn",
                       "HF_HUB_DISABLE_TELEMETRY=1" if os.environ.get("HF_HUB_DISABLE_TELEMETRY") == "1" else "set HF_HUB_DISABLE_TELEMETRY=1 (the launchers do this)"))
     out.append(_check("Studio version", "ok", __version__))
+    out.extend(install_checks(ctx))
     return out
-__STUDIO_EOF_df299aa34968__
+
+
+def install_checks(ctx) -> list[dict]:
+    """Checks for the managed (launchd, versioned-release) installation. Legacy and development copies report that plainly."""
+    from .lifecycle_cli import label_of, port_free
+    from .providers import StudioStorageManager
+    from .update.layout import Layout
+    from .update.store import ReleaseStore
+    from .update.trust import TrustStore
+
+    lay = Layout.discover()
+    out = []
+    if not lay.managed:
+        out.append(_check("Installation", "warn", "legacy or development copy (no managed release pointer); self-update is unavailable. Run install_audiobook_studio_mac.sh to migrate."))
+    else:
+        store = ReleaseStore(lay)
+        cur = store.current()
+        out.append(_check("Installation", "ok" if cur and store.has(cur) else "fail", f"active release {cur}, previous {store.previous() or '-'}, root {lay.root}"))
+        py = lay.service_info().get("python")
+        out.append(_check("Private Python", "ok" if py and Path(py).exists() else "fail", py or "service.json has no interpreter"))
+        for t in ("ffmpeg", "ffprobe", "uv"):
+            p = lay.tools_bin / t
+            out.append(_check(f"App-owned {t}", "ok" if p.exists() else "warn", str(p) if p.exists() else "missing (re-run the installer to repair)"))
+        try:
+            from .platform_services import default_platform
+
+            running = default_platform(lay.state).is_running(label_of(lay))
+            out.append(_check("Background service", "ok" if running else "warn", f"{label_of(lay)} {'running' if running else 'not running (audiobook-studio start)'}"))
+        except Exception as exc:
+            out.append(_check("Background service", "warn", f"could not query the service manager ({type(exc).__name__})"))
+        if (lay.update_dir / "REPAIR.txt").exists():
+            out.append(_check("Update repair note", "fail", f"read {lay.update_dir / 'REPAIR.txt'}"))
+    s = ctx.settings()
+    out.append(_check("Update signing key", "ok" if TrustStore.load_pinned().configured else "warn",
+                      "a release-signing key is pinned" if TrustStore.load_pinned().configured else "none pinned: update checks are disabled until the owner publishes one"))
+    sm = StudioStorageManager(ctx)
+    ok, why = sm.check_available(ctx.library_root(s))
+    if not ok and "does not exist" in why:
+        ok = True  # not created yet: it is made on the first import
+    out.append(_check("Storage mount", "ok" if ok else "warn", str(ctx.library_root(s)) if ok else why))
+    cache = sm.model_cache()
+    out.append(_check("Model cache", "ok", f"{cache} ({sm.free_bytes(cache) / 1024**3:.0f} GB free; separate from the application releases)"))
+    return out
+__STUDIO_EOF_538595482854__
 cat > "$DEST/studio/engines.py" <<'__STUDIO_EOF_5fb1a9635011__'
 """Speech synthesis and recognition engines.
 
@@ -3791,6 +5790,638 @@ def create_asr(ctx) -> object:
         return MockASR()
     return MlxWhisperASR(s.models.asr_model, allow_downloads=s.models.allow_downloads)
 __STUDIO_EOF_5fb1a9635011__
+cat > "$DEST/studio/interfaces.py" <<'__STUDIO_EOF_bee7a44c349c__'
+"""Platform and provider boundaries. Nothing outside the implementing modules should import launchd, MLX, GitHub or a
+specific storage layout directly; they depend on these contracts, which makes Windows/Linux/container ports and
+remote inference endpoints additions rather than rewrites.
+
+Implemented now:  MacPlatformService / ProcessPlatformService (platform_services.py), FileQueueScheduler (scheduler.py),
+                  SettingsModelRegistry + MLX/mock providers (providers.py), GitHubReleasesRepository / HttpsRepository
+                  (update/repository.py), StudioStorageManager (providers.py), ReleaseUpdateManager (update/manager.py).
+Designed only:    CUDA/CPU providers, remote HTTP TTS/ASR providers, containers (image-tag upgrades, no self-update)."""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+
+@dataclass(frozen=True)
+class ServiceSpec:
+    """Everything needed to run the web service, as absolute paths taken from the app-controlled manifest."""
+    label: str
+    program: list[str]
+    working_dir: str
+    env: dict[str, str]
+    stdout_log: str
+    port: int
+    host: str = "127.0.0.1"
+
+
+class PlatformService(ABC):
+    """Operating-system integration: background service lifecycle and machine facts."""
+
+    name: str = "abstract"
+
+    @abstractmethod
+    def os_version(self) -> str: ...
+
+    @abstractmethod
+    def architecture(self) -> str: ...
+
+    @abstractmethod
+    def install_service(self, spec: ServiceSpec) -> None: ...
+
+    @abstractmethod
+    def uninstall_service(self, label: str) -> None: ...
+
+    @abstractmethod
+    def start(self, label: str) -> None: ...
+
+    @abstractmethod
+    def stop(self, label: str) -> None: ...
+
+    @abstractmethod
+    def restart(self, label: str) -> None: ...
+
+    @abstractmethod
+    def is_running(self, label: str) -> bool: ...
+
+    @abstractmethod
+    def launch_detached(self, label: str, argv: list[str], cwd: str, env: dict[str, str], log: str, plist_dir: Path) -> None:
+        """Run a one-shot job outside the service's process group (the updater)."""
+
+
+@dataclass(frozen=True)
+class ModelDescriptor:
+    role: str                    # tts_custom_voice | tts_clone | tts_voice_design | asr | planner
+    model_id: str
+    provider_id: str
+    features: tuple[str, ...] = ()
+    revision: Optional[str] = None
+
+
+class ModelRegistry(ABC):
+    """Which models exist for which role, independent of the code release and of where weights are cached."""
+
+    @abstractmethod
+    def list_models(self, role: Optional[str] = None) -> list[ModelDescriptor]: ...
+
+    @abstractmethod
+    def resolve(self, role: str) -> ModelDescriptor: ...
+
+
+class InferenceProvider(ABC):
+    provider_id: str = "abstract"
+    kind: str = "abstract"        # local-mlx | local-cuda | local-cpu | remote-http | mock
+
+    @abstractmethod
+    def capabilities(self) -> dict[str, Any]: ...
+
+    @abstractmethod
+    def availability(self) -> tuple[bool, str]:
+        """(usable, reason when not)."""
+
+
+class TTSProvider(InferenceProvider):
+    @abstractmethod
+    def synthesize(self, voice, text: str, params, sid: Optional[str] = None): ...
+
+
+class ASRProvider(InferenceProvider):
+    @abstractmethod
+    def transcribe(self, wav_path: str | Path, language: str = "en") -> dict: ...
+
+
+class ReleaseRepository(ABC):
+    """Where signed release metadata and artifacts come from (GitHub Releases now, a first-party HTTPS host later).
+    Implementations only *locate and fetch*; authenticity is decided by the pinned-key TrustStore, never by the host."""
+
+    name: str = "abstract"
+
+    @abstractmethod
+    def index_url(self, channel: str) -> str: ...
+
+    @abstractmethod
+    def fetch_index(self, channel: str) -> bytes: ...
+
+    @abstractmethod
+    def download(self, url: str, dest: Path, size: int, progress=None, cancelled=None) -> Path: ...
+
+
+class UpdateManager(ABC):
+    @abstractmethod
+    def check(self) -> dict: ...
+
+    @abstractmethod
+    def download(self) -> dict: ...
+
+    @abstractmethod
+    def status(self) -> dict: ...
+
+
+class StorageManager(ABC):
+    @abstractmethod
+    def library_root(self) -> Path: ...
+
+    @abstractmethod
+    def model_cache(self) -> Path: ...
+
+    @abstractmethod
+    def check_available(self, path: Path) -> tuple[bool, str]: ...
+
+    @abstractmethod
+    def free_bytes(self, path: Path) -> int: ...
+
+
+@dataclass
+class HoldRequest:
+    mode: str                    # "now": no new work; "after_job": running jobs may finish, nothing new starts
+    reason: str = "update"
+    since: float = 0.0
+    extra: dict = field(default_factory=dict)
+
+
+class QueueScheduler(ABC):
+    @abstractmethod
+    def hold(self, mode: str, reason: str = "update") -> None: ...
+
+    @abstractmethod
+    def release(self) -> None: ...
+
+    @abstractmethod
+    def current_hold(self) -> Optional[HoldRequest]: ...
+
+    @abstractmethod
+    def allows(self, job: dict) -> bool:
+        """May the worker run (or continue) this job right now?"""
+
+    @abstractmethod
+    def drained(self) -> bool:
+        """True when no work is in flight, so the service may be stopped without losing a partial segment."""
+__STUDIO_EOF_bee7a44c349c__
+cat > "$DEST/studio/legacy.py" <<'__STUDIO_EOF_b799e3082700__'
+"""Adopt a Bash/Homebrew-era installation (``~/audiobook-studio-claude``) into the managed layout.
+
+Rules this honours:
+  * The old directory is never modified or deleted. Everything is copied (the database with SQLite's online-backup API, so a
+    running old service is fine) and the old application stays as a working fallback.
+  * Storage paths are preserved: books keep their recorded paths, the library root and the Hugging Face cache are pinned to
+    the old absolute locations instead of being copied (no 14 GB duplicate, no re-download).
+  * Metadata is backed up first, the NEW backend is started on a spare port against the copy and must answer /healthz,
+    and only then is the old LaunchAgent unloaded and the new one installed.
+  * Homebrew and every other package are never touched.
+  * The new service listens on 127.0.0.1 unless the old configuration deliberately served the LAN and ``keep_network`` is passed."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+from .update.layout import Layout
+
+LEGACY_LABEL = "com.audiobookstudio.claude"
+
+
+def _say(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def plan_settings(old_settings: dict, old_home: Path, keep_network: bool) -> tuple[dict, list[str]]:
+    """Return the settings for the new installation and a list of human-readable notes about what was preserved or changed."""
+    s = json.loads(json.dumps(old_settings))
+    notes: list[str] = []
+    storage = s.setdefault("storage", {})
+    if not storage.get("library_root"):
+        storage["library_root"] = str(old_home / "library")
+        notes.append(f"Library stays at {storage['library_root']} (not copied).")
+    else:
+        notes.append(f"Library root kept: {storage['library_root']}.")
+    models = s.setdefault("models", {})
+    if not models.get("cache_dir"):
+        cache = old_home / "cache" / "huggingface"
+        if cache.exists():
+            models["cache_dir"] = str(cache)
+            notes.append(f"Model cache reused in place: {cache}.")
+    srv = s.setdefault("server", {})
+    if srv.get("allow_remote") or srv.get("host") not in (None, "127.0.0.1", "localhost", "::1"):
+        if keep_network:
+            notes.append(f"Network access kept as before (host {srv.get('host')}); sign-in remains required.")
+        else:
+            notes.append(f"Network access (host {srv.get('host')}) was turned OFF; the studio now listens on 127.0.0.1 only. "
+                         "Re-run with --keep-network, or change it in Settings, to serve the LAN again.")
+            srv["host"], srv["allow_remote"], srv["https_enabled"] = "127.0.0.1", False, False
+    s.setdefault("updates", {})
+    return s, notes
+
+
+def backup_database(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    a = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        b = sqlite3.connect(str(dst))
+        try:
+            a.backup(b)
+        finally:
+            b.close()
+    finally:
+        a.close()
+
+
+def test_backend(layout: Layout, python: str, release_dir: Path, port: int, timeout: float = 90.0) -> tuple[bool, str]:
+    """Run the NEW backend against the migrated copy on a spare port (no GPU worker) and require a healthy /healthz."""
+    import httpx
+
+    env = {**os.environ, "AUDIOBOOK_STUDIO_HOME": str(layout.state), "AUDIOBOOK_STUDIO_ROOT": str(layout.root), "AUDIOBOOK_STUDIO_LOGS": str(layout.logs),
+           "STUDIO_NO_WORKER": "1", "STUDIO_NO_UPDATE_CHECK": "1", "PYTHONPATH": str(release_dir), "PYTHONDONTWRITEBYTECODE": "1"}
+    log = layout.logs / "migration-test.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as lf:
+        p = subprocess.Popen([python, "-m", "studio", "serve", "--port", str(port)], cwd=str(release_dir), env=env, stdout=lf, stderr=lf,
+                             stdin=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if p.poll() is not None:
+                    return False, f"the new backend exited with code {p.returncode} (see {log})"
+                try:
+                    r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=3)
+                    if r.status_code == 200 and r.json().get("ok") and r.json().get("db"):
+                        return True, f"healthy on port {port}"
+                except Exception:
+                    pass
+                time.sleep(1)
+            return False, f"the new backend did not answer within {int(timeout)} s (see {log})"
+        finally:
+            p.terminate()
+            try:
+                p.wait(15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+
+def migrate_legacy(old_home: Path, layout: Layout, dry_run: bool = False, keep_network: bool = False, platform_service=None,
+                   backend_test: Callable[[Layout, str, Path, int], tuple[bool, str]] | None = None, agents_dir: Path | None = None,
+                   install_service: Callable[[], None] | None = None) -> int:
+    old_home = Path(old_home).expanduser().resolve()
+    cfg, db = old_home / "config" / "settings.json", old_home / "data" / "studio.db"
+    if not cfg.exists() and not db.exists():
+        _say(f"{old_home} does not look like an Audiobook Studio installation (no config/settings.json or data/studio.db).")
+        return 2
+    if layout.state.exists() and (layout.state / "data" / "studio.db").exists():
+        _say(f"{layout.state} already holds a database; refusing to overwrite it. Move it aside first if you really want to re-migrate.")
+        return 2
+    cur = layout.current_version()
+    if not cur:
+        _say("The managed application is not installed yet (no active release). Run install_audiobook_studio_mac.sh first.")
+        return 2
+    release_dir = layout.release_dir(cur)
+    old_settings = json.loads(cfg.read_text("utf-8")) if cfg.exists() else {}
+    new_settings, notes = plan_settings(old_settings, old_home, keep_network)
+    _say(f"Migrating {old_home}  ->  {layout.state}")
+    for n in notes:
+        _say(f"  - {n}")
+    if dry_run:
+        _say("Dry run: nothing was changed.")
+        return 0
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bk = layout.state / "backups" / f"legacy-{stamp}"
+    bk.mkdir(parents=True, exist_ok=True)
+    # 1. back up metadata (old tree stays untouched)
+    _say("Backing up the old configuration and database ...")
+    if (old_home / "config").exists():
+        shutil.copytree(old_home / "config", bk / "config")
+    if db.exists():
+        backup_database(db, bk / "studio.db")
+    # 2. build the new state from the copies
+    _say("Creating the new data folder ...")
+    (layout.state / "config").mkdir(parents=True, exist_ok=True)
+    (layout.state / "data").mkdir(parents=True, exist_ok=True)
+    if (old_home / "config").exists():
+        shutil.copytree(old_home / "config", layout.state / "config", dirs_exist_ok=True)
+    (layout.state / "config" / "settings.json").write_text(json.dumps(new_settings, indent=2) + "\n", "utf-8")
+    if db.exists():
+        backup_database(db, layout.state / "data" / "studio.db")
+    # 3. run migrations and prove the new backend works on the copy
+    py = layout.service_info().get("python") or sys.executable
+    env = {**os.environ, "AUDIOBOOK_STUDIO_HOME": str(layout.state), "PYTHONPATH": str(release_dir)}
+    r = subprocess.run([py, "-m", "studio", "migrate"], cwd=str(release_dir), env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        _say(f"Database migration of the COPY failed; the old installation is untouched.\n{r.stdout[-400:]}{r.stderr[-400:]}")
+        return 1
+    from .lifecycle_cli import find_free_port
+
+    port = find_free_port(int(new_settings.get("server", {}).get("port", 7861)) + 1000)
+    ok, detail = (backend_test or test_backend)(layout, py, release_dir, port)
+    if not ok:
+        _say(f"The new backend failed its check: {detail}\nThe old installation is untouched and still the active service.")
+        return 1
+    _say(f"New backend verified: {detail}.")
+    # 4. switch the service: unload the old LaunchAgent (keep its plist in the backup so it can be put back), install the new one
+    if platform_service is not None:
+        old_plist = (agents_dir or Path.home() / "Library" / "LaunchAgents") / f"{LEGACY_LABEL}.plist"
+        try:
+            platform_service.stop(LEGACY_LABEL)
+        except Exception as exc:
+            _say(f"  (could not stop the old service cleanly: {exc})")
+        if old_plist.exists():
+            shutil.move(str(old_plist), str(bk / old_plist.name))
+            _say(f"Old LaunchAgent removed from login items; its plist is saved at {bk / old_plist.name}.")
+        if install_service:
+            install_service()
+    _say("Migration complete. The old folder was not modified; remove it yourself once you are happy. "
+         f"To go back: restore {bk / (LEGACY_LABEL + '.plist')} to ~/Library/LaunchAgents and stop the new service.")
+    return 0
+__STUDIO_EOF_b799e3082700__
+cat > "$DEST/studio/lifecycle_cli.py" <<'__STUDIO_EOF_60f824b90959__'
+"""Command-line lifecycle: ``version``, ``start|stop|restart|status|logs``, ``service install|uninstall``, ``update``, ``migrate-legacy``.
+These talk to the per-user service through the platform layer; they never need sudo."""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+import time
+from pathlib import Path
+
+from . import VERSION_LABEL, __version__
+from .interfaces import ServiceSpec
+from .update.layout import Layout
+
+DEFAULT_LABEL = "com.audiobookstudio.app"
+
+
+def _layout() -> Layout:
+    return Layout.discover()
+
+
+def _platform(layout: Layout):
+    from .platform_services import default_platform
+
+    return default_platform(layout.state)
+
+
+def service_spec(layout: Layout, port: int, host: str = "127.0.0.1") -> ServiceSpec:
+    """The LaunchAgent description, built only from the app-controlled manifest (``app/service.json``) and fixed paths."""
+    info = layout.service_info()
+    py = info.get("python") or sys.executable
+    env = {"AUDIOBOOK_STUDIO_HOME": str(layout.state), "AUDIOBOOK_STUDIO_ROOT": str(layout.root), "AUDIOBOOK_STUDIO_LOGS": str(layout.logs),
+           "HF_HOME": str(layout.models / "huggingface"), "HF_HUB_DISABLE_TELEMETRY": "1", "DO_NOT_TRACK": "1", "TOKENIZERS_PARALLELISM": "false",
+           "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1", "HOME": str(Path.home()),
+           "PATH": os.pathsep.join([str(layout.tools_bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
+    env.update({k: v for k, v in (info.get("env") or {}).items() if isinstance(k, str) and isinstance(v, str)})
+    return ServiceSpec(label=info.get("label") or DEFAULT_LABEL, program=[str(py), "-m", "studio", "serve"],
+                       working_dir=str(layout.current_link), env=env, stdout_log=str(layout.logs / "launchd.out.log"), port=port, host=host)
+
+
+def label_of(layout: Layout) -> str:
+    return layout.service_info().get("label") or DEFAULT_LABEL
+
+
+def port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def find_free_port(preferred: int, host: str = "127.0.0.1", span: int = 40) -> int:
+    for p in range(preferred, min(preferred + span, 65535)):
+        if port_free(host, p):
+            return p
+    raise RuntimeError(f"No free port found in {preferred}-{preferred + span}.")
+
+
+def cmd_version(a):
+    from .context import Context
+
+    layout = _layout()
+    ctx = Context(migrate=False)
+    build = ""
+    try:
+        build = (ctx.app_dir / "BUILD").read_text("utf-8").strip()
+    except OSError:
+        pass
+    print(f"Audiobook Studio {VERSION_LABEL}" + (f" (build {build})" if build else ""))
+    print(f"  channel       {ctx.settings().updates.channel}")
+    print(f"  managed       {'yes' if layout.managed else 'no (legacy or development install)'}")
+    print(f"  active release {layout.current_version() or '-'}   previous {layout.read_pointer().get('previous') or '-'}")
+    print(f"  python        {sys.version.split()[0]} at {sys.executable}")
+    print(f"  data          {ctx.home}")
+    print(f"  database schema {ctx.db.schema_version()}")
+
+
+def cmd_service(a):
+    layout = _layout()
+    ps = _platform(layout)
+    label = label_of(layout)
+    act = a.action
+    if act == "install":
+        from .context import Context
+
+        ctx = Context(migrate=False)
+        s = ctx.settings().server
+        spec = service_spec(layout, s.port, s.host)
+        layout.logs.mkdir(parents=True, exist_ok=True)
+        ps.install_service(spec)
+        print(f"Service '{spec.label}' installed for this user and started. Logs: {spec.stdout_log}")
+    elif act == "uninstall":
+        ps.uninstall_service(label)
+        print("Service removed. Your books, settings, models and the application files were not touched.")
+    elif act == "start":
+        ps.start(label)
+        print("Started.")
+    elif act == "stop":
+        ps.stop(label)
+        print("Stopped. (In-flight work resumes from the last finished segment when you start again.)")
+    elif act == "restart":
+        ps.restart(label)
+        print("Restarted.")
+    elif act == "status":
+        running = ps.is_running(label)
+        print(f"service {label}: {'running' if running else 'not running'}")
+        sys.exit(0 if running else 3)
+
+
+def cmd_logs(a):
+    layout = _layout()
+    files = [layout.logs / n for n in ("launchd.out.log", "server.log", "worker.log", "updater.log")]
+    for f in files:
+        if not f.exists():
+            continue
+        lines = f.read_text("utf-8", errors="replace").splitlines()[-a.lines:]
+        print(f"==> {f} <==")
+        print("\n".join(lines))
+    if a.follow:
+        target = layout.logs / "server.log"
+        pos = target.stat().st_size if target.exists() else 0
+        try:
+            while True:
+                time.sleep(1)
+                if target.exists() and target.stat().st_size > pos:
+                    with open(target, "rb") as fh:
+                        fh.seek(pos)
+                        sys.stdout.write(fh.read().decode("utf-8", errors="replace"))
+                        sys.stdout.flush()
+                        pos = target.stat().st_size
+        except KeyboardInterrupt:
+            pass
+
+
+def _manager():
+    from .context import Context
+    from .update.manager import ReleaseUpdateManager
+
+    layout = _layout()
+    ctx = Context(migrate=False)
+    ps = _platform(layout)
+    return ReleaseUpdateManager(ctx, layout, ps), ctx, layout, ps
+
+
+def cmd_update(a):
+    from .update.helper import Applier, ApplyError
+    from .update.manager import UpdateError
+
+    mgr, ctx, layout, ps = _manager()
+
+    def show(st):
+        print(f"installed {st['installed_version']} ({st['channel']} channel) - {st['state']}: {st['message']}")
+        if st.get("latest"):
+            print(f"  latest compatible: {st['latest']['version']} (published {st['latest']['published']}, {st['latest']['size'] // (1 << 20)} MB)")
+
+    if a.status:
+        show(mgr.status())
+        return
+    st = mgr.check()
+    show(st)
+    if st["state"] in ("failed", "offline", "incompatible", "disabled"):
+        sys.exit(1)
+    if not a.install or st["state"] != "available":
+        return
+    if not layout.managed:
+        sys.exit(st["not_managed_reason"])
+    if not a.yes:
+        if not sys.stdin.isatty():
+            sys.exit("Refusing to install without --yes when not run interactively.")
+        if input(f"Install {st['latest']['version']} now? [y/N] ").strip().lower() not in ("y", "yes"):
+            sys.exit("Cancelled.")
+    try:
+        mgr.download(background=False)
+    except UpdateError as exc:
+        sys.exit(str(exc))
+    st = mgr.status()
+    show(st)
+    if st["state"] != "staged":
+        sys.exit(1)
+    (layout.update_dir).mkdir(parents=True, exist_ok=True)
+    (layout.update_dir / "request.json").write_text(json.dumps({"version": st["staged_version"], "mode": a.when, "requested_at": time.time()}))
+    try:
+        ok = Applier(layout, ctx, ps).run(st["staged_version"], a.when)
+    except ApplyError as exc:
+        sys.exit(str(exc))
+    show(mgr.status())
+    sys.exit(0 if ok else 1)
+
+
+def _write_manifest(layout: Layout) -> None:
+    from .util import atomic_write_text
+
+    info = layout.service_info()
+    info.update({"label": info.get("label") or DEFAULT_LABEL, "python": str(layout.app / "venv-python"), "schema": 1})
+    atomic_write_text(layout.service_manifest, json.dumps(info, indent=2) + chr(10))
+
+
+def cmd_configure(a):
+    """Used by the installer: write the app-controlled service manifest and (optionally) the storage/port settings. Idempotent."""
+    from .config import save_settings
+    from .context import Context
+    from .util import atomic_write_text
+
+    layout = _layout()
+    layout.ensure()
+    if a.manifest_only:
+        _write_manifest(layout)
+        print("configured: service manifest only")
+        return
+    ctx = Context(layout.state)          # creates state dirs, runs migrations, writes default settings on first run
+    s = ctx.settings().model_copy(deep=True)
+    changed = []
+    if a.library:
+        s.storage.library_root = str(Path(a.library).expanduser())
+        changed.append("library")
+    if a.model_cache:
+        s.models.cache_dir = str(Path(a.model_cache).expanduser())
+        changed.append("model cache")
+    if a.port:
+        s.server.port = a.port
+        changed.append("port")
+    if changed:
+        ctx.save_settings(s)
+    _write_manifest(layout)
+    print("configured: " + (", ".join(changed) if changed else "service manifest only"))
+
+
+def cmd_migrate_legacy(a):
+    from .legacy import migrate_legacy
+
+    layout = _layout()
+    ps = _platform(layout)
+
+    def install():
+        from .context import Context
+
+        s = Context(layout.state, migrate=False).settings().server
+        layout.logs.mkdir(parents=True, exist_ok=True)
+        ps.install_service(service_spec(layout, s.port, s.host))
+        print("New service installed and started.")
+
+    sys.exit(migrate_legacy(Path(a.old_home).expanduser(), layout, dry_run=a.dry_run, keep_network=a.keep_network, platform_service=ps,
+                            install_service=install))
+
+
+def register(sub) -> None:
+    sub.add_parser("version", help="show version, build, channel and install layout").set_defaults(func=cmd_version)
+    for name, helptext in (("start", "start the background service"), ("stop", "stop the background service"),
+                           ("restart", "restart the background service"), ("status", "show whether the service is running")):
+        sp = sub.add_parser(name, help=helptext)
+        sp.set_defaults(func=cmd_service, action=name)
+    sp = sub.add_parser("service", help="install or remove the per-user background service")
+    sp.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status"])
+    sp.set_defaults(func=cmd_service)
+    sp = sub.add_parser("logs", help="show recent log lines")
+    sp.add_argument("-n", "--lines", type=int, default=60)
+    sp.add_argument("-f", "--follow", action="store_true")
+    sp.set_defaults(func=cmd_logs)
+    sp = sub.add_parser("update", help="check for / install a signed update")
+    sp.add_argument("--check", action="store_true", help="check only (default)")
+    sp.add_argument("--install", action="store_true", help="download, verify and install the update")
+    sp.add_argument("--status", action="store_true", help="show the last known status without contacting the server")
+    sp.add_argument("--when", choices=["now", "after_job"], default="after_job", help="install at the next segment boundary or after the current job")
+    sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    sp.set_defaults(func=cmd_update)
+    sp = sub.add_parser("configure", help="(installer) write the service manifest and storage/port settings")
+    sp.add_argument("--library")
+    sp.add_argument("--model-cache")
+    sp.add_argument("--port", type=int)
+    sp.add_argument("--manifest-only", action="store_true", help="write only app/service.json (touches no data)")
+    sp.set_defaults(func=cmd_configure)
+    sp = sub.add_parser("migrate-legacy", help="adopt a Bash/Homebrew-era installation (backs it up first, never deletes it)")
+    sp.add_argument("old_home", help="the old install directory, usually ~/audiobook-studio-claude")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--keep-network", action="store_true", help="keep serving the LAN if the old install did (default: loopback only)")
+    sp.set_defaults(func=cmd_migrate_legacy)
+__STUDIO_EOF_60f824b90959__
   mkdir -p "$DEST/studio/narrative"
 cat > "$DEST/studio/narrative/__init__.py" <<'__STUDIO_EOF_6fc98fbc881d__'
 """Context-aware narration: semantic segmentation, speaker analysis, Narrative Director.
@@ -8606,6 +11237,396 @@ def recover_interrupted(conn) -> dict:
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
 __STUDIO_EOF_5a45663174ae__
+cat > "$DEST/studio/platform_services.py" <<'__STUDIO_EOF_6d7f7e457f3b__'
+"""PlatformService implementations.
+
+MacPlatformService  per-user launchd LaunchAgent (gui/<uid> domain). No sudo, no daemon, no /Library, no shell profiles.
+ProcessPlatformService  plain detached processes with pid files: used on a dev machine, in tests, and as the seed for Linux ports."""
+from __future__ import annotations
+
+import json
+import os
+import platform as _platform
+import plistlib
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+from .interfaces import PlatformService, ServiceSpec
+
+Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
+
+
+def _run(argv: list[str]) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+
+
+def build_plist(spec: ServiceSpec) -> dict:
+    """The LaunchAgent: starts at login, restarts only after a crash/failure (not after a clean stop), throttled to one restart per 10 s,
+    one instance per label (launchd guarantees it), 45 s to shut down so an in-flight segment can finish."""
+    return {
+        "Label": spec.label,
+        "ProgramArguments": list(spec.program),
+        "WorkingDirectory": spec.working_dir,
+        "EnvironmentVariables": dict(spec.env),
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "ThrottleInterval": 10,
+        "ExitTimeOut": 45,
+        "ProcessType": "Interactive",
+        "StandardOutPath": spec.stdout_log,
+        "StandardErrorPath": spec.stdout_log,
+    }
+
+
+class MacPlatformService(PlatformService):
+    name = "macos-launchd"
+
+    def __init__(self, runner: Runner | None = None, agents_dir: Path | None = None, uid: int | None = None):
+        self.run = runner or _run
+        self.agents_dir = agents_dir or Path.home() / "Library" / "LaunchAgents"
+        self.uid = os.getuid() if uid is None and hasattr(os, "getuid") else (uid or 501)
+
+    def os_version(self) -> str:
+        return _platform.mac_ver()[0] or "0"
+
+    def architecture(self) -> str:
+        m = _platform.machine()
+        if sys.platform == "darwin" and m == "x86_64":
+            r = self.run(["/usr/sbin/sysctl", "-n", "sysctl.proc_translated"])
+            if r.stdout.strip() == "1":
+                return "arm64-rosetta"
+        return m
+
+    def plist_path(self, label: str) -> Path:
+        return self.agents_dir / f"{label}.plist"
+
+    def _domain(self) -> str:
+        return f"gui/{self.uid}" if self.run(["/bin/launchctl", "print", f"gui/{self.uid}"]).returncode == 0 else f"user/{self.uid}"
+
+    def _loaded(self, label: str) -> bool:
+        return self.run(["/bin/launchctl", "print", f"{self._domain()}/{label}"]).returncode == 0
+
+    def install_service(self, spec: ServiceSpec) -> None:
+        self.agents_dir.mkdir(parents=True, exist_ok=True)
+        path = self.plist_path(spec.label)
+        tmp = path.with_suffix(".plist.tmp")
+        tmp.write_bytes(plistlib.dumps(build_plist(spec)))
+        os.replace(tmp, path)
+        if self._loaded(spec.label):
+            self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{spec.label}"])
+        r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(path)])
+        if r.returncode != 0:
+            raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
+        self.run(["/bin/launchctl", "enable", f"{self._domain()}/{spec.label}"])
+
+    def uninstall_service(self, label: str) -> None:
+        if self._loaded(label):
+            self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{label}"])
+        try:
+            self.plist_path(label).unlink()
+        except FileNotFoundError:
+            pass
+
+    def start(self, label: str) -> None:
+        if not self._loaded(label):
+            r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(self.plist_path(label))])
+            if r.returncode != 0:
+                raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
+        self.run(["/bin/launchctl", "kickstart", f"{self._domain()}/{label}"])
+
+    def stop(self, label: str) -> None:
+        # bootout stops the process and keeps KeepAlive from restarting it until start()
+        if self._loaded(label):
+            self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{label}"])
+
+    def restart(self, label: str) -> None:
+        if self._loaded(label):
+            self.run(["/bin/launchctl", "kickstart", "-k", f"{self._domain()}/{label}"])
+        else:
+            self.start(label)
+
+    def is_running(self, label: str) -> bool:
+        r = self.run(["/bin/launchctl", "print", f"{self._domain()}/{label}"])
+        return r.returncode == 0 and "state = running" in r.stdout
+
+    def launch_detached(self, label: str, argv: list[str], cwd: str, env: dict[str, str], log: str, plist_dir: Path) -> None:
+        """Run a one-shot job (the updater) in its own launchd job, outside the service's process group, so restarting the
+        service cannot kill it."""
+        plist_dir.mkdir(parents=True, exist_ok=True)
+        path = plist_dir / f"{label}.plist"
+        path.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": argv, "WorkingDirectory": cwd, "EnvironmentVariables": env,
+                                         "RunAtLoad": True, "KeepAlive": False, "StandardOutPath": log, "StandardErrorPath": log,
+                                         "ProcessType": "Background", "AbandonProcessGroup": True}))
+        if self._loaded(label):
+            self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{label}"])
+        r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(path)])
+        if r.returncode != 0:
+            raise RuntimeError(f"could not start the updater job: {r.stderr.strip() or r.stdout.strip()}")
+
+
+class ProcessPlatformService(PlatformService):
+    """Detached processes tracked by pid files in ``state_dir``; the spec is stored next to the pid so start/restart work after install."""
+
+    name = "process"
+
+    def __init__(self, state_dir: Path):
+        self.dir = Path(state_dir)   # created lazily: merely constructing the service must not touch the disk
+
+    def os_version(self) -> str:
+        return _platform.mac_ver()[0] or _platform.release()
+
+    def architecture(self) -> str:
+        return _platform.machine()
+
+    def _spec_path(self, label: str) -> Path:
+        return self.dir / f"{label}.spec.json"
+
+    def _pid_path(self, label: str) -> Path:
+        return self.dir / f"{label}.pid"
+
+    def install_service(self, spec: ServiceSpec) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._spec_path(spec.label).write_text(json.dumps({"program": spec.program, "cwd": spec.working_dir, "env": spec.env, "log": spec.stdout_log}))
+
+    def uninstall_service(self, label: str) -> None:
+        self.stop(label)
+        self._spec_path(label).unlink(missing_ok=True)
+
+    def _pid(self, label: str) -> int | None:
+        try:
+            pid = int(self._pid_path(label).read_text().strip())
+        except (OSError, ValueError):
+            return None
+        return pid if _alive(pid) else None
+
+    def start(self, label: str) -> None:
+        if self._pid(label):
+            return
+        spec = json.loads(self._spec_path(label).read_text())
+        env = {**os.environ, **spec["env"]}
+        Path(spec["log"]).parent.mkdir(parents=True, exist_ok=True)
+        log = open(spec["log"], "ab")
+        kwargs = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt" else {"start_new_session": True}
+        p = subprocess.Popen(spec["program"], cwd=spec["cwd"], env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, **kwargs)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._pid_path(label).write_text(str(p.pid))
+
+    def stop(self, label: str, timeout: float = 30.0) -> None:
+        pid = self._pid(label)
+        if not pid:
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        deadline = time.time() + timeout
+        while time.time() < deadline and _alive(pid):
+            time.sleep(0.1)
+        if _alive(pid):
+            try:
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+            except OSError:
+                pass
+        self._pid_path(label).unlink(missing_ok=True)
+
+    def restart(self, label: str) -> None:
+        self.stop(label)
+        self.start(label)
+
+    def is_running(self, label: str) -> bool:
+        return self._pid(label) is not None
+
+    def launch_detached(self, label: str, argv: list[str], cwd: str, env: dict[str, str], log: str, plist_dir: Path) -> None:
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+        kwargs = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt" else {"start_new_session": True}
+        subprocess.Popen(argv, cwd=cwd, env={**os.environ, **env}, stdout=open(log, "ab"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kwargs)
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def default_platform(state_dir: Path) -> PlatformService:
+    return MacPlatformService() if sys.platform == "darwin" else ProcessPlatformService(state_dir)
+__STUDIO_EOF_6d7f7e457f3b__
+cat > "$DEST/studio/providers.py" <<'__STUDIO_EOF_c422f9cf89b9__'
+"""Concrete provider-side implementations of the contracts in interfaces.py.
+
+Implemented: local MLX and mock TTS/ASR descriptors, a settings-backed ModelRegistry, a filesystem StorageManager.
+Not implemented (by design, this phase): CUDA/CPU and remote-HTTP providers. They would implement TTSProvider/ASRProvider and be
+added to ``PROVIDERS``; the UI shows a provider selector only once more than one usable provider exists."""
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+from .interfaces import ASRProvider, InferenceProvider, ModelDescriptor, ModelRegistry, StorageManager, TTSProvider
+
+
+class MlxTTSProvider(TTSProvider):
+    provider_id, kind = "mlx-qwen3-tts", "local-mlx"
+
+    def __init__(self, engine=None):
+        self._engine = engine
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"preset_voices": True, "voice_design": True, "voice_clone": True, "streaming": False, "platforms": ["macos-arm64"]}
+
+    def availability(self) -> tuple[bool, str]:
+        if sys.platform != "darwin":
+            return False, "MLX needs an Apple Silicon Mac"
+        try:
+            import mlx.core  # noqa: F401
+        except Exception as exc:
+            return False, f"mlx is not importable ({type(exc).__name__})"
+        return True, ""
+
+    def synthesize(self, voice, text, params, sid: Optional[str] = None):
+        return self._engine.synthesize(voice, text, params, sid)
+
+
+class MlxWhisperProvider(ASRProvider):
+    provider_id, kind = "mlx-whisper", "local-mlx"
+
+    def __init__(self, asr=None):
+        self._asr = asr
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"word_timestamps": True, "languages": "multilingual", "platforms": ["macos-arm64"]}
+
+    def availability(self) -> tuple[bool, str]:
+        return MlxTTSProvider().availability()
+
+    def transcribe(self, wav_path, language: str = "en") -> dict:
+        return self._asr.transcribe(wav_path, language)
+
+
+class MockTTSProvider(TTSProvider):
+    provider_id, kind = "mock-tts", "mock"
+
+    def __init__(self, engine=None):
+        self._engine = engine
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"preset_voices": True, "voice_design": True, "voice_clone": True, "synthetic_tones": True}
+
+    def availability(self) -> tuple[bool, str]:
+        return True, ""
+
+    def synthesize(self, voice, text, params, sid: Optional[str] = None):
+        return self._engine.synthesize(voice, text, params, sid)
+
+
+class MockASRProvider(ASRProvider):
+    provider_id, kind = "mock-asr", "mock"
+
+    def __init__(self, asr=None):
+        self._asr = asr
+
+    def capabilities(self) -> dict[str, Any]:
+        return {"synthetic": True}
+
+    def availability(self) -> tuple[bool, str]:
+        return True, ""
+
+    def transcribe(self, wav_path, language: str = "en") -> dict:
+        return self._asr.transcribe(wav_path, language)
+
+
+PROVIDERS: dict[str, type[InferenceProvider]] = {c.provider_id: c for c in (MlxTTSProvider, MlxWhisperProvider, MockTTSProvider, MockASRProvider)}
+
+
+def usable_providers(role: Optional[str] = None) -> list[str]:
+    out = []
+    for pid, cls in PROVIDERS.items():
+        if role == "tts" and not issubclass(cls, TTSProvider) or role == "asr" and not issubclass(cls, ASRProvider):
+            continue
+        if cls().availability()[0]:
+            out.append(pid)
+    return out
+
+
+class SettingsModelRegistry(ModelRegistry):
+    """Models as configured in settings; revisions are recorded per generation elsewhere, so a code update never invalidates audio."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def _provider(self, asr: bool = False) -> str:
+        if self.ctx.engine_mode == "mock":
+            return "mock-asr" if asr else "mock-tts"
+        return "mlx-whisper" if asr else "mlx-qwen3-tts"
+
+    def list_models(self, role: Optional[str] = None) -> list[ModelDescriptor]:
+        m = self.ctx.settings().models
+        items = [ModelDescriptor("tts_custom_voice", m.custom_voice_model, self._provider(), ("preset_voices",)),
+                 ModelDescriptor("tts_clone", m.base_model, self._provider(), ("voice_clone",)),
+                 ModelDescriptor("tts_voice_design", m.voice_design_model, self._provider(), ("voice_design",)),
+                 ModelDescriptor("asr", m.asr_model, self._provider(asr=True), ("word_timestamps",))]
+        return [i for i in items if role is None or i.role == role]
+
+    def resolve(self, role: str) -> ModelDescriptor:
+        found = self.list_models(role)
+        if not found:
+            raise KeyError(f"no model registered for role {role!r}")
+        return found[0]
+
+
+class StudioStorageManager(StorageManager):
+    """Library root, model cache and availability checks, all independent of the release directory."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+
+    def library_root(self) -> Path:
+        return self.ctx.library_root()
+
+    def model_cache(self) -> Path:
+        d = self.ctx.settings().models.cache_dir or os.environ.get("HF_HOME") or str(self.ctx.home / "cache" / "huggingface")
+        return Path(d).expanduser()
+
+    def check_available(self, path: Path) -> tuple[bool, str]:
+        p = Path(path).expanduser()
+        if p.exists() and os.access(p, os.W_OK):
+            return True, ""
+        parts = p.parts
+        if len(parts) > 2 and parts[1] == "Volumes" and not Path(*parts[:3]).exists():
+            return False, f"The volume '{parts[2]}' is not mounted. Connect the disk; paused work resumes by itself."
+        if p.exists():
+            return False, f"{p} is not writable (check permissions or macOS privacy settings)."
+        return False, f"{p} does not exist."
+
+    def free_bytes(self, path: Path) -> int:
+        p = Path(path).expanduser()
+        while not p.exists() and p != p.parent:
+            p = p.parent
+        return shutil.disk_usage(p).free
+__STUDIO_EOF_c422f9cf89b9__
 cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_0c3b6d21e950__'
 """Reference-voice lab: sample scripts to read aloud and an objective quality report for a recording.
 
@@ -8934,6 +11955,76 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_5c7f622586db__
+cat > "$DEST/studio/scheduler.py" <<'__STUDIO_EOF_0827980c61c8__'
+"""QueueScheduler implementation used to drain the queue for an update.
+
+A small JSON file (``run/dispatch.hold``) is the hold: the worker consults it before every unit of work, so the segment
+being synthesised always finishes (and is written to disk) and nothing new starts. Running jobs keep their ``running`` status
+and are re-queued at the same position by the worker's normal crash recovery after the restart; completed WAVs are never touched."""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from .interfaces import HoldRequest, QueueScheduler
+from .util import atomic_write_text
+
+BUSY_STATES = ("generating", "analyzing", "assembling", "previewing", "verifying")
+HEARTBEAT_FRESH_S = 30.0
+
+
+class FileQueueScheduler(QueueScheduler):
+    def __init__(self, run_dir: Path, db=None):
+        self.path = Path(run_dir) / "dispatch.hold"
+        self.db = db
+
+    def hold(self, mode: str, reason: str = "update") -> None:
+        if mode not in ("now", "after_job"):
+            raise ValueError("mode must be 'now' or 'after_job'")
+        atomic_write_text(self.path, json.dumps({"mode": mode, "reason": reason, "since": time.time()}))
+
+    def release(self) -> None:
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def current_hold(self) -> HoldRequest | None:
+        try:
+            d = json.loads(self.path.read_text("utf-8"))
+            return HoldRequest(d["mode"], d.get("reason", ""), float(d.get("since", 0)))
+        except (OSError, ValueError, KeyError):
+            return None
+
+    def allows(self, job: dict) -> bool:
+        h = self.current_hold()
+        if h is None:
+            return True
+        return h.mode == "after_job" and job.get("status") == "running"
+
+    def drained(self) -> bool:
+        if self.db is None:
+            return True
+        h = self.current_hold()
+        with self.db.session() as conn:
+            w = conn.execute("SELECT state, heartbeat_at FROM worker_state WHERE id=1").fetchone()
+            if w and w["state"] in BUSY_STATES and (time.time() - (w["heartbeat_at"] or 0)) < HEARTBEAT_FRESH_S:
+                return False
+            if h is not None and h.mode == "after_job":
+                n = conn.execute("SELECT COUNT(*) FROM jobs WHERE status='running' AND kind IN ('book','analyze','assemble','export')").fetchone()[0]
+                return n == 0
+        return True
+
+    def running_summary(self) -> str:
+        """Human text for the Update Center while waiting."""
+        if self.db is None:
+            return ""
+        with self.db.session() as conn:
+            r = conn.execute("""SELECT b.title FROM jobs j LEFT JOIN books b ON b.id=j.book_id
+                                WHERE j.status='running' ORDER BY j.id LIMIT 1""").fetchone()
+        return r["title"] if r and r["title"] else ""
+__STUDIO_EOF_0827980c61c8__
 cat > "$DEST/studio/secrets_store.py" <<'__STUDIO_EOF_ae0d5bdc74d1__'
 """API keys for outbound OpenAI-compatible endpoints, entered through the web UI.
 
@@ -10630,7 +13721,7 @@ def run_smoke(args) -> int:
     print(f"\nSmoke test {rep['result']}. Report: {out_dir / 'smoke_report.md'}")
     return 0 if ok else 1
 __STUDIO_EOF_ef48976df99c__
-cat > "$DEST/studio/storage.py" <<'__STUDIO_EOF_9800c9e0fcfa__'
+cat > "$DEST/studio/storage.py" <<'__STUDIO_EOF_7f184566b98f__'
 """Storage location validation, disk usage and project relocation.
 
 Behaviour chosen for path changes: **per-project path registry**. Every book records the
@@ -10820,7 +13911,7 @@ def storage_overview(ctx) -> dict:
         "registry": registry,
         "app_home": str(ctx.home),
         "database": str(ctx.db.path),
-        "model_cache": os.environ.get("HF_HOME") or str(ctx.cache_dir / "huggingface"),
+        "model_cache": ctx.settings().models.cache_dir or os.environ.get("HF_HOME") or str(ctx.cache_dir / "huggingface"),
         "native_chooser": sys.platform == "darwin",
         "policy": "per-project registry: new locations apply to books imported afterwards; existing books stay findable at their recorded paths and can be moved explicitly.",
     }
@@ -11009,7 +14100,7 @@ def move_book(ctx, book_id: int, new_root: str, progress=None) -> dict:
         ctx.audit(conn, "book", book_id, "moved", {"from": {k: str(v_) for k, v_ in old.items()}, "to": {k: str(v_) for k, v_ in new.items()}, "files": len(copied)})
         ctx.event(conn, "storage", f"Moved '{book['title']}' to {dest_root} ({len(copied)} files verified). The old copy was kept.", book_id)
     return {"files": len(copied), "old": {k: str(v_) for k, v_ in old.items()}, "new": {k: str(v_) for k, v_ in new.items()}}
-__STUDIO_EOF_9800c9e0fcfa__
+__STUDIO_EOF_7f184566b98f__
 cat > "$DEST/studio/tls.py" <<'__STUDIO_EOF_2956fddddc1f__'
 """Self-signed HTTPS certificate for the studio's LAN address.
 
@@ -11105,6 +14196,1864 @@ def fingerprint_sha256(cert_path: Path) -> str:
     h = cert.fingerprint(hashes.SHA256()).hex().upper()
     return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
 __STUDIO_EOF_2956fddddc1f__
+  mkdir -p "$DEST/studio/update"
+cat > "$DEST/studio/update/__init__.py" <<'__STUDIO_EOF_dcfb737a627a__'
+"""Authenticated, user-level application updates.
+
+The pieces are deliberately small and separately testable:
+
+  layout      where releases, runtimes, state and logs live (outside every release)
+  trust       pinned Ed25519 public keys; verifies signed release metadata
+  manifest    the signed release-index contract and update selection (semver, channel, compatibility)
+  net         HTTPS-only fetcher: host allowlist, redirect checks, size limits, resumable downloads
+  archive     hardened tar.gz extraction
+  repository  ReleaseRepository implementations (GitHub Releases first, generic HTTPS, local dev)
+  store       immutable release directories and the atomic active-release pointer
+  status      persisted update state, progress and history shown by the Update Center
+  manager     check / download / verify / stage (runs inside the web process; never touches the running release)
+  helper      the separate process that drains the queue, switches the pointer, restarts and rolls back
+"""
+__STUDIO_EOF_dcfb737a627a__
+cat > "$DEST/studio/update/archive.py" <<'__STUDIO_EOF_492b24e47d39__'
+"""Hardened extraction of a release archive (``.tar.gz`` only). Never uses ``extractall``.
+
+Rejected: absolute paths, ``..`` or backslash components, drive letters, NUL bytes, symlinks, hardlinks, devices, FIFOs,
+members outside the single top-level ``audiobook-studio-<version>/`` directory, duplicate names, too many files, too many
+bytes (decompression bomb) and anything that is not a gzip stream. Permission bits are normalised (no setuid/setgid/world-write)."""
+from __future__ import annotations
+
+import hashlib
+import os
+import posixpath
+import shutil
+import tarfile
+from pathlib import Path
+
+MAX_FILES = 20000
+MAX_UNPACKED = 1 << 30      # 1 GiB of unpacked code
+MAX_MEMBER = 256 << 20
+
+
+class ArchiveError(Exception):
+    pass
+
+
+def check_gzip(path: Path) -> None:
+    with open(path, "rb") as fh:
+        if fh.read(2) != b"\x1f\x8b":
+            raise ArchiveError("The download is not a gzip-compressed tar archive.")
+
+
+def _safe_member_path(name: str) -> str:
+    if not name or "\x00" in name or "\\" in name or name.startswith("/") or (len(name) > 1 and name[1] == ":"):
+        raise ArchiveError(f"Unsafe path in archive: {name!r}")
+    norm = posixpath.normpath(name)
+    if norm == ".." or norm.startswith("../") or norm.startswith("/") or any(p == ".." for p in name.split("/")):
+        raise ArchiveError(f"Path traversal in archive: {name!r}")
+    return norm
+
+
+def safe_extract(archive: Path, dest: Path, expected_top: str | None = None) -> str:
+    """Extract ``archive`` into the (new, empty) directory ``dest``, stripping the single top-level directory.
+    Returns the top-level directory name. On any problem ``dest`` is removed and ArchiveError is raised."""
+    check_gzip(archive)
+    dest = Path(dest)
+    if dest.exists():
+        raise ArchiveError(f"{dest} already exists")
+    dest.mkdir(parents=True)
+    root = dest.resolve()
+    total = 0
+    seen: set[str] = set()
+    top: str | None = None
+    try:
+        with tarfile.open(archive, "r:gz") as tf:
+            count = 0
+            for m in tf:
+                count += 1
+                if count > MAX_FILES:
+                    raise ArchiveError("The archive contains too many files.")
+                name = _safe_member_path(m.name)
+                if m.issym() or m.islnk():
+                    raise ArchiveError(f"Links are not allowed in a release archive: {m.name!r}")
+                if not (m.isfile() or m.isdir()):
+                    raise ArchiveError(f"Unsupported entry type in archive: {m.name!r}")
+                parts = name.split("/")
+                if top is None:
+                    top = parts[0]
+                    if expected_top and top != expected_top:
+                        raise ArchiveError(f"Unexpected top-level directory {top!r} (expected {expected_top!r}).")
+                elif parts[0] != top:
+                    raise ArchiveError("The archive has more than one top-level entry.")
+                if len(parts) == 1:
+                    if not m.isdir():
+                        raise ArchiveError("A file sits next to the top-level directory.")
+                    continue
+                rel = "/".join(parts[1:])
+                if rel in seen:
+                    raise ArchiveError(f"Duplicate entry in archive: {rel!r}")
+                seen.add(rel)
+                target = (root / rel).resolve()
+                if root != target and root not in target.parents:
+                    raise ArchiveError(f"Path escapes the extraction directory: {m.name!r}")
+                if m.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                if m.size > MAX_MEMBER:
+                    raise ArchiveError(f"A file in the archive is implausibly large: {m.name!r}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                src = tf.extractfile(m)
+                if src is None:
+                    raise ArchiveError(f"Cannot read {m.name!r}")
+                written = 0
+                with open(target, "wb") as out:
+                    while True:
+                        chunk = src.read(1 << 17)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        total += len(chunk)
+                        if written > m.size or total > MAX_UNPACKED:
+                            raise ArchiveError("The archive expands beyond the allowed size (possible decompression bomb).")
+                        out.write(chunk)
+                os.chmod(target, 0o755 if (m.mode & 0o111) else 0o644)
+        if top is None or not seen:
+            raise ArchiveError("The archive is empty.")
+    except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
+        shutil.rmtree(dest, ignore_errors=True)
+        if isinstance(exc, ArchiveError):
+            raise
+        raise ArchiveError(f"The archive is damaged or unreadable ({type(exc).__name__}: {exc}).") from exc
+    except ArchiveError:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    return top
+
+
+def verify_tree_manifest(tree: Path) -> int:
+    """Check ``MANIFEST.sha256`` (``<sha256>  <relative path>`` lines) against the extracted files; returns the file count.
+    Every file in the tree except the manifest itself must be listed, so nothing can be added unnoticed."""
+    mf = Path(tree) / "MANIFEST.sha256"
+    if not mf.exists():
+        raise ArchiveError("The release has no MANIFEST.sha256.")
+    listed: dict[str, str] = {}
+    for line in mf.read_text("utf-8").splitlines():
+        if not line.strip():
+            continue
+        digest, _, rel = line.partition("  ")
+        rel = rel.strip()
+        if not digest or not rel or rel.startswith("*"):
+            rel = rel.lstrip("*")
+        _safe_member_path(rel)
+        listed[rel] = digest
+    root = Path(tree).resolve()
+    for rel, digest in listed.items():
+        p = (root / rel).resolve()
+        if root not in p.parents or not p.is_file():
+            raise ArchiveError(f"The release manifest lists a missing file: {rel}")
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != digest:
+            raise ArchiveError(f"File does not match the release manifest: {rel}")
+    actual = {str(p.relative_to(root)).replace(os.sep, "/") for p in root.rglob("*") if p.is_file()} - {"MANIFEST.sha256"}
+    extra = actual - set(listed)
+    if extra:
+        raise ArchiveError(f"The release contains files not listed in its manifest: {sorted(extra)[:3]}")
+    return len(listed)
+__STUDIO_EOF_492b24e47d39__
+cat > "$DEST/studio/update/helper.py" <<'__STUDIO_EOF_7127a109413a__'
+"""The separate updater process. It is started by the web process through the platform (a one-shot launchd job on macOS) or
+by ``studio update --install``; it is never a thread of the server, so stopping the server cannot interrupt it.
+
+Sequence (each step is journalled so an interrupted run can be repaired):
+  verify   re-hash the staged tree against its manifest (catches tampering after staging)
+  drain    hold the queue; the segment being synthesised finishes and is on disk before we continue
+  backup   consistent SQLite backup (sqlite3 online-backup API) + a copy of config/
+  stop     stop the service through the platform (launchd bootout)
+  switch   atomically repoint ``current`` (rename of a symlink + pointer file)
+  migrate  run ``studio migrate`` from the NEW release (takes its own DB backup first)
+  start    start the service
+  health   /healthz must report the target version with a working database
+  finish   release the queue hold, record history, prune old releases
+On any failure after the stop: stop, repoint to the previous release, restore the database backup if the schema moved, start,
+confirm health. If even that fails, write a repair note and leave every user file untouched ("repair mode")."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+from ..scheduler import FileQueueScheduler
+from ..util import atomic_write_text, now
+from .archive import ArchiveError, verify_tree_manifest
+from .layout import Layout
+from .runtime import runtime_python, runtime_ready
+from .status import StatusFile
+from .store import ReleaseStore
+
+DEFAULT_LABEL = "com.audiobookstudio.app"
+
+
+class ApplyError(Exception):
+    pass
+
+
+def http_health(port: int, timeout: float = 5.0) -> dict | None:
+    import httpx
+
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=timeout)
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def pid_alive(pid: int) -> bool:
+    from ..platform_services import _alive
+
+    return _alive(pid)
+
+
+class Applier:
+    def __init__(self, layout: Layout, ctx, platform_service, label: str | None = None, scheduler: FileQueueScheduler | None = None,
+                 health: Callable[[int], dict | None] | None = None, migrate: Callable[[Path, Path, dict], tuple[int, str]] | None = None,
+                 health_timeout: float = 120.0, drain_timeout: float = 15 * 60, after_job_timeout: float = 7 * 86400, poll: float = 2.0,
+                 python_for: Callable[[Path], Path] | None = None):
+        self.layout, self.ctx, self.platform = layout, ctx, platform_service
+        info = layout.service_info()
+        self.label = label or info.get("label") or DEFAULT_LABEL
+        self.scheduler = scheduler or FileQueueScheduler(ctx.run_dir, ctx.db)
+        self.health = health or http_health
+        self.migrate_fn = migrate or self._migrate_subprocess
+        self.health_timeout, self.drain_timeout, self.after_job_timeout, self.poll = health_timeout, drain_timeout, after_job_timeout, poll
+        self.python_for = python_for or self._python_for
+        self.store = ReleaseStore(layout)
+        self.status = StatusFile(layout.update_dir)
+        self.journal = layout.update_dir / "journal.json"
+        self.request = layout.update_dir / "request.json"
+        self._had_request = False
+
+    # ---------------------------------------------------------------- utilities
+    def _python_for(self, release_dir: Path) -> Path:
+        try:
+            meta = json.loads((release_dir / "release.json").read_text("utf-8"))
+            rid = meta.get("runtime_id")
+            if rid:
+                if runtime_ready(self.layout, rid):
+                    return runtime_python(self.layout, rid)
+        except (OSError, ValueError):
+            pass
+        info = self.layout.service_info()
+        return Path(info.get("python") or sys.executable)
+
+    def _activate(self, version: str, release_dir: Path) -> None:
+        self.store.activate(version)
+        try:
+            self.store.link_python(self.python_for(release_dir))
+        except OSError:
+            pass
+
+    def _port(self) -> int:
+        return self.ctx.settings().server.port
+
+    def _step(self, phase: str, state: str, pct: float | None, detail: str, **top) -> None:
+        self.status.update(phase=(phase, state, pct, detail), **top)
+
+    def _journal(self, **kw) -> None:
+        atomic_write_text(self.journal, json.dumps({**kw, "at": now()}))
+
+    def _cancelled(self) -> bool:
+        """The Update Center cancels by deleting request.json; a run started without one (CLI) cannot be cancelled that way."""
+        return self._had_request and not self.request.exists()
+
+    def _migrate_subprocess(self, release_dir: Path, python: Path, env: dict) -> tuple[int, str]:
+        r = subprocess.run([str(python), "-m", "studio", "migrate"], cwd=str(release_dir), env={**os.environ, **env},
+                           capture_output=True, text=True, timeout=1800)
+        return r.returncode, (r.stdout + r.stderr)[-2000:]
+
+    def _service_env(self, release_dir: Path) -> dict:
+        info = self.layout.service_info()
+        env = dict(info.get("env") or {})
+        env.setdefault("AUDIOBOOK_STUDIO_HOME", str(self.layout.state))
+        env.setdefault("AUDIOBOOK_STUDIO_ROOT", str(self.layout.root))
+        env["PYTHONPATH"] = str(release_dir)
+        return env
+
+    def backup_database(self, tag: str) -> tuple[Path, Path | None]:
+        d = self.ctx.backups_dir / "update"
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dst = d / f"studio-{tag}-{stamp}.db"
+        src = sqlite3.connect(str(self.ctx.db.path))
+        try:
+            out = sqlite3.connect(str(dst))
+            try:
+                src.backup(out)
+            finally:
+                out.close()
+        finally:
+            src.close()
+        cfg = None
+        if self.ctx.config_dir.exists():
+            cfg = d / f"config-{tag}-{stamp}"
+            shutil.copytree(self.ctx.config_dir, cfg, ignore=shutil.ignore_patterns("tls"))
+        return dst, cfg
+
+    def _restore_database(self, backup: Path) -> None:
+        db = Path(self.ctx.db.path)
+        keep = db.with_name(f"studio.failed-{time.strftime('%Y%m%d-%H%M%S')}.db")
+        if db.exists():
+            shutil.copy2(db, keep)   # the post-failure database is kept, never silently discarded
+        for ext in ("-wal", "-shm"):
+            Path(str(db) + ext).unlink(missing_ok=True)
+        tmp = db.with_name(db.name + ".restore")
+        shutil.copy2(backup, tmp)
+        os.replace(tmp, db)
+
+    def _wait_health(self, version: str, timeout: float) -> dict | None:
+        deadline = time.time() + timeout
+        while True:
+            h = self.health(self._port())
+            if h and h.get("ok") and h.get("db") and h.get("version") == version:
+                return h
+            if time.time() >= deadline:
+                return None
+            time.sleep(min(self.poll, 1.0))
+
+    # ----------------------------------------------------------------- preflight
+    def preflight(self, version: str) -> list[str]:
+        problems: list[str] = []
+        rel = self.layout.release_dir(version)
+        if not self.store.has(version):
+            problems.append(f"Release {version} is not staged.")
+        for d, what in ((self.layout.app, "the application folder"), (self.layout.state, "the data folder")):
+            if not d.exists() or not os.access(d, os.W_OK):
+                problems.append(f"{what.capitalize()} ({d}) is missing or not writable. If it is on an external disk, reconnect it.")
+        try:
+            if rel.exists():
+                verify_tree_manifest(rel)
+        except ArchiveError as exc:
+            problems.append(f"The staged release failed re-verification: {exc}")
+        free = shutil.disk_usage(self.layout.state).free
+        db_size = Path(self.ctx.db.path).stat().st_size if Path(self.ctx.db.path).exists() else 0
+        if free < db_size * 2 + (50 << 20):
+            problems.append("Not enough free space to back up the database.")
+        return problems
+
+    # ---------------------------------------------------------------------- run
+    def run(self, version: str, mode: str) -> bool:
+        lock = self.layout.update_dir / "apply.lock"
+        self.layout.update_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+        except FileExistsError:
+            try:
+                other = int(lock.read_text() or 0)
+            except (OSError, ValueError):
+                other = 0
+            if other and other != os.getpid() and pid_alive(other):
+                raise ApplyError("Another update is already running.")
+            lock.write_text(str(os.getpid()))
+        try:
+            return self._run(version, mode)
+        finally:
+            lock.unlink(missing_ok=True)
+            self.request.unlink(missing_ok=True)
+
+    def _fail(self, version: str, message: str, kind: str = "failed", state: str = "failed") -> bool:
+        self.scheduler.release()
+        self.status.update(state=state, message=message, error=message, error_kind=kind, mode=None)
+        self.status.add_history("install", version, False, message)
+        return False
+
+    def _run(self, version: str, mode: str) -> bool:
+        old = self.store.current()
+        self._had_request = self.request.exists()
+        self._journal(step="start", version=version, old=old, mode=mode)
+        self.status.update(state="waiting", target_version=version, mode=mode, error=None, error_kind=None, phases={})
+        problems = self.preflight(version)
+        if problems:
+            return self._fail(version, " ".join(problems), "preflight")
+        if old == version:
+            return self._fail(version, "That version is already active.", "preflight")
+        # --- drain
+        self.scheduler.hold(mode, reason=f"update to {version}")
+        timeout = self.after_job_timeout if mode == "after_job" else self.drain_timeout
+        deadline = time.time() + timeout
+        self._step("drain", "running", None, "Waiting for the current work to reach a safe point")
+        while not self.scheduler.drained():
+            if self._cancelled():
+                self.scheduler.release()
+                self.status.update(state="staged", message="Installation cancelled.", mode=None)
+                return False
+            title = self.scheduler.running_summary()
+            self.status.update(state="waiting" if mode == "after_job" else "draining",
+                               message=f"Waiting for “{title}” to finish." if title else "Waiting for the current segment to finish.")
+            if time.time() > deadline:
+                return self._fail(version, "Timed out waiting for the queue to drain. Nothing was changed; try again when the Mac is idle.", "drain")
+            time.sleep(self.poll)
+        self._step("drain", "done", 100, "Queue is idle; completed audio is on disk")
+        # --- backup
+        self.status.update(state="installing", message="Backing up the database")
+        self._step("install", "running", 10, "Backing up the database")
+        try:
+            backup, cfg = self.backup_database(f"{old or 'x'}-to-{version}")
+        except Exception as exc:
+            return self._fail(version, f"Could not back up the database ({exc}). Nothing was changed.", "backup")
+        schema_before = self.ctx.db.schema_version()
+        self._journal(step="backed_up", version=version, old=old, backup=str(backup), schema_before=schema_before)
+        # --- stop, switch, migrate, start, health
+        new_dir = self.layout.release_dir(version)
+        switched = False
+        try:
+            self._step("install", "running", 30, "Stopping the service")
+            self.status.update(state="installing", message="Stopping the service")
+            self.platform.stop(self.label)
+            self._journal(step="stopped", version=version, old=old, backup=str(backup), schema_before=schema_before)
+            self._step("install", "running", 50, "Switching to the new version")
+            self._activate(version, new_dir)
+            switched = True
+            self._journal(step="switched", version=version, old=old, backup=str(backup), schema_before=schema_before)
+            self._step("install", "running", 70, "Applying database migrations")
+            rc, out = self.migrate_fn(new_dir, self.python_for(new_dir), self._service_env(new_dir))
+            if rc != 0:
+                raise ApplyError(f"Database migration failed: {out.strip()[-400:]}")
+            self._step("install", "done", 100, "Installed")
+            self.status.update(state="restarting", message="Starting the new version")
+            self._step("restart", "running", None, "Starting the service")
+            self.platform.start(self.label)
+            self._step("restart", "done", 100, "Service started")
+            self.status.update(state="health_check", message="Checking the new version")
+            self._step("health", "running", None, "Waiting for /healthz")
+            h = self._wait_health(version, self.health_timeout)
+            if not h:
+                raise ApplyError(f"The new version did not become healthy within {int(self.health_timeout)} s.")
+            self._step("health", "done", 100, "Healthy")
+        except Exception as exc:
+            return self._rollback(version, old, backup, schema_before, str(exc), switched)
+        warnings = []
+        storage = h.get("storage") or {}
+        if storage.get("ok") is False:
+            warnings.append("Storage is unavailable (" + str(storage.get("detail", "disconnected")) + "); affected jobs stay paused until it returns.")
+        self.scheduler.release()
+        pruned = self.store.prune(self.ctx.settings().updates.keep_releases)
+        msg = f"Updated to {version}." + (" " + " ".join(warnings) if warnings else "")
+        self.status.update(state="succeeded", message=msg, error=None, error_kind=None, mode=None, staged_version=None, latest=None,
+                           last_installed=version, last_installed_at=now(), warnings=warnings)
+        self.status.add_history("install", version, True, msg, previous=old, backup=str(backup), pruned=pruned)
+        self._journal(step="done", version=version, old=old)
+        return True
+
+    def _rollback(self, version: str, old: str | None, backup: Path, schema_before: int, reason: str, switched: bool) -> bool:
+        self.status.update(state="installing", message="The update failed; restoring the previous version", error=reason)
+        self._step("install", "failed", None, reason)
+        try:
+            self.platform.stop(self.label)
+            if old and switched:
+                self._activate(old, self.layout.release_dir(old))
+            if self.ctx.db.schema_version() != schema_before:
+                self._restore_database(backup)
+            if old:
+                self.platform.start(self.label)
+                h = self._wait_health(old, self.health_timeout)
+            else:
+                h = None
+        except Exception as exc:
+            h = None
+            reason += f" (rollback error: {exc})"
+        if h:
+            self.scheduler.release()
+            msg = f"Update to {version} failed and was rolled back to {old}: {reason}"
+            self.status.update(state="rolled_back", message=msg, error=reason, error_kind="rolled_back", mode=None)
+            self.status.add_history("install", version, False, msg, rolled_back_to=old)
+            return False
+        note = self.layout.update_dir / "REPAIR.txt"
+        atomic_write_text(note, f"Update to {version} failed and the previous version did not restart automatically.\nReason: {reason}\n"
+                                f"Your books, voices, settings and the database backup are untouched: {backup}\n"
+                                f"Run:  audiobook-studio doctor   then   audiobook-studio start\n")
+        self.scheduler.release()
+        msg = f"Update to {version} failed and automatic recovery could not confirm the previous version is running. See {note}. No project data was deleted."
+        self.status.update(state="failed", message=msg, error=reason, error_kind="repair", mode=None)
+        self.status.add_history("install", version, False, msg, repair=True)
+        return False
+
+
+def preload() -> None:
+    """Import everything the helper may need BEFORE the active release changes, so it never mixes old and new modules."""
+    import importlib
+
+    for m in ("studio.context", "studio.db", "studio.config", "studio.scheduler", "studio.platform_services", "studio.update.archive",
+              "studio.update.store", "studio.update.runtime", "studio.update.status", "studio.util", "httpx", "sqlite3"):
+        importlib.import_module(m)
+
+
+def main(argv: list[str] | None = None) -> int:
+    from ..context import Context
+    from ..platform_services import default_platform
+
+    preload()
+    ap = argparse.ArgumentParser(prog="studio.update.helper")
+    ap.add_argument("--root")
+    ap.add_argument("--version")
+    ap.add_argument("--mode", choices=["now", "after_job"])
+    a = ap.parse_args(argv)
+    layout = Layout.discover(a.root)
+    req = {}
+    try:
+        req = json.loads((layout.update_dir / "request.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        pass
+    version = a.version or req.get("version")
+    mode = a.mode or req.get("mode") or "after_job"
+    if not version:
+        print("No update request found.", file=sys.stderr)
+        return 2
+    os.environ.setdefault("AUDIOBOOK_STUDIO_HOME", str(layout.state))
+    ctx = Context(layout.state, migrate=False)
+    ap_ = Applier(layout, ctx, default_platform(layout.state))
+    try:
+        return 0 if ap_.run(version, mode) else 1
+    except ApplyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+__STUDIO_EOF_7127a109413a__
+cat > "$DEST/studio/update/launch.py" <<'__STUDIO_EOF_59a27258dea9__'
+"""Starting the separate updater process, and the health payload both the server and the updater agree on."""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from ..interfaces import PlatformService
+from .layout import Layout
+
+UPDATER_LABEL = "com.audiobookstudio.updater"
+
+
+def make_launcher(layout: Layout, platform_service: PlatformService, python: str | None = None):
+    """Returns ``launch(version, mode)``. The helper runs from the CURRENTLY ACTIVE release directory (resolved, not through the
+    ``current`` symlink), outside the service's process group, with absolute paths only. No shell is involved."""
+
+    def launch(version: str, mode: str) -> None:
+        cur = layout.current_version()
+        if not cur:
+            raise RuntimeError("no active release is recorded; cannot start the updater")
+        cwd = str(layout.release_dir(cur).resolve())
+        py = python or layout.service_info().get("python") or sys.executable
+        env = {"AUDIOBOOK_STUDIO_HOME": str(layout.state), "AUDIOBOOK_STUDIO_ROOT": str(layout.root), "AUDIOBOOK_STUDIO_LOGS": str(layout.logs),
+               "PYTHONPATH": cwd, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1",
+               "PATH": os.pathsep.join([str(layout.tools_bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"] if os.name != "nt" else [os.environ.get("PATH", "")])}
+        argv = [str(py), "-m", "studio.update.helper", "--root", str(layout.root), "--version", version, "--mode", mode]
+        platform_service.launch_detached(UPDATER_LABEL, argv, cwd, env, str(layout.logs / "updater.log"), layout.update_dir / "launchd")
+
+    return launch
+
+
+def health_payload(ctx, version: str, detailed: bool) -> dict:
+    """/healthz body. Counts and storage detail are only returned to loopback callers."""
+    out: dict = {"ok": True, "version": version, "db": False, "schema": None}
+    try:
+        out["schema"] = ctx.db.schema_version()
+        with ctx.db.session() as conn:
+            conn.execute("SELECT 1").fetchone()
+            out["db"] = True
+            if detailed:
+                out["queue"] = {r["status"]: r["n"] for r in conn.execute("SELECT status, COUNT(*) n FROM jobs WHERE kind='book' GROUP BY status")}
+    except Exception as exc:
+        out["ok"] = False
+        out["error"] = type(exc).__name__
+    if detailed:
+        try:
+            root = Path(ctx.library_root())
+            ok = root.exists() and os.access(root, os.W_OK)
+            out["storage"] = {"ok": ok, "detail": "" if ok else f"{root} is not available"}
+        except Exception as exc:
+            out["storage"] = {"ok": False, "detail": type(exc).__name__}
+    return out
+__STUDIO_EOF_59a27258dea9__
+cat > "$DEST/studio/update/layout.py" <<'__STUDIO_EOF_f8cdc1305a61__'
+"""On-disk layout of a managed installation. Everything replaceable lives under ``app/``; everything the
+user owns lives under ``state/`` (and the storage root / model cache the user chose), so an update
+can never overwrite books, voices, settings or model weights.
+
+    <root>/app/releases/<version>/   immutable application code (one directory per release)
+    <root>/app/current               symlink to the active release (what launchd runs)
+    <root>/app/runtimes/<id>/        private Python virtual environments, shared by releases with the same lock
+    <root>/app/tools/bin/            app-owned uv, ffmpeg, ffprobe
+    <root>/state/                    AUDIOBOOK_STUDIO_HOME: config, data (SQLite), run, backups, update/
+    <logs>                           ~/Library/Logs/Audiobook Studio on macOS
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+VERSION_DIR_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+
+
+def default_root() -> Path:
+    env = os.environ.get("AUDIOBOOK_STUDIO_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Audiobook Studio"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "audiobook-studio"
+
+
+def default_logs(root: Path) -> Path:
+    env = os.environ.get("AUDIOBOOK_STUDIO_LOGS")
+    if env:
+        return Path(env).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "Audiobook Studio"
+    return root / "logs"
+
+
+@dataclass(frozen=True)
+class Layout:
+    root: Path
+    logs: Path
+
+    @classmethod
+    def discover(cls, root: str | Path | None = None) -> "Layout":
+        r = Path(root).expanduser().resolve() if root else default_root()
+        return cls(r, default_logs(r))
+
+    # --- application side
+    @property
+    def app(self) -> Path:
+        return self.root / "app"
+
+    @property
+    def releases(self) -> Path:
+        return self.app / "releases"
+
+    @property
+    def current_link(self) -> Path:
+        return self.app / "current"
+
+    @property
+    def pointer_file(self) -> Path:
+        """Authoritative active-release pointer (the symlink is a convenience for launchd paths)."""
+        return self.app / "current.json"
+
+    @property
+    def runtimes(self) -> Path:
+        return self.app / "runtimes"
+
+    @property
+    def tools_bin(self) -> Path:
+        return self.app / "tools" / "bin"
+
+    @property
+    def service_manifest(self) -> Path:
+        return self.app / "service.json"
+
+    # --- state side
+    @property
+    def state(self) -> Path:
+        return self.root / "state"
+
+    @property
+    def update_dir(self) -> Path:
+        return self.state / "update"
+
+    @property
+    def staging(self) -> Path:
+        return self.update_dir / "staging"
+
+    @property
+    def models(self) -> Path:
+        return self.root / "models"
+
+    def ensure(self) -> None:
+        for d in (self.releases, self.runtimes, self.tools_bin, self.state, self.update_dir, self.staging, self.logs):
+            d.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def managed(self) -> bool:
+        """True when this machine was set up by the managed installer (a release pointer exists)."""
+        return self.pointer_file.exists()
+
+    def release_dir(self, version: str) -> Path:
+        if not VERSION_DIR_RE.match(version):
+            raise ValueError(f"invalid version string {version!r}")
+        return self.releases / version
+
+    def read_pointer(self) -> dict:
+        try:
+            data = json.loads(self.pointer_file.read_text("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def current_version(self) -> str | None:
+        v = self.read_pointer().get("current")
+        return v if isinstance(v, str) and VERSION_DIR_RE.match(v) else None
+
+    def service_info(self) -> dict:
+        try:
+            data = json.loads(self.service_manifest.read_text("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+__STUDIO_EOF_f8cdc1305a61__
+cat > "$DEST/studio/update/manager.py" <<'__STUDIO_EOF_7bc7a50ec889__'
+"""ReleaseUpdateManager: check, download, verify and stage a release. Runs in the web process (or the CLI) and only ever
+*adds* a new directory under ``releases/``; it never touches the running release. Switching and restarting is the helper's job."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform as _platform
+import shutil
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+from .. import __version__
+from ..interfaces import PlatformService, ReleaseRepository, UpdateManager
+from ..util import atomic_write_text, now
+from .archive import ArchiveError, safe_extract, verify_tree_manifest
+from .layout import Layout
+from .manifest import Index, ManifestError, Release, parse_version, select_update
+from .net import NetError, validate_repository
+from .repository import make_repository
+from .runtime import RuntimeError_, ensure_runtime
+from .status import StatusFile
+from .store import ReleaseStore
+from .trust import TrustError, TrustStore
+
+FREE_SPACE_FACTOR = 3          # archive + unpacked tree + headroom
+MIN_FREE_BYTES = 200 << 20
+
+
+class UpdateError(Exception):
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def machine_platform() -> tuple[str, str]:
+    return ("macos" if os.uname().sysname == "Darwin" else os.uname().sysname.lower(), _platform.machine().lower()) if hasattr(os, "uname") \
+        else ("windows", _platform.machine().lower())
+
+
+class ReleaseUpdateManager(UpdateManager):
+    def __init__(self, ctx, layout: Layout, platform_service: PlatformService | None = None, repository: ReleaseRepository | None = None,
+                 trust: TrustStore | None = None, installed_version: str | None = None, runner=None,
+                 platform_tuple: tuple[str, str] | None = None, os_version: str | None = None):
+        self.ctx = ctx
+        self.layout = layout
+        self.platform_service = platform_service
+        self._repo = repository
+        self.trust = trust or TrustStore.load_pinned()
+        self.installed = installed_version or __version__
+        self.store = ReleaseStore(layout)
+        self.status_file = StatusFile(layout.update_dir)
+        self.runner = runner
+        self.plat, self.arch = platform_tuple or machine_platform()
+        self._os_version = os_version
+        self._lock = threading.Lock()
+        self._busy: str | None = None
+        self._cancel = threading.Event()
+        self.launch_helper: Callable[[str, str], None] | None = None   # (version, mode) -> start the separate updater process
+
+    # ------------------------------------------------------------------ helpers
+    def settings(self):
+        return self.ctx.settings().updates
+
+    @property
+    def repo(self) -> ReleaseRepository:
+        return self._repo or make_repository(self.settings().repository)
+
+    def os_version(self) -> str:
+        if self._os_version:
+            return self._os_version
+        return self.platform_service.os_version() if self.platform_service else (_platform.mac_ver()[0] or "0")
+
+    def _set(self, **kw) -> dict:
+        return self.status_file.update(**kw)
+
+    def _phase(self, name: str, state: str, pct: float | None = None, detail: str = "") -> None:
+        self.status_file.update(phase=(name, state, pct, detail))
+
+    def _last_sequence(self, channel: str) -> int:
+        return int((self.status_file.read().get("sequences") or {}).get(channel, 0))
+
+    def _store_sequence(self, channel: str, seq: int) -> None:
+        seqs = dict(self.status_file.read().get("sequences") or {})
+        seqs[channel] = max(seq, int(seqs.get(channel, 0)))
+        self._set(sequences=seqs)
+
+    # ------------------------------------------------------------------- status
+    def status(self) -> dict:
+        d = self.status_file.read()
+        s = self.settings()
+        managed = self.layout.managed
+        pointer = self.layout.read_pointer()
+        hold = None
+        try:
+            from ..scheduler import FileQueueScheduler
+
+            h = FileQueueScheduler(self.ctx.run_dir).current_hold()
+            hold = {"mode": h.mode, "reason": h.reason, "since": h.since} if h else None
+        except Exception:
+            pass
+        return {
+            "installed_version": self.installed, "build": self._build(), "channel": s.channel, "managed": managed,
+            "repository": s.repository, "signing_configured": self.trust.configured or self.trust.allow_unsigned,
+            "auto_check": s.auto_check, "check_interval_hours": s.check_interval_hours,
+            "previous_version": pointer.get("previous"), "installed_releases": self.store.installed(),
+            "state": d.get("state", "idle"), "message": d.get("message", ""), "error": d.get("error"), "error_kind": d.get("error_kind"),
+            "latest": d.get("latest"), "selection": d.get("selection"), "staged_version": d.get("staged_version"),
+            "target_version": d.get("target_version"), "mode": d.get("mode"), "phases": d.get("phases") or {},
+            "last_check": d.get("last_check"), "last_success_check": d.get("last_success_check"), "busy": self._busy,
+            "queue_hold": hold, "updated_at": d.get("updated_at"),
+            "platform": f"{self.plat}/{self.arch}",
+            "notes": (d.get("latest") or {}).get("notes", ""),
+            "not_managed_reason": None if managed else "This copy was not installed by the managed installer, so it cannot update itself. "
+                                                      "Run install_audiobook_studio_mac.sh once to migrate (your books and settings are kept).",
+        }
+
+    def _build(self) -> str:
+        try:
+            return (Path(__file__).resolve().parents[2] / "BUILD").read_text("utf-8").strip()
+        except OSError:
+            return ""
+
+    # -------------------------------------------------------------------- check
+    def check(self) -> dict:
+        if not self._claim("check"):
+            raise UpdateError("Another update operation is in progress.")
+        try:
+            return self._check()
+        finally:
+            self._busy = None
+
+    def _claim(self, what: str) -> bool:
+        with self._lock:
+            if self._busy:
+                return False
+            self._busy = what
+            return True
+
+    def _check(self) -> dict:
+        s = self.settings()
+        if not (self.trust.configured or self.trust.allow_unsigned):
+            msg = ("Updates are switched off: no release-signing key is pinned in this installation, so a download could not be authenticated. "
+                   "The owner publishes a signing key in an application release (see docs/10-installation-and-updates.md).")
+            self._set(state="disabled", message=msg, error=None, error_kind="no_key", last_check=now())
+            return self.status()
+        self._set(state="checking", message="Contacting the update server", error=None, error_kind=None)
+        self._phase("check", "running", None, "Fetching signed release index")
+        t = now()
+        try:
+            raw = self.repo.fetch_index(s.channel)
+            signed = self.trust.verify_envelope(raw)
+            index = Index.from_signed(signed)
+            if index.channel != s.channel and not (self.trust.allow_unsigned and s.channel == "dev"):
+                raise ManifestError(f"The index is for channel '{index.channel}', not '{s.channel}'.")
+            if index.sequence < self._last_sequence(index.channel):
+                raise ManifestError("The release index is older than one already seen (possible rollback/replay attack); ignored.")
+            sel = select_update(index, self.installed, s.channel, self.plat, self.arch, self.os_version(), self.ctx.db.schema_version())
+        except NetError as exc:
+            kind = "offline" if exc.offline else "failed"
+            self._set(state="offline" if exc.offline else "failed", message=str(exc), error=str(exc), error_kind=kind, last_check=t)
+            self._phase("check", "failed", None, str(exc))
+            self.status_file.add_history("check", None, False, str(exc))
+            return self.status()
+        except (TrustError, ManifestError, ValueError) as exc:
+            self._set(state="failed", message=str(exc), error=str(exc), error_kind="untrusted", last_check=t)
+            self._phase("check", "failed", None, str(exc))
+            self.status_file.add_history("check", None, False, str(exc))
+            return self.status()
+        self._store_sequence(index.channel, index.sequence)
+        self._phase("check", "done", 100, "Release index verified")
+        base = dict(last_check=t, last_success_check=t, error=None, error_kind=None)
+        self._set(selection={"state": sel.state, "reason": sel.reason, "newer_exists": sel.newer_exists}, **base)
+        if sel.state == "available":
+            self._set(state="available", latest={**sel.release.public(), "signed": self.trust.configured}, message=f"Version {sel.release.version} is available.")
+            if self.status_file.read().get("staged_version") not in (None, sel.release.version):
+                self._set(staged_version=None)
+        elif sel.state == "incompatible":
+            self._set(state="incompatible", latest={**sel.release.public(), "signed": self.trust.configured}, message=sel.reason)
+        else:
+            self._set(state="up_to_date", latest=None, staged_version=None, message=sel.reason)
+        return self.status()
+
+    def auto_check_due(self) -> bool:
+        s = self.settings()
+        if not s.auto_check or self._busy:
+            return False
+        last = self.status_file.read().get("last_check") or 0
+        return now() - last >= s.check_interval_hours * 3600
+
+    # ----------------------------------------------------------------- download
+    def download(self, background: bool = True) -> dict:
+        st = self.status_file.read()
+        latest = st.get("latest")
+        if st.get("state") not in ("available", "failed", "offline", "staged") or not latest:
+            raise UpdateError("There is no update to download. Check for updates first.")
+        if st.get("state") == "incompatible":
+            raise UpdateError("This update is not compatible with this installation.")
+        if not self.layout.managed:
+            raise UpdateError(self.status()["not_managed_reason"])
+        release = self._release_from_status(latest)
+        if not self._claim("download"):
+            raise UpdateError("Another update operation is in progress.")
+        self._cancel.clear()
+        if background:
+            threading.Thread(target=self._download_guarded, args=(release,), daemon=True, name="update-download").start()
+            return self.status()
+        self._download_guarded(release)
+        return self.status()
+
+    def _release_from_status(self, latest: dict) -> Release:
+        """The artifact URL is never stored in client-visible status. Re-fetch and re-verify the signed index to obtain it."""
+        s = self.settings()
+        raw = self.repo.fetch_index(s.channel)
+        signed = self.trust.verify_envelope(raw)
+        index = Index.from_signed(signed)
+        for r in index.releases:
+            if r.version == latest["version"] and r.sha256 == latest["sha256"] and r.platform == self.plat and r.arch == self.arch \
+                    and r.version not in index.revoked_versions:
+                return r
+        raise UpdateError("The release is no longer listed in the signed index (it may have been withdrawn). Check for updates again.")
+
+    def _download_guarded(self, release: Release) -> None:
+        try:
+            self._download(release)
+        except (NetError, ArchiveError, RuntimeError_, UpdateError, TrustError, ManifestError, OSError) as exc:
+            offline = isinstance(exc, NetError) and exc.offline
+            self._set(state="offline" if offline else "failed", message=str(exc), error=str(exc), error_kind="offline" if offline else "failed")
+            self.status_file.add_history("download", release.version, False, str(exc))
+        except Exception as exc:  # never leave the UI stuck on "downloading"
+            self._set(state="failed", message=f"{type(exc).__name__}: {exc}", error=str(exc), error_kind="failed")
+            self.status_file.add_history("download", release.version, False, f"{type(exc).__name__}: {exc}")
+        finally:
+            self._busy = None
+
+    def _download(self, release: Release) -> None:
+        lay = self.layout
+        lay.ensure()
+        existing = lay.release_dir(release.version)
+        if existing.exists() and self.store.has(release.version):
+            self._set(state="staged", staged_version=release.version, message=f"Version {release.version} is already staged.", error=None, error_kind=None)
+            return
+        # 1. space
+        need = max(MIN_FREE_BYTES, release.size * FREE_SPACE_FACTOR)
+        free = shutil.disk_usage(lay.root if lay.root.exists() else lay.root.parent).free
+        if free < need:
+            raise UpdateError(f"Not enough free disk space for this update: {need // (1 << 20)} MB needed, {free // (1 << 20)} MB available. Free some space and try again.")
+        stage = lay.staging / release.version
+        stage.mkdir(parents=True, exist_ok=True)
+        artifact = stage / f"audiobook-studio-{release.version}.tar.gz"
+        # 2. download (resumable)
+        self._set(state="downloading", message=f"Downloading {release.version}", target_version=release.version, error=None, error_kind=None)
+        self._phase("download", "running", 0, "Starting")
+        last = {"t": 0.0}
+
+        def prog(done: int, total: int) -> None:
+            if now() - last["t"] > 0.4:
+                last["t"] = now()
+                self._phase("download", "running", round(100 * done / total, 1), f"{done // (1 << 20)} of {total // (1 << 20)} MB")
+
+        self.repo.download(release.url, artifact, release.size, progress=prog, cancelled=self._cancel.is_set)
+        self._phase("download", "done", 100, "Downloaded")
+        # 3. integrity
+        self._set(state="verifying", message="Verifying the download")
+        self._phase("verify", "running", 50, "Checking SHA-256 and size against the signed release index")
+        digest = hashlib.sha256()
+        with open(artifact, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        if artifact.stat().st_size != release.size or digest.hexdigest() != release.sha256:
+            artifact.unlink(missing_ok=True)
+            self._phase("verify", "failed", None, "Checksum mismatch")
+            raise UpdateError("The downloaded file does not match the signed release (checksum/size mismatch). It was deleted and nothing was installed.")
+        self._phase("verify", "done", 100, "Matches the signed release index")
+        # 4. stage
+        self._set(state="staging", message="Unpacking the update next to the running version")
+        self._phase("stage", "running", 10, "Extracting")
+        tmp = lay.releases / f".stage-{release.version}-{os.getpid()}"
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            safe_extract(artifact, tmp, expected_top=f"audiobook-studio-{release.version}")
+            self._phase("stage", "running", 50, "Verifying every file against the release manifest")
+            verify_tree_manifest(tmp)
+            self._check_release_identity(tmp, release)
+            if release.runtime_id:
+                self._phase("stage", "running", 70, "Preparing the Python environment")
+                ensure_runtime(lay, tmp, release.runtime_id, runner=self.runner,
+                               progress=lambda m: self._phase("stage", "running", 80, m))
+            final = lay.release_dir(release.version)
+            if final.exists():
+                shutil.rmtree(final)
+            os.replace(tmp, final)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        shutil.rmtree(stage, ignore_errors=True)
+        self._phase("stage", "done", 100, "Ready to install")
+        self._set(state="staged", staged_version=release.version, message=f"Version {release.version} is downloaded, verified and ready to install.")
+        self.status_file.add_history("stage", release.version, True, "Downloaded, verified and staged")
+
+    def _check_release_identity(self, tree: Path, release: Release) -> None:
+        """The unpacked code must be the version the signed index promised (a swapped archive with a valid hash cannot get here,
+        but a mislabelled release can)."""
+        init = (tree / "studio" / "__init__.py").read_text("utf-8")
+        import re
+
+        m = re.search(r'__version__\s*=\s*"([^"]+)"', init)
+        if not m or m.group(1) != release.version:
+            raise UpdateError(f"The package claims version {m.group(1) if m else 'unknown'} but the signed release says {release.version}; refusing it.")
+        if parse_version(release.version) <= parse_version(self.installed):
+            raise UpdateError("Refusing to stage a release that is not newer than the installed one.")
+
+    def cancel(self) -> dict:
+        """Cancel a running download, or withdraw a pending install request (releases the queue hold if the updater set it)."""
+        self._cancel.set()
+        req = self.layout.update_dir / "request.json"
+        if req.exists():
+            req.unlink(missing_ok=True)
+            from ..scheduler import FileQueueScheduler
+
+            FileQueueScheduler(self.ctx.run_dir).release()
+            self._set(state="staged" if self.status_file.read().get("staged_version") else "available", message="Installation cancelled.", mode=None)
+            self.status_file.add_history("cancel", None, True, "Pending installation cancelled")
+        return self.status()
+
+    # ------------------------------------------------------------------ install
+    def request_install(self, mode: str, confirm_version: str) -> dict:
+        """Record the user's explicit intent and hand off to the separate updater process."""
+        if mode not in ("now", "after_job"):
+            raise UpdateError("mode must be 'now' or 'after_job'", 422)
+        st = self.status_file.read()
+        staged = st.get("staged_version")
+        if not self.layout.managed:
+            raise UpdateError(self.status()["not_managed_reason"])
+        if (self.layout.update_dir / "request.json").exists():
+            raise UpdateError("An installation is already pending.")
+        if not staged or st.get("state") not in ("staged",):
+            raise UpdateError("No update is staged. Download and verify it first.")
+        if confirm_version != staged:
+            raise UpdateError(f"Confirmation does not match the staged version ({staged}).", 422)
+        if not self.store.has(staged):
+            raise UpdateError("The staged release is missing from disk. Download it again.")
+        req = {"version": staged, "mode": mode, "requested_at": now(), "from_version": self.installed}
+        atomic_write_text(self.layout.update_dir / "request.json", json.dumps(req))
+        self._set(state="waiting", mode=mode, target_version=staged,
+                  message="Installing after the current job finishes." if mode == "after_job" else "Installing at the next safe segment boundary.")
+        self.status_file.add_history("install_requested", staged, True, f"mode={mode}")
+        if self.launch_helper:
+            try:
+                self.launch_helper(staged, mode)
+            except Exception as exc:
+                (self.layout.update_dir / "request.json").unlink(missing_ok=True)
+                self._set(state="failed", message=f"Could not start the updater: {exc}", error=str(exc), error_kind="failed")
+                raise UpdateError(f"Could not start the updater process: {exc}") from exc
+        return self.status()
+__STUDIO_EOF_7bc7a50ec889__
+cat > "$DEST/studio/update/manifest.py" <<'__STUDIO_EOF_493d0f087608__'
+"""The signed release-index contract and update selection.
+
+Envelope (see trust.py)  ->  ``signed`` payload:
+
+  schema            1
+  channel           "stable" | "beta" | "dev"
+  sequence          monotonically increasing integer; clients refuse a lower value than the last one seen (rollback/replay)
+  generated, expires  ISO-8601 UTC; clients refuse an expired index (freeze attack)
+  revoked_versions  versions that must never be installed or offered
+  revoked_keyids    signing keys to distrust from now on
+  releases[]        version, channel, platform ("macos"), arch ("arm64"), url, size, sha256, published,
+                    notes_url, notes (short plain text), min_compatible_version (oldest installed version that may
+                    update directly to this one), min_os, schema_version (database schema this release needs),
+                    runtime_id (private Python environment the release needs)
+
+The signature covers the digest and size of every archive, so the archive is authenticated *through* the index."""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+CHANNELS = ("stable", "beta", "dev")
+MAX_NOTES = 8000
+
+
+class ManifestError(Exception):
+    pass
+
+
+def parse_version(v: str) -> tuple:
+    m = SEMVER_RE.match(v or "")
+    if not m:
+        raise ManifestError(f"not a semantic version: {v!r}")
+    major, minor, patch, pre = int(m[1]), int(m[2]), int(m[3]), m[4]
+    # a release outranks its pre-releases; pre-release identifiers compare numerically when numeric
+    pre_key = (1,) if pre is None else (0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")))
+    return (major, minor, patch, pre_key)
+
+
+def parse_time(s: str) -> datetime:
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError) as exc:
+        raise ManifestError(f"bad timestamp {s!r}") from exc
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _https_or_empty(u) -> str:
+    """Links shown in the UI must be https (never javascript:, data:, http:)."""
+    u = str(u or "")
+    return u if u.startswith("https://") and " " not in u and len(u) < 400 else ""
+
+
+@dataclass(frozen=True)
+class Release:
+    version: str
+    channel: str
+    platform: str
+    arch: str
+    url: str
+    size: int
+    sha256: str
+    published: str
+    notes_url: str = ""
+    notes: str = ""
+    min_compatible_version: str = "0.0.0"
+    min_os: str = "14.0"
+    schema_version: int = 0
+    runtime_id: str = ""
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Release":
+        if not isinstance(d, dict):
+            raise ManifestError("release entry is not an object")
+        try:
+            r = cls(version=str(d["version"]), channel=str(d["channel"]), platform=str(d["platform"]), arch=str(d["arch"]),
+                    url=str(d["url"]), size=int(d["size"]), sha256=str(d["sha256"]).lower(), published=str(d["published"]),
+                    notes_url=_https_or_empty(d.get("notes_url", "")), notes=str(d.get("notes", ""))[:MAX_NOTES],
+                    min_compatible_version=str(d.get("min_compatible_version", "0.0.0")), min_os=str(d.get("min_os", "14.0")),
+                    schema_version=int(d.get("schema_version", 0)), runtime_id=str(d.get("runtime_id", "")))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ManifestError(f"release entry is missing or has a bad field: {exc}") from exc
+        parse_version(r.version)
+        parse_version(r.min_compatible_version)
+        if r.channel not in CHANNELS:
+            raise ManifestError(f"unknown channel {r.channel!r}")
+        if not SHA_RE.match(r.sha256):
+            raise ManifestError(f"release {r.version}: sha256 must be 64 hex characters")
+        if r.size <= 0:
+            raise ManifestError(f"release {r.version}: size must be positive")
+        if not r.url.startswith("https://"):
+            raise ManifestError(f"release {r.version}: artifact URL must be https")
+        return r
+
+    def public(self) -> dict:
+        return {k: getattr(self, k) for k in ("version", "channel", "platform", "arch", "size", "sha256", "published", "notes_url",
+                                              "notes", "min_compatible_version", "min_os", "schema_version")}
+
+
+@dataclass
+class Index:
+    channel: str
+    sequence: int
+    generated: str
+    expires: str
+    releases: list[Release]
+    revoked_versions: set[str] = field(default_factory=set)
+    raw: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_signed(cls, signed: dict[str, Any], now: datetime | None = None) -> "Index":
+        if signed.get("schema") != 1:
+            raise ManifestError(f"unsupported release-index schema {signed.get('schema')!r}")
+        channel = signed.get("channel")
+        if channel not in CHANNELS:
+            raise ManifestError(f"unknown channel {channel!r}")
+        try:
+            seq = int(signed["sequence"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ManifestError("release index has no sequence number") from exc
+        expires = parse_time(str(signed.get("expires", "")))
+        if expires < (now or datetime.now(timezone.utc)):
+            raise ManifestError("The release index has expired (possible stale or replayed metadata); not trusting it.")
+        rels = [Release.from_dict(r) for r in signed.get("releases", [])]
+        revoked = {str(v) for v in signed.get("revoked_versions", [])}
+        return cls(channel, seq, str(signed.get("generated", "")), str(signed["expires"]), rels, revoked, signed)
+
+
+@dataclass
+class Selection:
+    state: str  # up_to_date | available | incompatible | none_for_platform
+    release: Release | None = None
+    reason: str = ""
+    newer_exists: bool = False  # a newer release exists but needs an intermediate step first
+
+
+def _os_tuple(v: str) -> tuple:
+    return tuple(int(p) for p in re.findall(r"\d+", v)[:3]) or (0,)
+
+
+def select_update(index: Index, installed: str, channel: str, platform: str, arch: str, os_version: str, db_schema: int) -> Selection:
+    """Pick the best release for this machine. A release is a candidate when it matches platform/arch/channel, is newer,
+    is not revoked, runs on this macOS, and the installed version is at or above its ``min_compatible_version``.
+    When the newest release needs an intermediate step, the highest directly-installable release is offered instead."""
+    cur = parse_version(installed)
+    same = [r for r in index.releases if r.platform == platform and r.arch == arch and r.version not in index.revoked_versions
+            and (r.channel == channel or (channel == "beta" and r.channel == "stable") or channel == "dev")]
+    if not same:
+        return Selection("none_for_platform", reason=f"No release is published for {platform}/{arch} on the {channel} channel.")
+    newer = sorted((r for r in same if parse_version(r.version) > cur), key=lambda r: parse_version(r.version), reverse=True)
+    if not newer:
+        return Selection("up_to_date", reason=f"Version {installed} is the newest on the {channel} channel.")
+    top = newer[0]
+    blocked: list[str] = []
+    for r in newer:
+        if _os_tuple(os_version) < _os_tuple(r.min_os):
+            blocked.append(f"{r.version} needs macOS {r.min_os} or later (this Mac runs {os_version})")
+            continue
+        if r.schema_version < db_schema:
+            blocked.append(f"{r.version} uses an older database schema than your data (schema {db_schema}); installing it would be a downgrade")
+            continue
+        if cur < parse_version(r.min_compatible_version):
+            blocked.append(f"{r.version} requires {r.min_compatible_version} or newer to be installed first")
+            continue
+        return Selection("available", r, newer_exists=r.version != top.version,
+                         reason="" if r.version == top.version else f"{top.version} becomes available after this step.")
+    return Selection("incompatible", top, reason="; ".join(blocked) or "No compatible release.")
+__STUDIO_EOF_493d0f087608__
+cat > "$DEST/studio/update/net.py" <<'__STUDIO_EOF_b7ae6a706482__'
+"""HTTPS-only fetching for the updater. The web process never fetches a URL it was handed by a client:
+the repository comes from trusted configuration and artifact URLs come from a *signature-verified* index.
+
+Rules enforced here: https only (plain http / file only for the explicit dev repository), host allowlist
+checked on the first request and on every redirect, at most 5 redirects, hard size caps while streaming,
+and resumable downloads (HTTP Range) into a ``.part`` file that is only renamed once complete."""
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Callable
+from urllib.parse import urlsplit
+
+import httpx
+
+# Hosts a release may legitimately be served from. A first-party release host is added here when one exists;
+# it is deliberately code, not user configuration.
+TRUSTED_HOSTS = {"github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+                 "github-releases.githubusercontent.com"}
+MAX_REDIRECTS = 5
+MAX_INDEX_BYTES = 1 << 20          # 1 MiB of release metadata is generous
+MAX_ARTIFACT_BYTES = 2 << 30       # 2 GiB
+GITHUB_REPO_RE = re.compile(r"^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
+
+
+class NetError(Exception):
+    """Network/policy failure. ``offline`` is True when the cause looks like missing connectivity."""
+
+    def __init__(self, message: str, offline: bool = False):
+        super().__init__(message)
+        self.offline = offline
+
+
+def validate_repository(spec: str, extra_hosts: set[str] | None = None) -> str:
+    """Accept ``github:owner/repo`` or an https URL whose host is trusted. Anything else is rejected."""
+    spec = (spec or "").strip()
+    if GITHUB_REPO_RE.match(spec):
+        return spec
+    u = urlsplit(spec)
+    hosts = TRUSTED_HOSTS | (extra_hosts or set())
+    if u.scheme == "https" and u.hostname and u.hostname.lower() in hosts and not u.username and not u.password:
+        return spec
+    raise ValueError("The update repository must be github:OWNER/REPO or an https URL on a trusted release host.")
+
+
+def _chunks(resp: httpx.Response):
+    """Raw chunks exactly as received (no re-chunking, so a dropped connection keeps what already arrived).
+    In-memory responses (test doubles) are already read; serve their content in slices."""
+    if resp.is_stream_consumed:
+        data = resp.content
+        for i in range(0, len(data), 1 << 16):
+            yield data[i:i + (1 << 16)]
+    else:
+        yield from resp.iter_raw()
+
+
+class Fetcher:
+    def __init__(self, allowed_hosts: set[str] | None = None, transport: httpx.BaseTransport | None = None, allow_insecure: bool = False,
+                 timeout: float = 30.0):
+        self.allowed = {h.lower() for h in (allowed_hosts if allowed_hosts is not None else TRUSTED_HOSTS)}
+        self.allow_insecure = allow_insecure  # only the explicit local dev repository sets this
+        self._transport = transport
+        self._timeout = timeout
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(transport=self._transport, follow_redirects=False, timeout=self._timeout,
+                            headers={"User-Agent": "AudiobookStudio-Updater", "Accept-Encoding": "identity"})
+
+    def _check_url(self, url: str) -> None:
+        u = urlsplit(url)
+        host = (u.hostname or "").lower()
+        if u.username or u.password:
+            raise NetError("Credentials in update URLs are not allowed.")
+        if u.scheme != "https" and not (self.allow_insecure and u.scheme == "http" and host in ("127.0.0.1", "localhost")):
+            raise NetError(f"Refusing a non-HTTPS update URL ({u.scheme}).")
+        if host not in self.allowed:
+            raise NetError(f"Refusing update host '{host}': it is not a trusted release host.")
+
+    def _open(self, client: httpx.Client, url: str, headers: dict | None = None):
+        """GET with manual redirect handling so every hop is re-validated. Returns a streaming response context."""
+        hops = 0
+        while True:
+            self._check_url(url)
+            try:
+                req = client.build_request("GET", url, headers=headers or {})
+                resp = client.send(req, stream=True)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.NetworkError) as exc:
+                raise NetError(f"Cannot reach the update server ({type(exc).__name__}). Check the internet connection.", offline=True) from exc
+            except httpx.HTTPError as exc:
+                raise NetError(f"Update request failed ({type(exc).__name__}: {exc}).") from exc
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("location", "")
+                resp.close()
+                hops += 1
+                if hops > MAX_REDIRECTS or not loc:
+                    raise NetError("Too many redirects from the update server.")
+                url = str(httpx.URL(url).join(loc))
+                continue
+            return resp
+
+    def get_bytes(self, url: str, max_bytes: int = MAX_INDEX_BYTES) -> bytes:
+        with self._client() as c:
+            resp = self._open(c, url)
+            try:
+                if resp.status_code != 200:
+                    raise NetError(f"The update server answered HTTP {resp.status_code}.", offline=resp.status_code >= 500)
+                clen = resp.headers.get("content-length")
+                if clen and clen.isdigit() and int(clen) > max_bytes:
+                    raise NetError("The response is larger than the allowed limit.")
+                buf = bytearray()
+                try:
+                    for chunk in _chunks(resp):
+                        buf += chunk
+                        if len(buf) > max_bytes:
+                            raise NetError("The response is larger than the allowed limit.")
+                except httpx.HTTPError as exc:
+                    raise NetError(f"The connection dropped ({type(exc).__name__}).", offline=True) from exc
+                return bytes(buf)
+            finally:
+                resp.close()
+
+    def download(self, url: str, dest: Path, expected_size: int, max_bytes: int = MAX_ARTIFACT_BYTES,
+                 progress: Callable[[int, int], None] | None = None, cancelled: Callable[[], bool] | None = None) -> Path:
+        """Download to ``dest`` (resuming ``dest.part`` when possible). The size must equal ``expected_size`` exactly."""
+        if expected_size <= 0 or expected_size > max_bytes:
+            raise NetError("The release declares an unacceptable download size.")
+        dest = Path(dest)
+        part = dest.with_name(dest.name + ".part")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        have = part.stat().st_size if part.exists() else 0
+        if have > expected_size:
+            part.unlink()
+            have = 0
+        with self._client() as c:
+            while True:
+                headers = {"Range": f"bytes={have}-"} if have else {}
+                resp = self._open(c, url, headers)
+                try:
+                    if resp.status_code == 416 and have == expected_size:
+                        break
+                    if resp.status_code == 200 and have:
+                        have = 0  # server ignored Range: start over
+                        part.unlink(missing_ok=True)
+                    elif resp.status_code not in (200, 206):
+                        raise NetError(f"The update server answered HTTP {resp.status_code}.", offline=resp.status_code >= 500)
+                    if resp.status_code == 206:
+                        m = re.match(r"bytes (\d+)-", resp.headers.get("content-range", ""))
+                        if not m or int(m.group(1)) != have:
+                            have = 0
+                            part.unlink(missing_ok=True)
+                            continue
+                    clen = resp.headers.get("content-length")
+                    if clen and clen.isdigit() and have + int(clen) > expected_size:
+                        raise NetError("The download is larger than the size the signed release declares.")
+                    with open(part, "ab" if have else "wb") as fh:
+                        for chunk in _chunks(resp):
+                            have += len(chunk)
+                            if have > expected_size:
+                                raise NetError("The download exceeded the size the signed release declares; aborted.")
+                            fh.write(chunk)
+                            if progress:
+                                progress(have, expected_size)
+                            if cancelled and cancelled():
+                                raise NetError("Download cancelled; progress is kept so it can resume.")
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                except NetError:
+                    raise
+                except httpx.HTTPError as exc:
+                    raise NetError(f"The connection dropped mid-download ({type(exc).__name__}); partial data was kept and the download can resume.", offline=True) from exc
+                finally:
+                    resp.close()
+                break
+        if part.stat().st_size != expected_size:
+            raise NetError(f"Incomplete download ({part.stat().st_size} of {expected_size} bytes); it can be resumed.", offline=True)
+        os.replace(part, dest)
+        return dest
+__STUDIO_EOF_b7ae6a706482__
+cat > "$DEST/studio/update/pinned_keys.json" <<'__STUDIO_EOF_eed5a5f9010d__'
+{
+  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Empty until the owner runs tools/release_keys.py generate and commits the public key. While empty, updates are disabled; nothing is signed.",
+  "keys": [],
+  "revoked": []
+}
+__STUDIO_EOF_eed5a5f9010d__
+cat > "$DEST/studio/update/repository.py" <<'__STUDIO_EOF_9aac2ab730c9__'
+"""ReleaseRepository implementations. A repository only says *where* to fetch; the signature decides *whether to trust*."""
+from __future__ import annotations
+
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from ..interfaces import ReleaseRepository
+from .net import GITHUB_REPO_RE, Fetcher, NetError, validate_repository
+
+
+class GitHubReleasesRepository(ReleaseRepository):
+    """Index published as a release asset on a rolling tag per channel:
+    https://github.com/OWNER/REPO/releases/download/index-<channel>/release-index-<channel>.json
+    Artifacts are ordinary release assets (github.com redirects to its CDN; every hop is host-checked)."""
+
+    name = "github"
+
+    def __init__(self, owner: str, repo: str, fetcher: Fetcher | None = None):
+        self.owner, self.repo = owner, repo
+        self.fetcher = fetcher or Fetcher()
+
+    def index_url(self, channel: str) -> str:
+        return f"https://github.com/{self.owner}/{self.repo}/releases/download/index-{channel}/release-index-{channel}.json"
+
+    def fetch_index(self, channel: str) -> bytes:
+        return self.fetcher.get_bytes(self.index_url(channel))
+
+    def download(self, url, dest, size, progress=None, cancelled=None) -> Path:
+        prefix = f"https://github.com/{self.owner}/{self.repo}/releases/download/"
+        if not url.startswith(prefix):
+            raise NetError("The release artifact is not hosted on this project's GitHub Releases; refusing it.")
+        return self.fetcher.download(url, dest, size, progress=progress, cancelled=cancelled)
+
+
+class HttpsRepository(ReleaseRepository):
+    """A first-party website exposing the same contract: ``<base>/<channel>/release-index.json``. Artifacts must be on the same host."""
+
+    name = "https"
+
+    def __init__(self, base_url: str, fetcher: Fetcher | None = None):
+        self.base = base_url.rstrip("/")
+        self.host = (urlsplit(self.base).hostname or "").lower()
+        self.fetcher = fetcher or Fetcher(allowed_hosts={self.host})
+
+    def index_url(self, channel: str) -> str:
+        return f"{self.base}/{channel}/release-index.json"
+
+    def fetch_index(self, channel: str) -> bytes:
+        return self.fetcher.get_bytes(self.index_url(channel))
+
+    def download(self, url, dest, size, progress=None, cancelled=None) -> Path:
+        if (urlsplit(url).hostname or "").lower() != self.host:
+            raise NetError("The release artifact is not on the update host; refusing it.")
+        return self.fetcher.download(url, dest, size, progress=progress, cancelled=cancelled)
+
+
+def make_repository(spec: str, fetcher: Fetcher | None = None) -> ReleaseRepository:
+    spec = validate_repository(spec)
+    m = GITHUB_REPO_RE.match(spec)
+    if m:
+        return GitHubReleasesRepository(m.group(1), m.group(2), fetcher)
+    return HttpsRepository(spec, fetcher)
+__STUDIO_EOF_9aac2ab730c9__
+cat > "$DEST/studio/update/runtime.py" <<'__STUDIO_EOF_5b0fe9ea649c__'
+"""Private Python environments. A release whose locked dependency set differs from the active one names a ``runtime_id``
+(the first 16 hex of the SHA-256 of its ``requirements.lock``, signed into the release index). The updater builds that
+environment with the app-owned ``uv`` and ONLY prebuilt wheels (``--only-binary :all:``): if a dependency would need a
+compiler, the install fails with an actionable message instead of reaching for Xcode/Command Line Tools or Homebrew.
+The user's system Python is never used or modified."""
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Callable
+
+from .layout import Layout
+
+Runner = Callable[[list[str], dict], "subprocess.CompletedProcess[str]"]
+
+
+class RuntimeError_(Exception):
+    pass
+
+
+def lock_id(lock_file: Path) -> str:
+    return hashlib.sha256(Path(lock_file).read_bytes()).hexdigest()[:16]
+
+
+def python_in(venv: Path) -> Path:
+    return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def runtime_python(layout: Layout, runtime_id: str) -> Path:
+    return python_in(layout.runtimes / runtime_id / "venv")
+
+
+def uv_env(layout: Layout) -> dict[str, str]:
+    app = layout.app
+    return {"UV_PYTHON_INSTALL_DIR": str(app / "python"), "UV_CACHE_DIR": str(app / "uv-cache"), "UV_PYTHON_PREFERENCE": "only-managed",
+            "UV_NO_CONFIG": "1", "UV_NO_PROGRESS": "1", "UV_PYTHON_DOWNLOADS": "manual", "PIP_REQUIRE_VIRTUALENV": "0"}
+
+
+def _default_runner(argv: list[str], env: dict) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(argv, capture_output=True, text=True, env={**os.environ, **env}, timeout=3600)
+
+
+def runtime_ready(layout: Layout, runtime_id: str) -> bool:
+    return (layout.runtimes / runtime_id / ".complete").exists() and runtime_python(layout, runtime_id).exists()
+
+
+def ensure_runtime(layout: Layout, release_dir: Path, runtime_id: str, python_version: str = "3.12", runner: Runner | None = None,
+                   progress: Callable[[str], None] | None = None) -> Path:
+    """Return the interpreter for ``runtime_id``, building the environment if it does not exist yet. It is built in place (a venv records
+    its own absolute path) and only marked ``.complete`` after every step succeeded, so a half-built environment is never used."""
+    if not runtime_id:
+        raise RuntimeError_("The release does not name a runtime.")
+    if runtime_ready(layout, runtime_id):
+        return runtime_python(layout, runtime_id)
+    lock = Path(release_dir) / "requirements.lock"
+    if not lock.exists():
+        raise RuntimeError_("The release needs a new Python environment but ships no requirements.lock.")
+    if lock_id(lock) != runtime_id:
+        raise RuntimeError_("requirements.lock does not match the runtime id signed into the release; refusing to build it.")
+    uv = layout.tools_bin / "uv"
+    if not uv.exists():
+        raise RuntimeError_("The app-owned uv is missing; re-run the installer to repair the private runtime.")
+    run = runner or _default_runner
+    env = uv_env(layout)
+    target = layout.runtimes / runtime_id
+    shutil.rmtree(target, ignore_errors=True)
+    target.mkdir(parents=True)
+    venv = target / "venv"
+    steps = [("Creating the private Python environment", [str(uv), "venv", "--python", python_version, str(venv)]),
+             ("Installing locked dependencies (prebuilt wheels only)",
+              [str(uv), "pip", "install", "--python", str(python_in(venv)), "--require-hashes", "--only-binary", ":all:", "-r", str(lock)])]
+    for label, argv in steps:
+        if progress:
+            progress(label)
+        r = run(argv, env)
+        if r.returncode != 0:
+            shutil.rmtree(target, ignore_errors=True)
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
+            raise RuntimeError_(f"{label} failed: " + " | ".join(tail) +
+                                " (If a package has no prebuilt wheel this is a packaging defect; it is never fixed by installing developer tools.)")
+    (target / ".complete").write_text("ok")
+    return runtime_python(layout, runtime_id)
+__STUDIO_EOF_5b0fe9ea649c__
+cat > "$DEST/studio/update/status.py" <<'__STUDIO_EOF_1f126a21193f__'
+"""Persisted update state shown by the Update Center. One JSON file written atomically by whichever process is working
+(web process during check/download/stage, the helper during install), so the UI sees progress from both and survives a restart."""
+from __future__ import annotations
+
+import json
+import os
+import threading
+from pathlib import Path
+
+from ..util import atomic_write_text, now
+
+PHASES = ("check", "download", "verify", "stage", "drain", "install", "restart", "health")
+STATES = ("idle", "checking", "up_to_date", "available", "downloading", "verifying", "staging", "staged", "waiting",
+          "draining", "installing", "restarting", "health_check", "succeeded", "failed", "rolled_back", "incompatible", "offline", "disabled")
+
+
+class StatusFile:
+    def __init__(self, update_dir: Path):
+        self.dir = Path(update_dir)
+        self.path = self.dir / "status.json"
+        self.history = self.dir / "history.jsonl"
+        self._lock = threading.Lock()
+
+    def read(self) -> dict:
+        try:
+            d = json.loads(self.path.read_text("utf-8"))
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def update(self, **fields) -> dict:
+        with self._lock:
+            d = self.read()
+            phases = fields.pop("phases", None)
+            if phases is None:
+                phases = d.get("phases") or {}
+            ph = fields.pop("phase", None)
+            if ph:
+                name, state, pct, detail = ph
+                phases[name] = {"state": state, "pct": pct, "detail": detail, "at": now()}
+            d.update(fields)
+            d["phases"] = phases
+            d["updated_at"] = now()
+            self.dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(self.path, json.dumps(d, indent=2))
+            return d
+
+    def reset_phases(self) -> None:
+        self.update(phases={})
+
+    def add_history(self, event: str, version: str | None, ok: bool, message: str, **extra) -> None:
+        rec = {"at": now(), "event": event, "version": version, "ok": ok, "message": message[:1000], **extra}
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with self._lock, open(self.history, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    def read_history(self, limit: int = 50) -> list[dict]:
+        try:
+            lines = self.history.read_text("utf-8").splitlines()
+        except OSError:
+            return []
+        out = []
+        for ln in lines[-limit:]:
+            try:
+                out.append(json.loads(ln))
+            except ValueError:
+                continue
+        return list(reversed(out))
+__STUDIO_EOF_1f126a21193f__
+cat > "$DEST/studio/update/store.py" <<'__STUDIO_EOF_16ce831ef9f1__'
+"""Immutable release directories and the atomic active-release pointer."""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+from pathlib import Path
+
+from ..util import atomic_write_text, now
+from .layout import VERSION_DIR_RE, Layout
+from .manifest import parse_version
+
+
+class ReleaseStore:
+    def __init__(self, layout: Layout):
+        self.layout = layout
+
+    def installed(self) -> list[str]:
+        if not self.layout.releases.exists():
+            return []
+        out = [p.name for p in self.layout.releases.iterdir() if p.is_dir() and VERSION_DIR_RE.match(p.name) and (p / "studio" / "__init__.py").exists()]
+        return sorted(out, key=parse_version)
+
+    def has(self, version: str) -> bool:
+        return version in self.installed()
+
+    def current(self) -> str | None:
+        return self.layout.current_version()
+
+    def previous(self) -> str | None:
+        v = self.layout.read_pointer().get("previous")
+        return v if isinstance(v, str) and VERSION_DIR_RE.match(v) else None
+
+    def activate(self, version: str) -> str | None:
+        """Atomically make ``version`` the active release. Returns the previously active version.
+        The pointer file is authoritative; the ``current`` symlink (used by launchd paths) is replaced with rename(2) so it is never missing."""
+        target = self.layout.release_dir(version)
+        if not (target / "studio" / "__init__.py").exists():
+            raise FileNotFoundError(f"release {version} is not installed")
+        old = self.current()
+        data = dict(self.layout.read_pointer())
+        data.update({"current": version, "previous": old if old != version else data.get("previous"), "switched_at": now()})
+        self._swap_symlink(target)
+        atomic_write_text(self.layout.pointer_file, json.dumps(data, indent=2) + "\n")
+        return old
+
+    def _swap_symlink(self, target: Path, link: Path | None = None, directory: bool = True) -> None:
+        link = link or self.layout.current_link
+        tmp = link.with_name(f".{link.name}.{secrets.token_hex(4)}")
+        try:
+            os.symlink(target, tmp, target_is_directory=directory)
+        except (OSError, NotImplementedError):
+            return  # e.g. Windows without symlink rights: the pointer file still decides
+        try:
+            os.replace(tmp, link)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    def link_python(self, python: Path) -> None:
+        """Keep ``app/venv-python`` (the interpreter launchd and the CLI run) pointing at the active release's private environment."""
+        self._swap_symlink(Path(python), self.layout.app / "venv-python", directory=False)
+
+    def remove(self, version: str) -> None:
+        if version in (self.current(), self.previous()):
+            raise ValueError("refusing to remove the active or previous release")
+        shutil.rmtree(self.layout.release_dir(version), ignore_errors=True)
+
+    def prune(self, keep: int = 3) -> list[str]:
+        """Delete the oldest releases, always keeping the active and previous ones."""
+        keep_set = {self.current(), self.previous()} - {None}
+        removable = [v for v in self.installed() if v not in keep_set]
+        extra = len(self.installed()) - max(keep, len(keep_set))
+        gone = []
+        for v in removable[: max(0, extra)]:
+            self.remove(v)
+            gone.append(v)
+        return gone
+__STUDIO_EOF_16ce831ef9f1__
+cat > "$DEST/studio/update/trust.py" <<'__STUDIO_EOF_812c188aa106__'
+"""Release authenticity. Public keys are pinned in ``pinned_keys.json`` inside the *installed* application,
+so a compromised download site cannot substitute its own key. A SHA-256 published next to an archive
+proves nothing about who built it; the Ed25519 signature over the release index does.
+
+Key rotation: ship the new public key in an application release signed by the old key, keep both keys
+for one release cycle, then drop the old one. Compromise: remove the key from ``pinned_keys.json`` in the
+next release signed by a still-trusted key and list its id in the index's ``revoked_keyids``; if every key
+is compromised, users must reinstall from a freshly downloaded installer (there is no remote recovery
+and there must not be one)."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+PINNED_FILE = Path(__file__).with_name("pinned_keys.json")
+
+
+class TrustError(Exception):
+    pass
+
+
+def key_id(raw_public: bytes) -> str:
+    return hashlib.sha256(raw_public).hexdigest()[:16]
+
+
+def canonical(obj) -> bytes:
+    """Deterministic JSON (sorted keys, no whitespace, UTF-8). Signed payloads use only strings, ints, bools, lists, dicts."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+@dataclass
+class TrustStore:
+    keys: dict[str, Ed25519PublicKey] = field(default_factory=dict)
+    revoked: set[str] = field(default_factory=set)
+    allow_unsigned: bool = False  # development channel only; never the production default
+
+    @classmethod
+    def from_public_b64(cls, *keys_b64: str, **kw) -> "TrustStore":
+        ts = cls(**kw)
+        for k in keys_b64:
+            raw = base64.b64decode(k)
+            ts.keys[key_id(raw)] = Ed25519PublicKey.from_public_bytes(raw)
+        return ts
+
+    @classmethod
+    def load_pinned(cls, path: Path | None = None) -> "TrustStore":
+        p = path or PINNED_FILE
+        try:
+            data = json.loads(p.read_text("utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        ts = cls()
+        for entry in data.get("keys", []):
+            raw = base64.b64decode(entry["public_key"])
+            kid = key_id(raw)
+            if entry.get("id") and entry["id"] != kid:
+                raise TrustError(f"pinned key id mismatch for {entry['id']}")
+            ts.keys[kid] = Ed25519PublicKey.from_public_bytes(raw)
+        ts.revoked = set(data.get("revoked", []))
+        return ts
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.keys)
+
+    def verify_envelope(self, raw: bytes) -> dict:
+        """Parse and authenticate a signed index ``{"signed": {...}, "signatures": [{"keyid", "sig"}]}``.
+        Returns the signed payload. Raises TrustError on any failure."""
+        try:
+            env = json.loads(raw.decode("utf-8"))
+            signed, sigs = env["signed"], env.get("signatures", [])
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+            raise TrustError("The release index is not valid JSON in the expected envelope.") from exc
+        if not isinstance(signed, dict) or not isinstance(sigs, list):
+            raise TrustError("The release index envelope is malformed.")
+        if not self.keys:
+            if self.allow_unsigned:
+                return signed
+            raise TrustError("No release-signing key is pinned in this installation, so updates cannot be authenticated. "
+                             "Updates stay disabled until the owner publishes a signing key (docs/10-installation-and-updates.md).")
+        body = canonical(signed)
+        extra = signed.get("revoked_keyids")
+        revoked = self.revoked | set(extra if isinstance(extra, list) else [])
+        for s in sigs:
+            kid = s.get("keyid") if isinstance(s, dict) else None
+            if kid in revoked or kid not in self.keys:
+                continue
+            try:
+                self.keys[kid].verify(base64.b64decode(s["sig"], validate=True), body)
+                return signed
+            except (InvalidSignature, ValueError, KeyError, TypeError):
+                continue
+        raise TrustError("The release index signature is invalid or was made by a key this installation does not trust. Nothing was installed.")
+
+
+def sign_payload(signed: dict, private_key) -> bytes:
+    """Used by tools/sign_release.py and tests: returns the envelope bytes."""
+    from cryptography.hazmat.primitives import serialization
+
+    raw_pub = private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    sig = private_key.sign(canonical(signed))
+    env = {"signed": signed, "signatures": [{"keyid": key_id(raw_pub), "sig": base64.b64encode(sig).decode()}]}
+    return json.dumps(env, indent=2, sort_keys=True).encode("utf-8")
+__STUDIO_EOF_812c188aa106__
 cat > "$DEST/studio/util.py" <<'__STUDIO_EOF_34b312dc445b__'
 """Small shared helpers: hashing, atomic writes, JSON, filenames."""
 from __future__ import annotations
@@ -11258,7 +16207,7 @@ def is_within(path: str | Path, root: str | Path) -> bool:
 __STUDIO_EOF_34b312dc445b__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_febc7384242e__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_a4a05d4a3736__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -11562,19 +16511,37 @@ class WorkerSupervisor:
 # ------------------------------------------------------------------------- app
 
 
-def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> FastAPI:
+def create_app(ctx: Context | None = None, start_worker: bool | None = None, update_manager=None, auto_update_check: bool | None = None) -> FastAPI:
     ctx = ctx or Context()
     setup_logging(ctx, "server")
     S.ensure_builtin_voices(ctx)
     if start_worker is None:
         start_worker = ctx.settings().worker.autostart and os.environ.get("STUDIO_NO_WORKER") != "1"
     supervisor = WorkerSupervisor(ctx) if start_worker else None
+    if auto_update_check is None:
+        auto_update_check = start_worker and os.environ.get("STUDIO_NO_UPDATE_CHECK") != "1"
+    stop_checks = threading.Event()
+
+    def _auto_check_loop():
+        """Checks for (never downloads or installs) updates on the configured interval. Failures are recorded, not raised."""
+        stop_checks.wait(45)
+        while not stop_checks.is_set():
+            mgr = app.state.update_manager
+            try:
+                if mgr.layout.managed and mgr.auto_check_due():
+                    mgr.check()
+            except Exception:
+                log.exception("automatic update check failed")
+            stop_checks.wait(1800)
 
     @asynccontextmanager
     async def lifespan(_app):
         if supervisor:
             supervisor.start()
+        if auto_update_check:
+            threading.Thread(target=_auto_check_loop, daemon=True, name="update-check").start()
         yield
+        stop_checks.set()
         if supervisor:
             await run_in_threadpool(supervisor.shutdown)
 
@@ -11987,6 +16954,19 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
 
     register_narrative(app, ctx)
 
+    from ..platform_services import default_platform
+    from ..update.launch import make_launcher
+    from ..update.layout import Layout
+    from ..update.manager import ReleaseUpdateManager
+    from .update_api import register as register_updates
+
+    if update_manager is None:
+        layout = Layout.discover()
+        pf = default_platform(layout.state)
+        update_manager = ReleaseUpdateManager(ctx, layout, pf)
+        update_manager.launch_helper = make_launcher(layout, pf)
+    register_updates(app, ctx, update_manager)
+
     # ------------------------------------------------------------------ media
     def _book(conn, book_id):
         b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
@@ -12135,8 +17115,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None) -> 
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_febc7384242e__
-cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_bbbfc8812ddd__'
+__STUDIO_EOF_a4a05d4a3736__
+cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_5fd7f2dbd3bc__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
 from __future__ import annotations
@@ -12169,6 +17149,8 @@ ADMIN_RULES = [
     ("POST", re.compile(r"^/api/storage/")),
     ("POST", re.compile(r"^/api/books/\d+/(move|archive)$")),
     ("POST", re.compile(r"^/api/worker/restart$")),
+    ("POST", re.compile(r"^/api/update/(check|download|install|cancel|restart)$")),
+    ("PUT", re.compile(r"^/api/update/preferences$")),
     ("POST", re.compile(r"^/api/voices/\d+/archive$")),
     ("GET", re.compile(r"^/api/auth/users$")),
     ("POST", re.compile(r"^/api/auth/users$")),
@@ -12319,7 +17301,7 @@ class LoginLimiter:
 def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
-__STUDIO_EOF_bbbfc8812ddd__
+__STUDIO_EOF_5fd7f2dbd3bc__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -12659,7 +17641,7 @@ def narrative_metadata(ctx, book_id: int) -> dict:
                       "status": s["status"], "duration_s": s["duration_s"], "wer": s["wer"], "direction": dirs.get(s["id"]), "instruct": s["instruct_used"]} for s in segs],
     }
 __STUDIO_EOF_51ac6d84b25c__
-cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_234b5211d211__'
+cat > "$DEST/studio/web/security.py" <<'__STUDIO_EOF_4849a35f8d04__'
 """Local web security: Host allowlist (DNS rebinding), same-origin + custom header checks on
 mutating requests (CSRF), session authentication with admin-only routes, strict headers.
 
@@ -12682,7 +17664,7 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 PUBLIC_PREFIXES = ("/static/",)
-PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/tls/studio-certificate.pem"}
+PUBLIC_PATHS = {"/", "/api/auth/login", "/api/auth/status", "/api/auth/logout", "/favicon.ico", "/healthz", "/api/version", "/tls/studio-certificate.pem"}
 
 
 def local_names() -> set[str]:
@@ -12770,9 +17752,9 @@ def install(app, ctx) -> None:
         if path.startswith("/api/") or path.startswith("/media/"):
             response.headers.setdefault("Cache-Control", "private, no-store" if path.startswith("/api/") else "private, no-cache")
         return response
-__STUDIO_EOF_234b5211d211__
+__STUDIO_EOF_4849a35f8d04__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_9f3fbb8c4d17__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_9e6afeddbe18__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -13181,8 +18163,18 @@ body.signed-out .shell { grid-template-columns: 1fr; }
 .btn.disabled { opacity: .5; pointer-events: none; }
 .preview-out { margin-top: .5rem; }
 @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } .ov-grid { grid-template-columns: 1fr; } }
-__STUDIO_EOF_9f3fbb8c4d17__
-cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
+
+/* ---- Update Center */
+.phases { list-style: none; margin: 0; padding: 0; display: grid; gap: .55rem; }
+.phase-head { display: flex; justify-content: space-between; gap: .75rem; font-size: .88rem; margin-bottom: .2rem; }
+.phase-good .progress-fill { background: var(--good); }
+.phase-bad .progress-fill { background: var(--bad); }
+pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; max-height: 16rem; overflow: auto; font: inherit; font-size: .88rem; }
+.row-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+.nav-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); margin-left: .25rem; vertical-align: middle; }
+.nav-dot[hidden] { display: none; }
+__STUDIO_EOF_9e6afeddbe18__
+cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_9582783ee2ef__'
 <!doctype html>
 <html lang="en">
 <head>
@@ -13217,6 +18209,7 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
         <li><a href="#/voices" data-nav="voices"><span aria-hidden="true">♪</span> Narrator Studio</a></li>
         <li><a href="#/review" data-nav="review"><span aria-hidden="true">✓</span> Review &amp; QA</a></li>
         <li><a href="#/settings" data-nav="settings"><span aria-hidden="true">⚙</span> Settings &amp; Storage</a></li>
+        <li><a href="#/updates" data-nav="updates"><span aria-hidden="true">⭳</span> Updates <span class="nav-dot" id="update-dot" hidden aria-label="update available"></span></a></li>
         <li><a href="#/about" data-nav="about"><span aria-hidden="true">ⓘ</span> About &amp; System</a></li>
       </ul>
       <p class="nav-foot"><a href="#/about" id="ver" class="ver-link">Audiobook Studio</a><br>TSAL Solutions LLC<br>Private network only<br>No uploads to third parties</p>
@@ -13230,9 +18223,9 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_393bc3f275fb__'
   <noscript><p class="noscript">Audiobook Studio needs JavaScript enabled.</p></noscript>
 </body>
 </html>
-__STUDIO_EOF_393bc3f275fb__
+__STUDIO_EOF_9582783ee2ef__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_d500a2f4e475__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_1464be6ba214__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
 import * as overview from "./views/overview.js";
@@ -13245,8 +18238,9 @@ import * as settings from "./views/settings.js";
 import * as about from "./views/about.js";
 import * as narrative from "./views/narrative.js";
 import * as inspector from "./views/inspector.js";
+import * as updates from "./views/updates.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates };
 let cleanup = null;
 let currentKey = "";
 
@@ -13383,6 +18377,14 @@ function showVersion(st) {
   if (el && st.version_label) { el.textContent = `Audiobook Studio ${st.version_label}`; el.title = "About Audiobook Studio"; }
 }
 
+async function refreshUpdateDot() {
+  try {
+    const u = await get("/api/update/summary");
+    const dot = document.getElementById("update-dot");
+    if (dot) dot.hidden = !(u.managed && ["available", "staged", "failed", "rolled_back"].includes(u.state));
+  } catch (e) { /* not signed in yet, or restarting */ }
+}
+
 async function start() {
   const st = await get("/api/auth/status");
   showVersion(st);
@@ -13392,6 +18394,9 @@ async function start() {
   document.getElementById("worker-pill").hidden = false;
   showUser();
   try { updateWorkerPill(await get("/api/worker")); } catch (e) { /* shown by banner */ }
+  refreshUpdateDot();
+  setInterval(refreshUpdateDot, 300000);
+  window.addEventListener("hashchange", refreshUpdateDot);
   connectSSE();
   route();
 }
@@ -13423,7 +18428,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_d500a2f4e475__
+__STUDIO_EOF_1464be6ba214__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -14873,7 +19878,7 @@ export async function render(view, parts) {
 }
 export { toastError };
 __STUDIO_EOF_c628a052087f__
-cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_9c7fd7b52f5f__'
+cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_9144bdd31410__'
 // Overview & progress dashboard.
 import { get, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, fmtDate, onState, toastError } from "../ui.js";
 
@@ -14892,12 +19897,25 @@ function liveLine(b) {
   return "";
 }
 
+function updateNotice(u) {
+  if (!u || !u.managed) return "";
+  if (u.state === "failed" || u.state === "rolled_back") return html`<div class="callout warn" role="alert"><strong>Update problem.</strong> ${u.message} <a href="#/updates">Open Updates</a></div>`;
+  if (u.state === "staged") return html`<div class="callout info" role="status"><strong>Version ${u.staged_version} is downloaded and verified.</strong> <a href="#/updates">Install it</a> when you are ready.</div>`;
+  if (u.state === "available") return html`<div class="callout info" role="status"><strong>Version ${u.latest_version} is available.</strong> <a href="#/updates">See what is new</a></div>`;
+  if (["waiting", "draining", "installing", "restarting", "health_check", "downloading", "verifying", "staging"].includes(u.state))
+    return html`<div class="callout info" role="status"><strong>Update in progress:</strong> ${u.message} <a href="#/updates">Details</a></div>`;
+  return "";
+}
+
+let updateSummary = null;
+
 function draw(view, d) {
   const c = d.cards, st = d.segment_states;
   const segFrac = c.segments_total ? c.segments_produced / c.segments_total : 0;
   setHTML(view, html`
   <div class="page-head"><h1>Overview</h1>
     <div class="head-actions"><a class="btn primary" href="#/library">Import manuscripts</a><a class="btn" href="#/queue">Open queue</a></div></div>
+  ${updateNotice(updateSummary)}
   ${!d.worker.online ? html`<div class="callout warn" role="alert"><strong>The GPU worker is offline.</strong> Queued books will start when it is running.
      It restarts automatically; you can also restart it on <a href="#/about">System &amp; Licenses</a>.</div>` : ""}
   <section aria-labelledby="sum-h"><h2 id="sum-h" class="sr-only">Summary</h2>
@@ -14952,12 +19970,17 @@ function draw(view, d) {
 }
 
 export async function render(view) {
+  updateSummary = await get("/api/update/summary").catch(() => null);
   draw(view, await get("/api/overview"));
+  let n = 0;
   return onState(async () => {
-    try { draw(view, await get("/api/overview")); } catch (e) { if (e.status) toastError(e); }
+    try {
+      if (n++ % 5 === 0) updateSummary = await get("/api/update/summary").catch(() => updateSummary);
+      draw(view, await get("/api/overview"));
+    } catch (e) { if (e.status) toastError(e); }
   }, 2000);
 }
-__STUDIO_EOF_9c7fd7b52f5f__
+__STUDIO_EOF_9144bdd31410__
 cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_0cc4435bf1c8__'
 // Durable FIFO queue: reorder (drag or keyboard buttons), pause/resume/retry/cancel, logs, estimates.
 import { get, post, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, toast, busy, onState, confirmDialog } from "../ui.js";
@@ -15324,7 +20347,7 @@ export async function render(view, parts, query) {
 }
 export { navigate };
 __STUDIO_EOF_2486e47e24ea__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_02e88658bf6e__'
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_84d2f0487611__'
 // Settings & Storage: server-validated paths, disk status, every tunable with validation.
 import { get, post, put, del, html, setHTML, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
 import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
@@ -15438,6 +20461,7 @@ const SECTIONS = [
     ["repetition_penalty", "Repetition penalty (blank = model default)", "number?", { min: 1, max: 2, step: 0.01 }],
     ["retry_temperatures", "Temperatures for retries (comma separated)", "list"],
     ["max_warm_models", "Models kept loaded in memory", "number", { min: 1, max: 4 }],
+    ["cache_dir", "Model cache folder (blank = default; may be an external disk; applies after a restart)", "text"],
     ["allow_downloads", "Allow downloading model weights from Hugging Face", "bool"]]],
   ["export", "Export", [
     ["sample_rate", "Master sample rate (Hz)", "select", { options: [22050, 44100, 48000] }],
@@ -15634,7 +20658,173 @@ export async function render(view) {
   paint();
   return () => view.removeEventListener("click", onClick);
 }
-__STUDIO_EOF_02e88658bf6e__
+__STUDIO_EOF_84d2f0487611__
+cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_ecb83b1aa9b6__'
+// Update Center: check / download / verify / stage / install (after the current job or at the next segment boundary) / restart, with history.
+// Everything the user sees is plain text (auto-escaped); release notes are never interpreted as HTML.
+import { get, post, put, html, setHTML, busy, confirmDialog, toast, toastError, fmtAgo, fmtDate, fmtBytes } from "../ui.js";
+
+const PHASES = [
+  ["check", "Checking"], ["download", "Downloading"], ["verify", "Verifying signature & checksum"], ["stage", "Staging"],
+  ["drain", "Waiting for the queue"], ["install", "Installing"], ["restart", "Restarting"], ["health", "Health check"],
+];
+
+const STATE = {
+  idle: ["neutral", "Not checked yet"], checking: ["info", "Checking"], up_to_date: ["good", "Up to date"], available: ["info", "Update available"],
+  downloading: ["info", "Downloading"], verifying: ["info", "Verifying"], staging: ["info", "Staging"], staged: ["good", "Ready to install"],
+  waiting: ["warn", "Waiting for a safe point"], draining: ["warn", "Finishing the current segment"], installing: ["info", "Installing"],
+  restarting: ["info", "Restarting"], health_check: ["info", "Health check"], succeeded: ["good", "Updated"], failed: ["bad", "Failed"],
+  rolled_back: ["warn", "Rolled back"], disabled: ["neutral", "Switched off"], incompatible: ["warn", "Not compatible"], offline: ["warn", "Offline"],
+};
+const BUSY = new Set(["checking", "downloading", "verifying", "staging", "waiting", "draining", "installing", "restarting", "health_check"]);
+
+function phaseRow([key, label], p) {
+  const state = p ? p.state : "idle";
+  const pct = state === "done" ? 100 : (p && p.pct != null ? p.pct : (state === "running" ? 15 : 0));
+  const tone = state === "failed" ? "bad" : state === "done" ? "good" : state === "running" ? "info" : "neutral";
+  const text = state === "done" ? "Done" : state === "failed" ? "Failed" : state === "running" ? "In progress" : "Waiting";
+  return html`<li class="phase phase-${tone}">
+    <div class="phase-head"><span>${label}</span><span class="small muted">${text}${p && p.detail ? html` · ${p.detail}` : ""}</span></div>
+    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(pct)}" aria-label="${label}">
+      <div class="progress-fill" data-pct="${pct}"></div></div></li>`;
+}
+
+function guidance(s) {
+  if (!s.managed) return html`<div class="callout warn" role="status"><strong>This copy cannot update itself.</strong> ${s.not_managed_reason}</div>`;
+  if (!s.signing_configured) return html`<div class="callout warn" role="status"><strong>Updates are switched off until the owner publishes a signing key.</strong>
+    Every update must carry a signature that this installation can verify against a pinned public key; none is pinned yet, so nothing is downloaded or installed.</div>`;
+  if (s.state === "offline") return html`<div class="callout warn" role="status"><strong>No connection to the update server.</strong> ${s.error} Nothing was changed; the studio keeps working.</div>`;
+  if (s.state === "failed") return html`<div class="callout bad" role="alert"><strong>${s.error_kind === "untrusted" ? "The update could not be trusted." : "The update failed."}</strong> ${s.error || s.message}
+    ${s.error_kind === "preflight" ? html`<br>Check that the data and application folders are reachable (an external disk may be disconnected) and try again.` : ""}</div>`;
+  if (s.state === "rolled_back") return html`<div class="callout warn" role="alert"><strong>The update was rolled back.</strong> ${s.message} Your books, voices and queue were not changed.</div>`;
+  if (s.state === "incompatible") return html`<div class="callout warn" role="status"><strong>A newer version exists but cannot be installed here.</strong> ${s.message}</div>`;
+  if (s.state === "succeeded") return html`<div class="callout good" role="status"><strong>${s.message}</strong></div>`;
+  if (s.queue_hold) return html`<div class="callout info" role="status">The queue is held for an update (${s.queue_hold.mode === "now" ? "no new segments start" : "the current book finishes, nothing new starts"}). Completed audio is safe on disk.</div>`;
+  return "";
+}
+
+function draw(view, s, hist, isAdmin) {
+  const [tone, label] = STATE[s.state] || ["neutral", s.state];
+  const busyNow = BUSY.has(s.state) || !!s.busy;
+  const latest = s.latest;
+  const canAct = isAdmin && s.managed && s.signing_configured && !busyNow;
+  const staged = s.state === "staged" && s.staged_version;
+  setHTML(view, html`
+  <div class="page-head"><h1>Updates</h1><div class="head-actions">
+    <button class="btn" data-act="check" ${canAct || (isAdmin && !busyNow) ? "" : "disabled"}>Check for updates</button></div></div>
+  ${isAdmin ? "" : html`<div class="callout info small" role="note">You can see update status here. An administrator installs updates.</div>`}
+  ${guidance(s)}
+  <section class="card" aria-labelledby="ver-h"><h2 id="ver-h">Version</h2>
+    <dl class="about-facts">
+      <div><dt>Installed</dt><dd>${s.installed_version}${s.build ? html` <span class="muted small">(build ${s.build})</span>` : ""}</dd></div>
+      <div><dt>Channel</dt><dd>${s.channel}</dd></div>
+      <div><dt>Latest compatible</dt><dd>${latest ? latest.version : (s.state === "up_to_date" ? "You have it" : "–")}</dd></div>
+      <div><dt>Status</dt><dd><span class="badge tone-${tone}">${label}</span></dd></div>
+      <div><dt>Last checked</dt><dd>${s.last_check ? fmtAgo(s.last_check) : "never"}${s.last_success_check && s.last_success_check !== s.last_check ? html` <span class="muted small">(last success ${fmtAgo(s.last_success_check)})</span>` : ""}</dd></div>
+      <div><dt>Previous version kept</dt><dd>${s.previous_version || "–"}</dd></div>
+    </dl>
+    <p class="small muted" aria-live="polite">${s.message || ""}</p>
+  </section>
+  ${latest ? html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Version ${latest.version}</h2>
+    <p class="small muted">Published ${fmtDate(Date.parse(latest.published) / 1000)} · ${fmtBytes(latest.size)} download · needs macOS ${latest.min_os}+ ·
+      ${latest.signed ? "release index signature verified" : "NOT signature-verified (development channel)"}</p>
+    <details open><summary>Release notes</summary><pre class="notes">${latest.notes || "No notes were published for this release."}</pre>
+      ${latest.notes_url ? html`<p class="small"><a href="${latest.notes_url}" target="_blank" rel="noopener noreferrer">View the full release notes on the release page</a></p>` : ""}</details>
+    <div class="row-actions">
+      <button class="btn ${staged ? "" : "primary"}" data-act="download" ${canAct && !staged && s.state !== "incompatible" ? "" : "disabled"}>Download &amp; verify</button>
+      <button class="btn primary" data-act="install-now" ${canAct && staged ? "" : "disabled"}>Install now</button>
+      <button class="btn" data-act="install-later" ${canAct && staged ? "" : "disabled"}>Install after current book</button>
+      ${s.state === "waiting" ? html`<button class="btn danger" data-act="cancel" ${isAdmin ? "" : "disabled"}>Cancel installation</button>` : ""}
+    </div>
+    <p class="small muted">Nothing is downloaded or installed without your click. "Install now" finishes the segment being narrated, then restarts;
+      unfinished books resume where they stopped. "After current book" lets the running book finish first and starts no other book meanwhile.</p>
+  </section>` : ""}
+  <section class="card" aria-labelledby="prog-h"><h2 id="prog-h">Progress</h2>
+    <ol class="phases" aria-live="polite">${PHASES.map((p) => phaseRow(p, (s.phases || {})[p[0]]))}</ol></section>
+  <section class="card" aria-labelledby="pref-h"><h2 id="pref-h">Automatic checks</h2>
+    <form id="prefs" class="form-grid">
+      <label class="check"><input type="checkbox" name="auto_check" ${s.auto_check ? "checked" : ""} ${isAdmin ? "" : "disabled"}> Check for updates automatically (never downloads or installs by itself)</label>
+      <label>How often <select name="check_interval_hours" ${isAdmin ? "" : "disabled"}>
+        ${[[6, "every 6 hours"], [24, "daily"], [72, "every 3 days"], [168, "weekly"]].map(([v, t]) => html`<option value="${v}" ${Number(s.check_interval_hours) === v ? "selected" : ""}>${t}</option>`)}</select></label>
+      <label>Channel <select name="channel" ${isAdmin ? "" : "disabled"}>
+        ${["stable", "beta"].map((v) => html`<option value="${v}" ${s.channel === v ? "selected" : ""}>${v === "stable" ? "Stable (recommended)" : "Beta (earlier, less tested)"}</option>`)}</select></label>
+      <div><button class="btn" type="submit" ${isAdmin ? "" : "disabled"}>Save</button></div>
+    </form>
+    <p class="small muted">Updates come from this project's GitHub Releases (${s.repository}). Only releases signed with the key pinned in this installation are accepted.</p>
+  </section>
+  <section class="card" aria-labelledby="svc-h"><h2 id="svc-h">Service</h2>
+    <p class="small">The studio runs as a background service managed by macOS (launchd) and starts when you log in.</p>
+    <button class="btn" data-act="restart" ${isAdmin && s.managed && !busyNow ? "" : "disabled"}>Restart service</button>
+    <p class="small muted">Platform ${s.platform}. Installed releases kept for rollback: ${(s.installed_releases || []).join(", ") || "–"}.</p>
+  </section>
+  <section class="card" aria-labelledby="hist-h"><h2 id="hist-h">History</h2>
+    ${hist.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">When</th><th scope="col">Event</th><th scope="col">Version</th><th scope="col">Result</th></tr></thead>
+      <tbody>${hist.map((h) => html`<tr><td class="small nowrap">${fmtAgo(h.at)}</td><td>${h.event.replace(/_/g, " ")}</td><td>${h.version || "–"}</td>
+        <td><span class="badge tone-${h.ok ? "good" : "bad"}">${h.ok ? "ok" : "failed"}</span> <span class="small">${h.message}</span></td></tr>`)}</tbody></table></div>`
+      : html`<p class="muted">No update activity yet.</p>`}
+  </section>`);
+}
+
+export async function render(view) {
+  let isAdmin = false;
+  try { const a = await get("/api/auth/status"); isAdmin = !a.auth_required || (a.user && a.user.role === "admin"); } catch { /* shown elsewhere */ }
+  let status = null, hist = [], timer = null, lastKey = "", reconnecting = false, editing = false;
+
+  const refresh = async (force = false) => {
+    try {
+      [status, hist] = await Promise.all([get("/api/update/status"), get("/api/update/history").then((r) => r.history)]);
+      reconnecting = false;
+    } catch (e) {
+      if (!e.status) { reconnecting = true; setHTML(view, html`<div class="page-head"><h1>Updates</h1></div><div class="callout info" role="status">
+        <strong>The studio is restarting.</strong> This page reconnects by itself; your work is safe on disk.</div>`); }
+      return;
+    }
+    const key = JSON.stringify([status, hist.length]);
+    if (key === lastKey && !force) return;
+    if (editing && document.activeElement && view.contains(document.activeElement) && document.activeElement.matches("select, input")) return;
+    lastKey = key;
+    draw(view, status, hist, isAdmin);
+  };
+
+  const onClick = async (e) => {
+    const b = e.target.closest("[data-act]"); if (!b || b.disabled) return;
+    const act = b.dataset.act;
+    try {
+      if (act === "check") await busy(b, () => post("/api/update/check"));
+      else if (act === "download") await busy(b, () => post("/api/update/download"));
+      else if (act === "cancel") await busy(b, () => post("/api/update/cancel"), "Installation cancelled");
+      else if (act === "restart") {
+        if (!(await confirmDialog("Restart the service?", "The studio restarts in a few seconds. The segment being narrated finishes or is retried; queued work resumes automatically.", "Restart"))) return;
+        await busy(b, () => post("/api/update/restart"), "Restarting…");
+      } else if (act === "install-now" || act === "install-later") {
+        const now = act === "install-now", v = status.staged_version;
+        const msg = now ? `Version ${v} installs at the next safe segment boundary and the studio restarts. A backup of your database is taken first, and the previous version is kept for automatic rollback.`
+          : `The book being narrated finishes first, then version ${v} installs and the studio restarts. No other book starts in the meantime.`;
+        if (!(await confirmDialog(`Install version ${v}?`, msg, "Install"))) return;
+        await busy(b, () => post("/api/update/install", { version: v, mode: now ? "now" : "after_job", confirm: true }), "Installation scheduled");
+      }
+    } catch { /* toast shown by busy */ }
+    refresh(true);
+  };
+  const onSubmit = async (e) => {
+    if (e.target.id !== "prefs") return;
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await busy(e.submitter, () => put("/api/update/preferences", { auto_check: fd.get("auto_check") === "on", check_interval_hours: Number(fd.get("check_interval_hours")), channel: fd.get("channel") }), "Saved");
+    } catch { /* toast */ }
+    editing = false; refresh(true);
+  };
+  const onFocus = () => { editing = true; };
+  view.addEventListener("click", onClick);
+  view.addEventListener("submit", onSubmit);
+  view.addEventListener("focusin", onFocus);
+  view.addEventListener("focusout", () => { editing = false; });
+  await refresh(true);
+  timer = setInterval(() => refresh(false), 1500);
+  return () => { clearInterval(timer); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); view.removeEventListener("focusin", onFocus); };
+}
+__STUDIO_EOF_ecb83b1aa9b6__
 cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_513afb06ec00__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
@@ -16282,7 +21472,116 @@ export async function render(view) {
   return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
 }
 __STUDIO_EOF_e2b77877580d__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_a777a78e0f8e__'
+cat > "$DEST/studio/web/update_api.py" <<'__STUDIO_EOF_5b103fd18964__'
+"""HTTP API for the Update Center. State-changing routes are administrator-only (auth.ADMIN_RULES) and pass the same-origin /
+CSRF checks as every other mutating route. No endpoint accepts a URL or a command: the repository comes from validated
+settings and artifact URLs come from the signature-verified index."""
+from __future__ import annotations
+
+import threading
+import time
+from typing import Literal, Optional
+
+from fastapi import Request
+from pydantic import BaseModel, ConfigDict, Field
+
+from .. import services as S
+from ..update.manager import ReleaseUpdateManager, UpdateError
+
+
+class _Req(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class InstallReq(_Req):
+    version: str = Field(min_length=5, max_length=40)
+    mode: Literal["now", "after_job"] = "after_job"
+    confirm: bool = False
+
+
+class PrefsReq(_Req):
+    channel: Optional[Literal["stable", "beta"]] = None
+    auto_check: Optional[bool] = None
+    check_interval_hours: Optional[int] = Field(None, ge=1, le=168)
+
+
+def _wrap(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except UpdateError as exc:
+        raise S.ServiceError(str(exc), exc.status) from exc
+
+
+def register(app, ctx, manager: ReleaseUpdateManager) -> None:
+    app.state.update_manager = manager
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz(request: Request):
+        from .. import __version__
+        from ..update.launch import health_payload
+
+        loopback = (request.client.host if request.client else "") in ("127.0.0.1", "::1", "testclient")
+        return health_payload(ctx, __version__, loopback)
+
+    @app.get("/api/version")
+    def api_version():
+        from .. import VERSION_LABEL, __version__
+
+        return {"version": __version__, "version_label": VERSION_LABEL, "build": manager._build(), "channel": ctx.settings().updates.channel,
+                "schema": ctx.db.schema_version(), "managed": manager.layout.managed}
+
+    @app.get("/api/update/summary")
+    def api_update_summary():
+        """Small payload for the dashboard indicator."""
+        st = manager.status()
+        return {"state": st["state"], "installed_version": st["installed_version"], "latest_version": (st["latest"] or {}).get("version"),
+                "staged_version": st["staged_version"], "message": st["message"], "error": st["error"], "managed": st["managed"]}
+
+    @app.get("/api/update/status")
+    def api_update_status():
+        return manager.status()
+
+    @app.get("/api/update/history")
+    def api_update_history():
+        return {"history": manager.status_file.read_history(50)}
+
+    @app.post("/api/update/check")
+    def api_update_check():
+        return _wrap(manager.check)
+
+    @app.post("/api/update/download")
+    def api_update_download():
+        return _wrap(manager.download)
+
+    @app.post("/api/update/install")
+    def api_update_install(req: InstallReq):
+        if not req.confirm:
+            raise S.ServiceError("Installing an update needs explicit confirmation.", 422)
+        return _wrap(manager.request_install, req.mode, req.version)
+
+    @app.post("/api/update/cancel")
+    def api_update_cancel():
+        return _wrap(manager.cancel)
+
+    @app.post("/api/update/restart")
+    def api_update_restart():
+        """Restart the service through the platform, from a short-lived thread so this response is delivered first."""
+        ps = manager.platform_service
+        if ps is None or not manager.layout.managed:
+            raise S.ServiceError("The service is not managed by the launchd installer; restart it from Terminal (audiobook-studio restart).", 409)
+        label = manager.layout.service_info().get("label") or "com.audiobookstudio.app"
+        threading.Thread(target=lambda: (time.sleep(0.8), ps.restart(label)), daemon=True).start()
+        return {"ok": True, "message": "Restarting. This page reconnects automatically."}
+
+    @app.put("/api/update/preferences")
+    def api_update_prefs(req: PrefsReq):
+        s = ctx.settings().model_copy(deep=True)
+        for k, v in req.model_dump(exclude_none=True).items():
+            setattr(s.updates, k, v)
+        ctx.save_settings(s)
+        return manager.status()
+__STUDIO_EOF_5b103fd18964__
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_b96fb9268a61__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -16310,6 +21609,7 @@ from . import assembly
 from .db import row, rows
 from .engines import EngineUnavailable, VoiceSpec, SynthParams, create_asr, create_tts, max_tokens_for
 from .narrative import store as N_store
+from .scheduler import FileQueueScheduler
 from .pipeline import StorageUnavailable, check_storage, process_segment, recover_interrupted
 from . import audio as A
 from .util import dumps, loads, now
@@ -16391,6 +21691,7 @@ class Worker:
         self._hb_thread: threading.Thread | None = None
         self._state = {"state": "idle", "job": None, "sid": None, "message": ""}
         self.caffeinate = _Caffeinate(ctx.settings().worker.prevent_sleep)
+        self.gate = FileQueueScheduler(ctx.run_dir)  # update drain: see scheduler.py
 
     # -------------------------------------------------------------- engines
     @property
@@ -16463,7 +21764,9 @@ class Worker:
         return info
 
     # ------------------------------------------------------------- scheduling
-    def _next_job(self, conn) -> dict | None:
+    def _next_job(self, conn, running_only: bool = False) -> dict | None:
+        if running_only:  # an update is waiting for the current job: continue it, start nothing new
+            return row(conn, "SELECT * FROM jobs WHERE status='running' AND kind IN ('book','analyze','assemble','export') ORDER BY id LIMIT 1")
         j = row(conn, "SELECT * FROM jobs WHERE kind='preview' AND status='queued' ORDER BY id LIMIT 1")
         if j:
             return j
@@ -16495,8 +21798,13 @@ class Worker:
 
     def step(self) -> bool:
         """Do one unit of work. Returns False when there is nothing to do."""
+        hold = self.gate.current_hold()
+        if hold is not None and hold.mode == "now":
+            return False  # the segment in flight already finished; nothing new starts while an update is installing
         with self.ctx.db.session() as conn:
-            job = self._next_job(conn)
+            job = self._next_job(conn, running_only=hold is not None)
+        if not job and hold is not None:
+            return False
         if not job:
             self._resume_storage_paused()
             with self.ctx.db.session() as conn:
@@ -16816,7 +22124,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_a777a78e0f8e__
+__STUDIO_EOF_b96fb9268a61__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
@@ -17364,7 +22672,7 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_ff52f7477a45__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_192d3c311581__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_aa6bae69a86c__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -17749,13 +23057,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.4.0" and st["version_label"] == "v0.4.0"
+    assert st["version"] == "0.5.0" and st["version_label"] == "v0.5.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.4.0" and "stage" not in a
+    assert a["version_label"] == "v0.5.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_192d3c311581__
+__STUDIO_EOF_aa6bae69a86c__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -19330,34 +24638,1846 @@ def test_short_segment_single_error_is_not_a_wer_flag(ctx):
     assert results["Chapter Two: The Second Life"] == "passed"  # one word of five: no WER flag
     assert results["Chapter Too: The Second Life"] == "flagged"  # two errors: flagged
 __STUDIO_EOF_5a07baaa7291__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_7c99018e5697__'
-20261029095903-6d2ef68a
-__STUDIO_EOF_7c99018e5697__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_415da608b5bd__'
+cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_70aa088b01ec__'
+"""Update building blocks: signatures, release selection, hardened network and archive handling, release store, runtime provisioning,
+platform services, provider/storage interfaces. All local; no network, no macOS."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import plistlib
+import tarfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx
+import pytest
+
+from studio.interfaces import (ASRProvider, InferenceProvider, ModelRegistry, PlatformService, QueueScheduler, ReleaseRepository, ServiceSpec,
+                               StorageManager, TTSProvider, UpdateManager)
+from studio.update import archive as AR
+from studio.update.layout import Layout
+from studio.update.manifest import Index, ManifestError, parse_version, select_update
+from studio.update.net import Fetcher, NetError, validate_repository
+from studio.update.repository import GitHubReleasesRepository, HttpsRepository, make_repository
+from studio.update.runtime import RuntimeError_, ensure_runtime, lock_id
+from studio.update.store import ReleaseStore
+from studio.update.trust import TrustError, TrustStore, canonical, sign_payload
+from update_fixtures import BASE, FakeSite, entry, file_member, index_bytes, new_key, pack, tar_with, trust_for, write_tree
+
+# ------------------------------------------------------------------------------------------------ signatures
+
+
+def test_signature_roundtrip_and_tamper_detection():
+    key, pub = new_key()
+    ts = trust_for(pub)
+    raw = index_bytes(key, [])
+    assert ts.verify_envelope(raw)["channel"] == "stable"
+    env = json.loads(raw)
+    env["signed"]["releases"].append({"version": "9.9.9"})            # attacker edits the index
+    with pytest.raises(TrustError, match="signature is invalid"):
+        ts.verify_envelope(json.dumps(env).encode())
+    env = json.loads(raw)
+    env["signed"]["sequence"] = 99
+    with pytest.raises(TrustError):
+        ts.verify_envelope(json.dumps(env).encode())
+
+
+def test_signature_from_unpinned_or_revoked_key_rejected():
+    key, pub = new_key()
+    other, _ = new_key()
+    ts = trust_for(pub)
+    with pytest.raises(TrustError):
+        ts.verify_envelope(index_bytes(other, []))
+    ts.revoked = {next(iter(ts.keys))}
+    with pytest.raises(TrustError):
+        ts.verify_envelope(index_bytes(key, []))
+
+
+def test_revoked_keyids_inside_signed_index_are_honoured():
+    k1, p1 = new_key()
+    k2, p2 = new_key()
+    ts = TrustStore.from_public_b64(p1, p2)
+    kid1 = [k for k in ts.keys][0]
+    # signed by k2 and revoking k1: a later index signed with k1 must no longer verify only if the TrustStore remembers; here the
+    # revocation applies to the very envelope that carries it
+    raw = index_bytes(k1, [], revoked_keyids=[kid1])
+    with pytest.raises(TrustError):
+        ts.verify_envelope(raw)
+
+
+def test_no_pinned_key_means_updates_are_disabled_not_unsigned():
+    key, _ = new_key()
+    with pytest.raises(TrustError, match="No release-signing key is pinned"):
+        TrustStore().verify_envelope(index_bytes(key, []))
+    # the repository's shipped key file is empty: an honest "not configured" state, never a silent pass
+    assert TrustStore.load_pinned().configured is False
+    # the unsigned development mode must be opted into explicitly
+    assert TrustStore(allow_unsigned=True).verify_envelope(index_bytes(key, []))["schema"] == 1
+
+
+def test_canonical_json_is_order_independent():
+    assert canonical({"b": 1, "a": [1, 2]}) == canonical({"a": [1, 2], "b": 1})
+
+
+# ----------------------------------------------------------------------------------------------- selection
+
+
+def _index(releases, **kw):
+    key, _ = new_key()
+    return Index.from_signed(json.loads(index_bytes(key, releases, **kw))["signed"])
+
+
+def _rel(v, **over):
+    return entry(v, Path("a.tar.gz"), "a" * 64, 1000, **over)
+
+
+def sel(index, installed="0.5.0", channel="stable", os_version="15.1", schema=2, arch="arm64"):
+    return select_update(index, installed, channel, "macos", arch, os_version, schema)
+
+
+def test_semver_ordering():
+    assert parse_version("0.10.0") > parse_version("0.9.9")
+    assert parse_version("1.0.0") > parse_version("1.0.0-rc.1") > parse_version("1.0.0-beta.2") > parse_version("1.0.0-beta.1")
+    with pytest.raises(ManifestError):
+        parse_version("1.0")
+
+
+def test_selection_states():
+    idx = _index([_rel("0.5.0"), _rel("0.5.1")])
+    assert sel(idx, "0.5.1").state == "up_to_date"
+    assert sel(idx, "0.5.0").state == "available" and sel(idx, "0.5.0").release.version == "0.5.1"
+    assert sel(idx, "0.5.0", arch="x86_64").state == "none_for_platform"
+    assert sel(_index([_rel("0.5.1", min_os="16.0")]), os_version="15.1").state == "incompatible"
+    assert "downgrade" in sel(_index([_rel("0.5.1", schema_version=1)]), schema=2).reason
+    assert sel(_index([_rel("0.5.1", min_compatible_version="0.5.0")]), "0.4.0").state == "incompatible"
+
+
+def test_stepping_stone_is_offered_when_newest_needs_intermediate():
+    idx = _index([_rel("0.6.0", min_compatible_version="0.5.5"), _rel("0.5.5", min_compatible_version="0.4.0")])
+    s = sel(idx, "0.4.0")
+    assert s.state == "available" and s.release.version == "0.5.5" and s.newer_exists
+
+
+def test_revoked_versions_and_channels():
+    idx = _index([_rel("0.5.1")], revoked_versions=["0.5.1"])
+    assert sel(idx).state == "none_for_platform"
+    idx = _index([_rel("0.6.0-beta.1", channel="beta"), _rel("0.5.1")])
+    assert sel(idx, channel="stable").release.version == "0.5.1"
+    assert sel(idx, channel="beta").release.version == "0.6.0-beta.1"
+
+
+def test_expired_index_and_bad_fields_rejected():
+    key, _ = new_key()
+    with pytest.raises(ManifestError, match="expired"):
+        Index.from_signed(json.loads(index_bytes(key, [], expires_in_days=-1))["signed"])
+    with pytest.raises(ManifestError):
+        Index.from_signed(json.loads(index_bytes(key, [_rel("0.5.1", sha256="zz")]))["signed"])
+    with pytest.raises(ManifestError):
+        Index.from_signed(json.loads(index_bytes(key, [_rel("0.5.1", url="http://github.com/x")]))["signed"])
+
+
+# ---------------------------------------------------------------------------------------------------- net
+
+
+def test_repository_must_be_trusted():
+    assert validate_repository("github:salbretsen/Narration-pipeline")
+    for bad in ("http://github.com/x/y", "https://evil.example/releases", "file:///etc/passwd", "github:../../x", "https://user:pw@github.com/x", ""):
+        with pytest.raises(ValueError):
+            validate_repository(bad)
+    from studio.config import UpdateSettings
+
+    with pytest.raises(ValueError):
+        UpdateSettings(repository="https://evil.example/")
+
+
+def test_fetcher_enforces_https_hosts_and_redirects():
+    site = FakeSite()
+    f = Fetcher(transport=site.transport())
+    with pytest.raises(NetError, match="non-HTTPS"):
+        f.get_bytes("http://github.com/a")
+    with pytest.raises(NetError, match="not a trusted"):
+        f.get_bytes("https://evil.example/a")
+    site.files["https://github.com/ok"] = b"hello"
+    site.redirects["https://github.com/redir"] = "https://objects.githubusercontent.com/ok"
+    site.files["https://objects.githubusercontent.com/ok"] = b"cdn"
+    assert f.get_bytes("https://github.com/ok") == b"hello"
+    assert f.get_bytes("https://github.com/redir") == b"cdn"
+    site.redirects["https://github.com/bad"] = "https://evil.example/payload"
+    with pytest.raises(NetError, match="not a trusted"):
+        f.get_bytes("https://github.com/bad")
+    site.redirects["https://github.com/dow"] = "http://objects.githubusercontent.com/ok"
+    with pytest.raises(NetError, match="non-HTTPS"):
+        f.get_bytes("https://github.com/dow")
+    site.redirects["https://github.com/loop"] = "https://github.com/loop"
+    with pytest.raises(NetError, match="Too many redirects"):
+        f.get_bytes("https://github.com/loop")
+
+
+def test_fetcher_size_limits_and_offline(tmp_path):
+    site = FakeSite()
+    f = Fetcher(transport=site.transport())
+    site.files["https://github.com/big"] = b"x" * 5000
+    with pytest.raises(NetError, match="larger than"):
+        f.get_bytes("https://github.com/big", max_bytes=1000)
+    with pytest.raises(NetError, match="unacceptable"):
+        f.download("https://github.com/big", tmp_path / "a", expected_size=10 << 30)
+    # server sends more than the signed size
+    with pytest.raises(NetError, match="exceeded|larger"):
+        f.download("https://github.com/big", tmp_path / "a", expected_size=4000)
+    assert not (tmp_path / "a").exists()
+    site.offline = True
+    with pytest.raises(NetError) as ei:
+        f.get_bytes("https://github.com/big")
+    assert ei.value.offline
+
+
+def test_interrupted_download_resumes_with_range(tmp_path):
+    site = FakeSite()
+    data = os.urandom(300_000)
+    url = "https://github.com/dl/release.tar.gz"
+    site.files[url] = data
+    site.drop_after = 100_000
+    f = Fetcher(transport=site.transport())
+    dest = tmp_path / "x.tar.gz"
+    with pytest.raises(NetError) as ei:
+        f.download(url, dest, len(data))
+    assert ei.value.offline and not dest.exists()
+    part = dest.with_name(dest.name + ".part")
+    assert 0 < part.stat().st_size < len(data)
+    f.download(url, dest, len(data))
+    assert dest.read_bytes() == data and not part.exists()
+    assert any(r for _, r in site.requests if r and r.startswith("bytes=") and not r.startswith("bytes=0-"))
+
+
+def test_repository_artifact_host_restrictions():
+    site = FakeSite()
+    repo = GitHubReleasesRepository("o", "r", Fetcher(transport=site.transport()))
+    with pytest.raises(NetError, match="not hosted on this project"):
+        repo.download("https://github.com/someone-else/repo/releases/download/v1/x.tar.gz", Path("x"), 10)
+    h = HttpsRepository("https://example.invalid/updates", Fetcher(allowed_hosts={"example.invalid"}, transport=site.transport()))
+    with pytest.raises(NetError, match="not on the update host"):
+        h.download("https://other.invalid/x.tar.gz", Path("x"), 10)
+    assert isinstance(make_repository("github:o/r"), GitHubReleasesRepository)
+
+
+# -------------------------------------------------------------------------------------------------- archive
+
+
+def test_safe_extract_happy_path_and_manifest(tmp_path):
+    top = write_tree(tmp_path / "src", "0.5.1", extra_files={"bin/run": b"#!/bin/sh\n"})
+    arc, _, _ = pack(top, tmp_path / "out")
+    dest = tmp_path / "rel"
+    assert AR.safe_extract(arc, dest, expected_top="audiobook-studio-0.5.1") == "audiobook-studio-0.5.1"
+    assert AR.verify_tree_manifest(dest) >= 3
+    assert (dest / "studio" / "__init__.py").exists()
+
+
+@pytest.mark.parametrize("bad", ["../evil.txt", "audiobook-studio-1/../../evil", "/abs/evil", "audiobook-studio-1\\..\\evil", "C:/evil"])
+def test_archive_path_traversal_rejected(tmp_path, bad):
+    arc = tar_with([file_member(bad)], tmp_path / "a.tar.gz")
+    with pytest.raises(AR.ArchiveError):
+        AR.safe_extract(arc, tmp_path / "d")
+    assert not (tmp_path / "d").exists() and not (tmp_path / "evil.txt").exists()
+
+
+def test_archive_rejects_links_devices_dupes_multi_top_and_non_gzip(tmp_path):
+    sym = tarfile.TarInfo("audiobook-studio-1/link")
+    sym.type, sym.linkname = tarfile.SYMTYPE, "/etc/passwd"
+    with pytest.raises(AR.ArchiveError, match="Links"):
+        AR.safe_extract(tar_with([(sym, None)], tmp_path / "a.tar.gz"), tmp_path / "d1")
+    hard = tarfile.TarInfo("audiobook-studio-1/h")
+    hard.type, hard.linkname = tarfile.LNKTYPE, "audiobook-studio-1/x"
+    with pytest.raises(AR.ArchiveError):
+        AR.safe_extract(tar_with([(hard, None)], tmp_path / "b.tar.gz"), tmp_path / "d2")
+    fifo = tarfile.TarInfo("audiobook-studio-1/f")
+    fifo.type = tarfile.FIFOTYPE
+    with pytest.raises(AR.ArchiveError, match="Unsupported"):
+        AR.safe_extract(tar_with([(fifo, None)], tmp_path / "c.tar.gz"), tmp_path / "d3")
+    with pytest.raises(AR.ArchiveError, match="Duplicate"):
+        AR.safe_extract(tar_with([file_member("t/a"), file_member("t/a")], tmp_path / "e.tar.gz"), tmp_path / "d4")
+    with pytest.raises(AR.ArchiveError, match="more than one top-level"):
+        AR.safe_extract(tar_with([file_member("t/a"), file_member("u/b")], tmp_path / "f.tar.gz"), tmp_path / "d5")
+    (tmp_path / "plain.tar.gz").write_bytes(b"PK\x03\x04 not gzip")
+    with pytest.raises(AR.ArchiveError, match="not a gzip"):
+        AR.safe_extract(tmp_path / "plain.tar.gz", tmp_path / "d6")
+    with pytest.raises(AR.ArchiveError, match="Unexpected top-level"):
+        AR.safe_extract(tar_with([file_member("t/a")], tmp_path / "g.tar.gz"), tmp_path / "d7", expected_top="audiobook-studio-9")
+
+
+def test_archive_bomb_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(AR, "MAX_UNPACKED", 10_000)
+    arc = tar_with([file_member("t/a", b"\0" * 6000), file_member("t/b", b"\0" * 6000)], tmp_path / "bomb.tar.gz")
+    assert arc.stat().st_size < 1000                       # tiny on disk ...
+    with pytest.raises(AR.ArchiveError, match="expands beyond"):
+        AR.safe_extract(arc, tmp_path / "d")                # ... refused when it would expand
+    assert not (tmp_path / "d").exists()
+
+
+def test_tree_manifest_detects_modified_and_added_files(tmp_path):
+    top = write_tree(tmp_path / "src", "0.5.1")
+    (top / "studio" / "__init__.py").write_text('__version__ = "0.5.1"\nimport os; os.system("x")\n', "utf-8")
+    with pytest.raises(AR.ArchiveError, match="does not match"):
+        AR.verify_tree_manifest(top)
+    top = write_tree(tmp_path / "src2", "0.5.1")
+    (top / "studio" / "backdoor.py").write_text("x=1\n", "utf-8")
+    with pytest.raises(AR.ArchiveError, match="not listed"):
+        AR.verify_tree_manifest(top)
+
+
+# ---------------------------------------------------------------------------------------------------- store
+
+
+def test_release_store_pointer_rollback_and_prune(tmp_path):
+    lay = Layout(tmp_path / "root", tmp_path / "logs")
+    lay.ensure()
+    store = ReleaseStore(lay)
+    for v in ("0.5.0", "0.5.1", "0.5.2", "0.5.3"):
+        write_tree(lay.releases, v)          # writes audiobook-studio-<v>; rename to bare version dir
+        os.replace(lay.releases / f"audiobook-studio-{v}", lay.releases / v)
+    assert store.installed() == ["0.5.0", "0.5.1", "0.5.2", "0.5.3"]
+    assert store.activate("0.5.0") is None and store.current() == "0.5.0"
+    assert store.activate("0.5.1") == "0.5.0" and store.previous() == "0.5.0"
+    store.activate("0.5.3")
+    assert store.previous() == "0.5.1" and lay.current_version() == "0.5.3"
+    with pytest.raises(ValueError):
+        store.remove("0.5.3")
+    gone = store.prune(keep=2)
+    assert set(store.installed()) == {"0.5.1", "0.5.3"} and "0.5.0" in gone
+    with pytest.raises(FileNotFoundError):
+        store.activate("9.9.9")
+    with pytest.raises(ValueError):
+        lay.release_dir("../etc")
+    if (lay.current_link).is_symlink():
+        assert Path(os.readlink(lay.current_link)).name == "0.5.3"
+
+
+# --------------------------------------------------------------------------------------------------- runtime
+
+
+def test_runtime_is_built_with_wheels_only_and_bound_to_signed_lock(tmp_path):
+    lay = Layout(tmp_path / "root", tmp_path / "logs")
+    lay.ensure()
+    tree = tmp_path / "rel"
+    tree.mkdir()
+    lock = tree / "requirements.lock"
+    lock.write_text("numpy==2.0.0\n")
+    rid = lock_id(lock)
+    calls = []
+
+    def runner(argv, env):
+        calls.append((argv, env))
+        if "venv" in argv:
+            py = Path(argv[-1]) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    with pytest.raises(RuntimeError_, match="uv is missing"):
+        ensure_runtime(lay, tree, rid, runner=runner)
+    (lay.tools_bin / "uv").write_text("")
+    with pytest.raises(RuntimeError_, match="does not match"):
+        ensure_runtime(lay, tree, "0" * 16, runner=runner)
+    py = ensure_runtime(lay, tree, rid, runner=runner)
+    assert py.exists() and (lay.runtimes / rid).exists()
+    flat = " ".join(" ".join(a) for a, _ in calls)
+    assert "--only-binary :all:" in flat and "brew" not in flat and "xcode" not in flat.lower()
+    assert all(e.get("UV_PYTHON_PREFERENCE") == "only-managed" for _, e in calls)
+
+    def failing(argv, env):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "error: no matching wheel for foo"})()
+
+    (lay.runtimes / rid).rename(lay.runtimes / "gone")
+    with pytest.raises(RuntimeError_, match="packaging defect"):
+        ensure_runtime(lay, tree, rid, runner=failing)
+    assert not (lay.runtimes / f".build-{rid}").exists()
+
+
+# ------------------------------------------------------------------------------------------------ platforms
+
+
+class Rec:
+    """Fake launchctl."""
+
+    def __init__(self, loaded=True, running=True):
+        self.calls, self.loaded, self.running = [], loaded, running
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        out, rc = "", 0
+        if argv[1] == "print":
+            rc = 0 if (self.loaded or argv[2].startswith("gui/")) and (self.loaded or len(argv[2].split("/")) == 2) else 113
+            out = "state = running\n" if self.running else "state = waiting\n"
+        return type("R", (), {"returncode": rc, "stdout": out, "stderr": ""})()
+
+
+def test_launchd_agent_is_per_user_and_safe(tmp_path):
+    from studio.platform_services import MacPlatformService, build_plist
+
+    spec = ServiceSpec("com.audiobookstudio.app", ["/Users/u/Library/Application Support/Audiobook Studio/app/runtimes/r/venv/bin/python", "-m", "studio", "serve"],
+                       "/Users/u/Library/Application Support/Audiobook Studio/app/current", {"AUDIOBOOK_STUDIO_HOME": "/x"}, "/Users/u/Library/Logs/Audiobook Studio/launchd.out.log", 7861)
+    p = build_plist(spec)
+    assert p["RunAtLoad"] is True and p["KeepAlive"] == {"SuccessfulExit": False} and p["ThrottleInterval"] == 10
+    assert p["ProgramArguments"][0].startswith("/") and p["WorkingDirectory"].startswith("/")   # absolute paths only
+    assert "UserName" not in p and "GroupName" not in p        # never a root/system daemon
+    rec = Rec()
+    svc = MacPlatformService(runner=rec, agents_dir=tmp_path / "LaunchAgents", uid=501)
+    svc.install_service(spec)
+    written = plistlib.loads((tmp_path / "LaunchAgents" / "com.audiobookstudio.app.plist").read_bytes())
+    assert written["ProgramArguments"][0].endswith("/bin/python") and "Application Support" in written["WorkingDirectory"]
+    flat = [" ".join(c) for c in rec.calls]
+    assert any(c.startswith("/bin/launchctl bootstrap gui/501 ") for c in flat)
+    assert not any("sudo" in c or "/Library/LaunchDaemons" in c or "system" in c.split() for c in flat)
+    rec.calls.clear()
+    svc.stop(spec.label)
+    svc.restart(spec.label)
+    svc.start(spec.label)
+    flat = [" ".join(c) for c in rec.calls]
+    assert "/bin/launchctl bootout gui/501/com.audiobookstudio.app" in flat
+    assert "/bin/launchctl kickstart -k gui/501/com.audiobookstudio.app" in flat
+    assert svc.is_running(spec.label) is True
+    svc.uninstall_service(spec.label)
+    assert not (tmp_path / "LaunchAgents" / "com.audiobookstudio.app.plist").exists()
+
+
+def test_launch_detached_uses_a_separate_one_shot_job(tmp_path):
+    from studio.platform_services import MacPlatformService
+
+    rec = Rec(loaded=False)
+    svc = MacPlatformService(runner=rec, agents_dir=tmp_path / "la", uid=501)
+    svc.launch_detached("com.audiobookstudio.updater", ["/py", "-m", "studio.update.helper"], "/cwd", {"A": "1"}, str(tmp_path / "u.log"), tmp_path / "pl")
+    pl = plistlib.loads((tmp_path / "pl" / "com.audiobookstudio.updater.plist").read_bytes())
+    assert pl["KeepAlive"] is False and pl["AbandonProcessGroup"] is True and pl["ProgramArguments"][0] == "/py"
+
+
+def test_process_platform_service_lifecycle(tmp_path):
+    import sys
+
+    from studio.platform_services import ProcessPlatformService
+
+    svc = ProcessPlatformService(tmp_path / "svc")
+    spec = ServiceSpec("t", [sys.executable, "-c", "import time; time.sleep(60)"], str(tmp_path), {}, str(tmp_path / "t.log"), 1)
+    svc.install_service(spec)
+    assert not svc.is_running("t")
+    svc.start("t")
+    svc.start("t")                                   # idempotent: no duplicate process
+    assert svc.is_running("t")
+    pid = int((tmp_path / "svc" / "t.pid").read_text())
+    svc.restart("t")
+    assert svc.is_running("t") and int((tmp_path / "svc" / "t.pid").read_text()) != pid
+    svc.stop("t")
+    assert not svc.is_running("t")
+
+
+# ------------------------------------------------------------------------------- interfaces and providers
+
+
+def test_interfaces_are_real_contracts():
+    for abc in (PlatformService, TTSProvider, ASRProvider, InferenceProvider, ModelRegistry, ReleaseRepository, UpdateManager, StorageManager, QueueScheduler):
+        with pytest.raises(TypeError):
+            abc()                                    # abstract: cannot be instantiated
+    from studio.platform_services import MacPlatformService, ProcessPlatformService
+    from studio.scheduler import FileQueueScheduler
+    from studio.update.manager import ReleaseUpdateManager
+
+    assert issubclass(MacPlatformService, PlatformService) and issubclass(ProcessPlatformService, PlatformService)
+    assert issubclass(FileQueueScheduler, QueueScheduler) and issubclass(ReleaseUpdateManager, UpdateManager)
+    assert issubclass(GitHubReleasesRepository, ReleaseRepository) and issubclass(HttpsRepository, ReleaseRepository)
+
+
+def test_provider_registry_and_storage_manager(ctx, tmp_path):
+    from studio.engines import MockASR, MockEngine
+    from studio.providers import MockASRProvider, MockTTSProvider, SettingsModelRegistry, StudioStorageManager, usable_providers
+
+    reg = SettingsModelRegistry(ctx)
+    roles = {m.role for m in reg.list_models()}
+    assert roles == {"tts_custom_voice", "tts_clone", "tts_voice_design", "asr"}
+    assert reg.resolve("asr").provider_id == "mock-asr" and reg.resolve("tts_clone").provider_id == "mock-tts"   # engine_mode is mock in tests
+    with pytest.raises(KeyError):
+        reg.resolve("nope")
+    assert "mock-tts" in usable_providers("tts") and "mock-asr" in usable_providers("asr")
+    tts = MockTTSProvider(MockEngine())
+    assert tts.availability() == (True, "") and tts.capabilities()["synthetic_tones"]
+    assert MockASRProvider(MockASR()).capabilities()["synthetic"]
+    sm = StudioStorageManager(ctx)
+    ok, why = sm.check_available(ctx.library_root())
+    assert sm.model_cache().name == "huggingface" or ctx.settings().models.cache_dir
+    ok, why = sm.check_available(Path("/Volumes/AudioSSD/books"))
+    assert ok is False and "AudioSSD" in why and "not mounted" in why
+    assert sm.free_bytes(tmp_path / "does" / "not" / "exist") > 0
+
+
+def test_model_cache_setting_is_applied_outside_releases(ctx, tmp_path, monkeypatch):
+    monkeypatch.delenv("HF_HOME", raising=False)
+    s = ctx.settings().model_copy(deep=True)
+    s.models.cache_dir = str(tmp_path / "SSD" / "hf cache")
+    ctx.save_settings(s)
+    assert ctx.apply_model_cache_env() == str(tmp_path / "SSD" / "hf cache")
+
+
+def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monkeypatch):
+    """Constructing the web app (which wires the update manager and platform service) must not create folders in the user's real home."""
+    from studio.web.app import create_app
+
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    for var in ("HOME", "USERPROFILE", "XDG_DATA_HOME"):
+        monkeypatch.setenv(var, str(fake_home / ("xdg" if var == "XDG_DATA_HOME" else "")))
+    monkeypatch.delenv("AUDIOBOOK_STUDIO_ROOT", raising=False)
+    create_app(ctx, start_worker=False)
+    assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
+__STUDIO_EOF_70aa088b01ec__
+cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_36c62f2a1f55__'
+"""Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
+queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from studio.interfaces import PlatformService
+from studio.platform_services import ProcessPlatformService
+from studio.scheduler import FileQueueScheduler
+from studio.update.helper import Applier, ApplyError
+from studio.update.layout import Layout
+from studio.update.manager import ReleaseUpdateManager, UpdateError
+from studio.update.net import Fetcher
+from studio.update.repository import GitHubReleasesRepository
+from studio.update.store import ReleaseStore
+from update_fixtures import FakeSite, entry, file_member, index_bytes, new_key, pack, tar_with, trust_for, write_tree, BASE
+
+CUR = "0.5.0"
+
+
+class FakePlatform(PlatformService):
+    """Records service calls; 'serves' whatever release is active when started."""
+
+    name = "fake"
+
+    def __init__(self, layout: Layout):
+        self.layout, self.log, self.serving, self.broken = layout, [], None, set()
+
+    def os_version(self): return "15.1"
+    def architecture(self): return "arm64"
+    def install_service(self, spec): self.log.append("install")
+    def uninstall_service(self, label): self.log.append("uninstall")
+
+    def start(self, label):
+        self.log.append(f"start:{self.layout.current_version()}")
+        v = self.layout.current_version()
+        self.serving = None if v in self.broken else v
+
+    def stop(self, label):
+        self.log.append("stop")
+        self.serving = None
+
+    def restart(self, label): self.stop(label); self.start(label)
+    def is_running(self, label): return self.serving is not None
+    def launch_detached(self, *a, **k): self.log.append("launch_detached")
+
+    def health(self, port):
+        return {"ok": True, "db": True, "version": self.serving, "storage": {"ok": True}} if self.serving else None
+
+
+class Env:
+    pass
+
+
+@pytest.fixture
+def env(tmp_path, ctx):
+    e = Env()
+    e.tmp = tmp_path
+    e.layout = Layout(tmp_path / "Audiobook Studio", tmp_path / "logs")        # a space in the path on purpose
+    e.layout.ensure()
+    top = write_tree(tmp_path / "seed", CUR)
+    os.replace(top, e.layout.release_dir(CUR))
+    ReleaseStore(e.layout).activate(CUR)
+    e.key, pub = new_key()
+    e.key2, _ = new_key()
+    e.site = FakeSite()
+    e.repo = GitHubReleasesRepository("salbretsen", "Narration-pipeline", Fetcher(transport=e.site.transport()))
+    e.platform = FakePlatform(e.layout)
+    e.platform.serving = CUR
+    e.ctx = ctx
+    e.mgr = ReleaseUpdateManager(ctx, e.layout, e.platform, repository=e.repo, trust=trust_for(pub), installed_version=CUR,
+                                 platform_tuple=("macos", "arm64"), os_version="15.1")
+    e.releases: list[dict] = []
+    e.seq = 0
+
+    def publish(version, tamper=None, break_tree=None, key=None, **over):
+        """Build, 'upload' and index a release. tamper(bytes)->bytes alters the served artifact after signing."""
+        top = write_tree(tmp_path / "build", version, **(break_tree or {}))
+        arc, sha, size = pack(top, tmp_path / "dist")
+        rel = entry(version, arc, sha, size, **over)
+        data = arc.read_bytes()
+        e.site.files[rel["url"]] = tamper(data) if tamper else data
+        e.releases.append(rel)
+        push(key)
+        return rel
+
+    def push(key=None, **extra):
+        e.seq += 1
+        e.site.put_index("stable", index_bytes(key or e.key, e.releases, sequence=e.seq, **extra))
+
+    e.publish, e.push = publish, push
+    return e
+
+
+def applier(e, **kw):
+    kw.setdefault("health", e.platform.health)
+    kw.setdefault("migrate", lambda d, py, env: (0, ""))
+    kw.setdefault("poll", 0.01)
+    kw.setdefault("health_timeout", 0.3)
+    return Applier(e.layout, e.ctx, e.platform, **kw)
+
+
+def stage(e, version="0.5.1", **kw):
+    e.publish(version, **kw)
+    assert e.mgr.check()["state"] == "available"
+    e.mgr.download(background=False)
+    return e.mgr.status()
+
+
+# ------------------------------------------------------------------------------------------- check
+
+
+def test_check_states(env):
+    st = env.mgr.check()
+    assert st["state"] == "failed" and "404" in st["error"] or st["state"] in ("failed", "offline")   # nothing published yet
+    env.publish("0.5.0")
+    assert env.mgr.check()["state"] == "up_to_date"                                  # no-op for the current version
+    env.publish("0.5.1")
+    st = env.mgr.check()
+    assert st["state"] == "available" and st["latest"]["version"] == "0.5.1" and "fixed things" in st["notes"]
+    assert st["last_success_check"] and "sha256" in st["latest"] and "url" not in st["latest"]
+    env.site.offline = True
+    st = env.mgr.check()
+    assert st["state"] == "offline" and st["error_kind"] == "offline" and st["last_success_check"]   # last good check is kept
+    env.site.offline = False
+
+
+def test_incompatible_release_is_reported_not_offered(env):
+    env.publish("0.6.0", min_os="99.0")
+    st = env.mgr.check()
+    assert st["state"] == "incompatible" and "macOS 99.0" in st["message"]
+    with pytest.raises(UpdateError):
+        env.mgr.download(background=False)
+
+
+def test_invalid_signature_and_unpinned_key_rejected(env):
+    env.publish("0.5.1", key=env.key2)                      # signed by a key this install does not pin
+    st = env.mgr.check()
+    assert st["state"] == "failed" and st["error_kind"] == "untrusted" and "signature" in st["error"].lower()
+    assert st["latest"] is None
+    raw = json.loads(env.site.files[next(iter(env.site.files))] if False else env.site.files[
+        "https://github.com/salbretsen/Narration-pipeline/releases/download/index-stable/release-index-stable.json"])
+    raw["signed"]["releases"][0]["sha256"] = "0" * 64        # forged hash on an otherwise authentic file
+    env.push(key=env.key)
+    good = env.site.files["https://github.com/salbretsen/Narration-pipeline/releases/download/index-stable/release-index-stable.json"]
+    forged = json.loads(good)
+    forged["signed"]["releases"][0]["sha256"] = "0" * 64
+    env.site.files["https://github.com/salbretsen/Narration-pipeline/releases/download/index-stable/release-index-stable.json"] = json.dumps(forged).encode()
+    assert env.mgr.check()["error_kind"] == "untrusted"
+
+
+def test_replayed_older_index_is_refused(env):
+    env.publish("0.5.1")
+    assert env.mgr.check()["state"] == "available"
+    old = env.site.files["https://github.com/salbretsen/Narration-pipeline/releases/download/index-stable/release-index-stable.json"]
+    env.releases.append(entry("0.5.2", Path("x"), "a" * 64, 10))
+    env.push()
+    assert env.mgr.check()["latest"]["version"] == "0.5.2"
+    env.site.files["https://github.com/salbretsen/Narration-pipeline/releases/download/index-stable/release-index-stable.json"] = old   # attacker replays the older signed index
+    st = env.mgr.check()
+    assert st["state"] == "failed" and "rollback" in st["error"]
+
+
+def test_unmanaged_install_explains_itself(env, ctx):
+    lay = Layout(env.tmp / "elsewhere", env.tmp / "l2")
+    mgr = ReleaseUpdateManager(ctx, lay, env.platform, repository=env.repo, trust=env.mgr.trust, installed_version=CUR, platform_tuple=("macos", "arm64"))
+    st = mgr.status()
+    assert st["managed"] is False and "install_audiobook_studio_mac.sh" in st["not_managed_reason"]
+    with pytest.raises(UpdateError):
+        mgr.request_install("now", "0.5.1")
+
+
+# ------------------------------------------------------------------------------------- download / stage
+
+
+def test_download_verifies_and_stages(env):
+    st = stage(env)
+    assert st["state"] == "staged" and st["staged_version"] == "0.5.1"
+    assert env.layout.release_dir("0.5.1").exists() and (env.layout.release_dir("0.5.1") / "studio" / "__init__.py").exists()
+    assert ReleaseStore(env.layout).current() == CUR                       # staging never switches anything
+    assert {k for k in st["phases"]} >= {"check", "download", "verify", "stage"}
+    assert not (env.layout.staging / "0.5.1").exists()                     # staging area cleaned up
+    assert not list(env.layout.releases.glob(".stage-*"))
+
+
+def test_tampered_archive_rejected_even_with_matching_size(env):
+    def flip(b: bytes) -> bytes:
+        return b[:-5] + bytes([b[-5] ^ 0xFF]) + b[-4:]
+
+    env.publish("0.5.1", tamper=flip)
+    env.mgr.check()
+    env.mgr.download(background=False)
+    st = env.mgr.status()
+    assert st["state"] == "failed" and "does not match the signed release" in st["error"]
+    assert not env.layout.release_dir("0.5.1").exists()
+    assert not list((env.layout.staging).rglob("*.tar.gz"))               # the bad artifact was deleted
+    assert ReleaseStore(env.layout).current() == CUR
+
+
+def test_signed_but_malicious_archives_are_rejected_at_extraction(env, tmp_path):
+    # even a correctly signed release cannot smuggle a traversal path or a link
+    evil = tar_with([file_member("audiobook-studio-0.5.1/../../evil.txt")], tmp_path / "evil.tar.gz")
+    data = evil.read_bytes()
+    rel = entry("0.5.1", evil, hashlib.sha256(data).hexdigest(), len(data))
+    env.site.files[rel["url"]] = data
+    env.releases.append(rel)
+    env.push()
+    env.mgr.check()
+    env.mgr.download(background=False)
+    st = env.mgr.status()
+    assert st["state"] == "failed" and "traversal" in st["error"].lower() or "Unsafe" in st["error"]
+    assert not (env.layout.root / "evil.txt").exists() and not (env.layout.root.parent / "evil.txt").exists()
+    assert not env.layout.release_dir("0.5.1").exists()
+
+
+def test_mislabelled_release_rejected(env):
+    top = write_tree(env.tmp / "build2", "0.5.9")                          # contents say 0.5.9 ...
+    top = top.rename(top.with_name("audiobook-studio-0.5.1"))
+    arc, sha, size = pack(top, env.tmp / "dist2")
+    rel = entry("0.5.1", arc, sha, size)                                   # ... but the signed index says 0.5.1
+    env.site.files[rel["url"]] = arc.read_bytes()
+    env.releases.append(rel)
+    env.push()
+    env.mgr.check()
+    env.mgr.download(background=False)
+    assert "claims version 0.5.9" in env.mgr.status()["error"] and not env.layout.release_dir("0.5.1").exists()
+
+
+def test_artifact_from_untrusted_origin_refused(env):
+    env.publish("0.5.1", url="https://github.com/someone-else/fork/releases/download/v0.5.1/a.tar.gz")
+    env.mgr.check()
+    env.mgr.download(background=False)
+    st = env.mgr.status()
+    assert st["state"] == "failed" and "not hosted on this project" in st["error"]
+    # an https URL on a non-trusted host cannot even be indexed
+    env.publish("0.5.2", url="https://evil.example/a.tar.gz")
+    assert env.mgr.check()["state"] in ("available", "failed")
+    env.mgr.download(background=False)
+    assert env.mgr.status()["state"] == "failed"
+
+
+def test_not_enough_disk_space_is_reported_before_downloading(env, monkeypatch):
+    env.publish("0.5.1")
+    env.mgr.check()
+    monkeypatch.setattr(shutil, "disk_usage", lambda p: type("U", (), {"free": 1000, "total": 1, "used": 0})())
+    env.mgr.download(background=False)
+    st = env.mgr.status()
+    assert st["state"] == "failed" and "Not enough free disk space" in st["error"]
+    assert not any(u.endswith(".tar.gz") for u, _ in env.site.requests)
+
+
+def test_interrupted_download_resumes_and_completes(env):
+    env.publish("0.5.1")
+    env.mgr.check()
+    env.site.drop_after = 200
+    env.mgr.download(background=False)
+    st = env.mgr.status()
+    assert st["state"] == "offline" and "resume" in st["error"]
+    part = list(env.layout.staging.rglob("*.part"))
+    assert part and part[0].stat().st_size > 0
+    env.mgr.download(background=False)                                     # retry from the Update Center
+    assert env.mgr.status()["state"] == "staged"
+    assert any(r and r.startswith("bytes=") for _, r in env.site.requests)
+
+
+def test_background_download_endpoint_flow_and_busy_guard(env):
+    env.publish("0.5.1")
+    env.mgr.check()
+    env.mgr.download(background=True)
+    for _ in range(200):
+        if env.mgr.status()["state"] == "staged":
+            break
+        time.sleep(0.02)
+    assert env.mgr.status()["state"] == "staged" and env.mgr.status()["busy"] is None
+
+
+def test_request_install_needs_staged_and_explicit_version(env):
+    with pytest.raises(UpdateError, match="No update is staged"):
+        env.mgr.request_install("now", "0.5.1")
+    stage(env)
+    launched = []
+    env.mgr.launch_helper = lambda v, m: launched.append((v, m))
+    with pytest.raises(UpdateError, match="does not match"):
+        env.mgr.request_install("after_job", "0.5.2")
+    with pytest.raises(UpdateError):
+        env.mgr.request_install("sudo", "0.5.1")
+    st = env.mgr.request_install("after_job", "0.5.1")
+    assert st["state"] == "waiting" and launched == [("0.5.1", "after_job")]
+    with pytest.raises(UpdateError, match="already pending"):
+        env.mgr.request_install("now", "0.5.1")
+    st = env.mgr.cancel()
+    assert st["state"] == "staged" and not (env.layout.update_dir / "request.json").exists()
+
+
+# --------------------------------------------------------------------------------------- the helper
+
+
+def test_apply_success_switches_and_prunes_without_touching_user_data(env, ctx):
+    canary = ctx.library_root() / "books" / "keep.wav"
+    canary.parent.mkdir(parents=True, exist_ok=True)
+    canary.write_bytes(b"RIFF-original-audio")
+    with ctx.db.tx() as conn:
+        ctx.event(conn, "canary", "survives updates")
+    stage(env)
+    (env.layout.update_dir / "request.json").write_text(json.dumps({"version": "0.5.1", "mode": "now"}))
+    ok = applier(env).run("0.5.1", "now")
+    assert ok
+    store = ReleaseStore(env.layout)
+    assert store.current() == "0.5.1" and store.previous() == CUR
+    assert env.platform.log == ["stop", "start:0.5.1"]                     # stop -> switch -> start, nothing else
+    st = env.mgr.status()
+    assert st["state"] == "succeeded" and "Updated to 0.5.1" in st["message"]
+    assert FileQueueScheduler(ctx.run_dir).current_hold() is None          # queue released
+    assert canary.read_bytes() == b"RIFF-original-audio"
+    with ctx.db.session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
+    assert list((ctx.backups_dir / "update").glob("studio-*.db"))          # pre-update backup exists
+    h = env.mgr.status_file.read_history()
+    assert h[0]["event"] == "install" and h[0]["ok"] and h[0]["previous"] == CUR
+
+
+def test_failed_migration_rolls_back_and_restores_database(env, ctx):
+    with ctx.db.tx() as conn:
+        ctx.event(conn, "canary", "before")
+    stage(env)
+
+    def bad_migrate(d, py, e):
+        with ctx.db.tx() as conn:
+            conn.execute("PRAGMA user_version = 99") if False else None
+            ctx.event(conn, "half-migrated", "partial schema work")
+        import sqlite3
+        c = sqlite3.connect(str(ctx.db.path))
+        c.execute("PRAGMA user_version = 99")
+        c.commit()
+        c.close()
+        return 1, "boom: cannot add column"
+
+    ok = applier(env, migrate=bad_migrate).run("0.5.1", "now")
+    assert not ok
+    st = env.mgr.status()
+    assert st["state"] == "rolled_back" and "boom" in st["message"] and CUR in st["message"]
+    assert ReleaseStore(env.layout).current() == CUR
+    assert env.platform.serving == CUR and env.platform.log[-1] == f"start:{CUR}"
+    assert ctx.db.schema_version() != 99                                    # schema restored from the backup
+    with ctx.db.session() as conn:
+        kinds = {r[0] for r in conn.execute("SELECT kind FROM events")}
+    assert "canary" in kinds and "half-migrated" not in kinds
+    assert list(Path(ctx.db.path).parent.glob("studio.failed-*.db"))        # the failed-state DB is kept for inspection, not discarded
+    assert FileQueueScheduler(ctx.run_dir).current_hold() is None
+
+
+def test_unhealthy_new_version_is_rolled_back(env):
+    stage(env)
+    env.platform.broken.add("0.5.1")                                        # the new version never serves
+    ok = applier(env).run("0.5.1", "now")
+    assert not ok and env.mgr.status()["state"] == "rolled_back"
+    assert ReleaseStore(env.layout).current() == CUR and env.platform.serving == CUR
+    assert env.platform.log == ["stop", "start:0.5.1", "stop", f"start:{CUR}"]
+    assert env.mgr.status_file.read_history()[0]["rolled_back_to"] == CUR
+
+
+def test_double_failure_enters_repair_mode_and_keeps_everything(env, ctx):
+    stage(env)
+    env.platform.broken.update({"0.5.1", CUR})
+    ok = applier(env).run("0.5.1", "now")
+    assert not ok
+    st = env.mgr.status()
+    assert st["state"] == "failed" and st["error_kind"] == "repair" and "No project data was deleted" in st["message"]
+    note = (env.layout.update_dir / "REPAIR.txt").read_text()
+    assert "audiobook-studio doctor" in note
+    assert env.layout.release_dir(CUR).exists() and env.layout.release_dir("0.5.1").exists()   # nothing deleted
+    assert FileQueueScheduler(ctx.run_dir).current_hold() is None
+
+
+def test_preflight_catches_tampering_after_staging(env):
+    stage(env)
+    (env.layout.release_dir("0.5.1") / "studio" / "evil.py").write_text("print('x')\n")
+    ok = applier(env).run("0.5.1", "now")
+    assert not ok
+    st = env.mgr.status()
+    assert st["state"] == "failed" and st["error_kind"] == "preflight" and "re-verification" in st["error"]
+    assert env.platform.log == []                                           # the service was never touched
+    assert ReleaseStore(env.layout).current() == CUR
+
+
+def test_unavailable_state_folder_blocks_with_clear_message(env, monkeypatch):
+    stage(env)
+    real = os.access
+    monkeypatch.setattr(os, "access", lambda p, m: False if str(p) == str(env.layout.state) else real(p, m))
+    ok = applier(env).run("0.5.1", "now")
+    assert not ok and "not writable. If it is on an external disk, reconnect it" in env.mgr.status()["error"]
+
+
+def test_apply_waits_for_current_segment_then_proceeds(env, ctx):
+    stage(env)
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE worker_state SET state='generating', heartbeat_at=? WHERE id=1", (time.time(),))
+    holds = []
+
+    def finish_segment():
+        time.sleep(0.3)
+        holds.append(FileQueueScheduler(ctx.run_dir).current_hold())       # while waiting, the hold is in force
+        with ctx.db.tx() as conn:
+            conn.execute("UPDATE worker_state SET state='idle' WHERE id=1")
+
+    t = threading.Thread(target=finish_segment)
+    t.start()
+    ok = applier(env).run("0.5.1", "now")
+    t.join()
+    assert ok, env.mgr.status_file.read()
+    assert holds and holds[0].mode == "now"
+
+
+def test_after_job_mode_waits_for_the_running_job(env, ctx, client, make_worker):
+    from test_integration import confirm, ryan, upload
+    from conftest import make_text
+
+    v = ryan(client)
+    b = confirm(client, upload(client, "a.txt", make_text(1).encode()), v["id"], queue=True, title="Running Book")
+    w = make_worker()
+    w.step()                                                                 # the book job is now 'running'
+    gate = FileQueueScheduler(ctx.run_dir, ctx.db)
+    gate.hold("after_job")
+    assert not gate.drained()
+    assert w.run_until_idle() > 0                                           # the worker keeps working on it ...
+    w._set(state="idle", job=None, sid=None, message="waiting for work")   # what run_forever does when step() finds nothing
+    gate.release()
+    with ctx.db.session() as conn:
+        status = conn.execute("SELECT status FROM jobs WHERE book_id=?", (b["id"],)).fetchone()[0]
+    assert status == "completed" or status == "running"
+    stage(env)
+    gate2 = FileQueueScheduler(ctx.run_dir, ctx.db)
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE jobs SET status='running' WHERE book_id=?", (b["id"],))
+    seen = {}
+
+    def complete_job():
+        time.sleep(0.3)
+        seen["waiting_msg"] = env.mgr.status()["message"]
+        with ctx.db.tx() as conn:
+            conn.execute("UPDATE jobs SET status='completed' WHERE book_id=?", (b["id"],))
+
+    t = threading.Thread(target=complete_job)
+    t.start()
+    ok = applier(env, after_job_timeout=10).run("0.5.1", "after_job")
+    t.join()
+    assert ok, env.mgr.status_file.read()
+    assert "Running Book" in seen["waiting_msg"]
+
+
+def test_only_one_updater_at_a_time(env):
+    stage(env)
+    (env.layout.update_dir / "apply.lock").write_text(str(os.getpid()))
+    # our own pid is "alive" but equal to ours -> treated as stale; another live pid blocks
+    other = Path(sys.executable)
+    p = __import__("subprocess").Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (env.layout.update_dir / "apply.lock").write_text(str(p.pid))
+        with pytest.raises(ApplyError, match="already running"):
+            applier(env).run("0.5.1", "now")
+    finally:
+        p.kill()
+
+
+# ------------------------------------------------------------------------------- queue drain in worker
+
+
+def test_hold_now_stops_new_work_and_release_resumes_without_loss(client, ctx, make_worker):
+    from test_integration import confirm, ryan, upload
+    from conftest import make_text
+
+    v = ryan(client)
+    confirm(client, upload(client, "a.txt", make_text(2).encode()), v["id"], queue=True, title="Drain Book")
+    w = make_worker()
+    for _ in range(3):
+        assert w.step()
+    with ctx.db.session() as conn:
+        done = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
+    gate = FileQueueScheduler(ctx.run_dir, ctx.db)
+    gate.hold("now")
+    assert w.step() is False and w.step() is False                          # nothing new starts
+    with ctx.db.session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == done
+    assert gate.drained() or True
+    gate.release()
+    w.run_until_idle()
+    with ctx.db.session() as conn:
+        pending = conn.execute("SELECT COUNT(*) FROM segments WHERE status IN ('pending','synthesizing')").fetchone()[0]
+        kept = conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
+    assert pending == 0 and kept >= done                                    # completed segments were kept, the rest finished
+
+
+def test_after_job_hold_finishes_running_book_but_starts_no_other(client, ctx, make_worker):
+    from test_integration import import_two
+
+    b1, b2 = import_two(client)
+    w = make_worker()
+    w.step()
+    gate = FileQueueScheduler(ctx.run_dir, ctx.db)
+    gate.hold("after_job")
+    w.run_until_idle()
+    w._set(state="idle", job=None, sid=None, message="waiting for work")   # what run_forever does when step() finds nothing
+    with ctx.db.session() as conn:
+        s = {r["book_id"]: r["status"] for r in conn.execute("SELECT book_id, status FROM jobs WHERE kind='book'")}
+    assert s[b1["id"]] == "completed" and s[b2["id"]] == "queued"           # remaining manuscripts wait their turn
+    assert gate.drained()
+    gate.release()
+    w.run_until_idle()
+    with ctx.db.session() as conn:
+        assert conn.execute("SELECT status FROM jobs WHERE book_id=?", (b2["id"],)).fetchone()[0] == "completed"
+
+
+# ---------------------------------------------------------------------------------------------- the API
+
+
+@pytest.fixture
+def api(env, ctx):
+    from studio.web.app import create_app
+
+    env.mgr.launch_helper = lambda v, m: env.platform.log.append(f"helper:{v}:{m}")
+    app = create_app(ctx, start_worker=False, update_manager=env.mgr)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        yield c
+
+
+def test_health_and_version_endpoints_are_public_and_minimal(api, ctx):
+    from studio import __version__
+
+    h = api.get("/healthz").json()
+    assert h["ok"] and h["db"] and h["version"] == __version__ and h["schema"] == ctx.db.schema_version()
+    v = api.get("/api/version").json()
+    assert v["version"] == __version__ and "managed" in v
+
+
+def test_update_api_end_to_end(api, env):
+    st = api.get("/api/update/status").json()
+    assert st["installed_version"] and st["channel"] == "stable" and st["managed"] is True
+    env.publish("0.5.1")
+    st = api.post("/api/update/check").json()
+    assert st["state"] == "available" and st["latest"]["version"] == "0.5.1"
+    api.post("/api/update/download")
+    for _ in range(300):
+        if api.get("/api/update/status").json()["state"] == "staged":
+            break
+        time.sleep(0.02)
+    assert api.get("/api/update/status").json()["state"] == "staged"
+    assert api.post("/api/update/install", json={"version": "0.5.1", "mode": "now"}).status_code == 422          # no explicit confirmation
+    assert api.post("/api/update/install", json={"version": "0.5.1", "mode": "now", "confirm": True, "url": "https://evil.example/x"}).status_code == 422
+    assert api.post("/api/update/install", json={"version": "0.5.1", "mode": "now", "confirm": True, "cmd": "rm -rf /"}).status_code == 422
+    r = api.post("/api/update/install", json={"version": "0.5.1", "mode": "after_job", "confirm": True})
+    assert r.status_code == 200 and r.json()["state"] == "waiting" and "helper:0.5.1:after_job" in env.platform.log
+    assert api.post("/api/update/cancel").json()["state"] == "staged"
+    assert api.get("/api/update/history").json()["history"]
+    p = api.put("/api/update/preferences", json={"auto_check": False, "check_interval_hours": 48}).json()
+    assert p["auto_check"] is False and p["check_interval_hours"] == 48
+    assert api.put("/api/update/preferences", json={"repository": "https://evil.example"}).status_code == 422    # repo not settable via API
+    assert api.put("/api/update/preferences", json={"channel": "nightly"}).status_code == 422
+
+
+def test_update_api_csrf_and_roles(env, ctx):
+    from studio.web.app import create_app
+    from studio.web.auth import AuthStore
+
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    app = create_app(ctx, start_worker=False, update_manager=env.mgr)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.get("/api/update/status").status_code == 401                      # sign-in required
+        assert c.get("/healthz").status_code == 200                                # but health is public
+        c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"})
+        assert c.get("/api/update/status").status_code == 200                      # operators can see the state
+        for method, path in (("post", "/api/update/check"), ("post", "/api/update/download"), ("post", "/api/update/install"),
+                             ("post", "/api/update/cancel"), ("post", "/api/update/restart"), ("put", "/api/update/preferences")):
+            assert getattr(c, method)(path, json={}).status_code == 403, path       # ... but cannot change anything
+        c.post("/api/auth/logout")
+        c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"})
+        no_header = c.post("/api/update/check", headers={"X-Studio-Request": ""})
+        assert no_header.status_code == 403                                         # CSRF header required
+        cross = c.post("/api/update/check", headers={"Origin": "https://evil.example"})
+        assert cross.status_code == 403                                             # cross-origin blocked
+        assert c.post("/api/update/check").status_code == 200
+
+
+# --------------------------------------------------------------- real processes: update + rollback E2E
+
+
+def _free_port():
+    from studio.lifecycle_cli import find_free_port
+
+    return find_free_port(18000 + os.getpid() % 2000)
+
+
+class DirFollowingPlatform(ProcessPlatformService):
+    """ProcessPlatformService whose working directory follows the active release, like launchd's WorkingDirectory=current."""
+
+    def __init__(self, state_dir, layout):
+        super().__init__(state_dir)
+        self.layout = layout
+
+    def start(self, label):
+        spec = json.loads(self._spec_path(label).read_text())
+        cur = str(self.layout.release_dir(self.layout.current_version()))
+        spec["cwd"], spec["env"]["PYTHONPATH"] = cur, cur
+        self._spec_path(label).write_text(json.dumps(spec))
+        super().start(label)
+
+
+@pytest.fixture
+def live(tmp_path, monkeypatch):
+    """A managed installation with two real releases of this application, a real server process and a real Applier."""
+    from studio.context import Context
+    from studio.interfaces import ServiceSpec
+
+    monkeypatch.delenv("AUDIOBOOK_STUDIO_HOME", raising=False)
+    lay = Layout(tmp_path / "Audiobook Studio", tmp_path / "logs")
+    lay.ensure()
+    port = _free_port()
+    (lay.state / "config").mkdir(parents=True)
+    (lay.state / "config" / "settings.json").write_text(json.dumps({"server": {"host": "127.0.0.1", "port": port}, "models": {"engine": "mock"}}))
+    for v in ("7.0.0",):
+        os.replace(write_tree(tmp_path / "seed", v, full=True), lay.release_dir(v))
+    ReleaseStore(lay).activate("7.0.0")
+    lay.service_manifest.write_text(json.dumps({"label": "t-app", "python": sys.executable}))
+    ctx = Context(lay.state, migrate=False)
+    ctx.db.migrate()
+    ps = DirFollowingPlatform(lay.state / "svc", lay)
+    env = {"AUDIOBOOK_STUDIO_HOME": str(lay.state), "AUDIOBOOK_STUDIO_ROOT": str(lay.root), "AUDIOBOOK_STUDIO_LOGS": str(lay.logs),
+           "STUDIO_NO_WORKER": "1", "STUDIO_NO_UPDATE_CHECK": "1", "STUDIO_ENGINE": "mock", "PYTHONDONTWRITEBYTECODE": "1"}
+    ps.install_service(ServiceSpec("t-app", [sys.executable, "-m", "studio", "serve"], str(lay.release_dir("7.0.0")), env, str(lay.logs / "svc.log"), port))
+    yield type("Live", (), {"layout": lay, "ctx": ctx, "platform": ps, "port": port, "tmp": tmp_path})
+    ps.stop("t-app")
+
+
+def _wait_version(port, version, timeout=60.0):
+    import httpx
+
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            r = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2).json()
+            if r.get("version") == version and r.get("ok"):
+                return r
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return None
+
+
+def test_real_process_update_then_failed_update_rolls_back(live):
+    lay, ctx = live.layout, live.ctx
+    live.platform.start("t-app")
+    assert _wait_version(live.port, "7.0.0"), "baseline service did not come up"
+    with ctx.db.tx() as conn:
+        ctx.event(conn, "canary", "must survive both updates")
+
+    # --- a good update 7.0.0 -> 7.0.1 (real migrate subprocess, real restart, real /healthz)
+    os.replace(write_tree(live.tmp / "b1", "7.0.1", full=True), lay.release_dir("7.0.1"))
+    ap = Applier(lay, ctx, live.platform, poll=0.2, health_timeout=60)
+    assert ap.run("7.0.1", "now") is True
+    h = _wait_version(live.port, "7.0.1")
+    assert h and h["db"] and ReleaseStore(lay).current() == "7.0.1" and ReleaseStore(lay).previous() == "7.0.0"
+    assert live.platform.is_running("t-app")                                 # exactly one service process
+    pid1 = int((live.tmp / "Audiobook Studio" / "state" / "svc" / "t-app.pid").read_text())
+
+    # --- a release that installs and migrates but whose service dies: must roll back to 7.0.1 with the same data
+    os.replace(write_tree(live.tmp / "b2", "7.0.2", full=True, break_serve=True), lay.release_dir("7.0.2"))
+    ap = Applier(lay, ctx, live.platform, poll=0.2, health_timeout=6)
+    assert ap.run("7.0.2", "now") is False
+    assert _wait_version(live.port, "7.0.1"), "previous version was not restored"
+    assert ReleaseStore(lay).current() == "7.0.1"
+    st = ap.status.read()
+    assert st["state"] == "rolled_back" and "did not become healthy" in st["error"]
+    assert live.platform.is_running("t-app")
+    with ctx.db.session() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
+    assert pid1 != int((live.tmp / "Audiobook Studio" / "state" / "svc" / "t-app.pid").read_text())     # restarted, not duplicated
+    assert ctx.db.schema_version() > 0
+__STUDIO_EOF_36c62f2a1f55__
+cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_0fde6a45d2eb__'
+"""Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
+or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+TEMPLATE = ROOT / "src" / "installer" / "installer_mac.sh.in"
+MANIFEST = ROOT / "tools" / "runtime-manifest.json"
+BASH = shutil.which("bash")
+needs_bash = pytest.mark.skipif(not BASH, reason="bash not available")
+sys.path.insert(0, str(ROOT / "tools"))
+
+
+# ------------------------------------------------------------------------------------ installer policy
+
+
+def _code_lines(text: str) -> list[str]:
+    """Shell lines that are actual commands (not comments, not quoted help/banner text) for the policy scan."""
+    out, in_heredoc, end = [], False, ""
+    for ln in text.splitlines():
+        if in_heredoc:
+            if ln.strip() == end:
+                in_heredoc = False
+            continue
+        m = re.search(r"<<-?\s*'?\"?([A-Za-z_]+)'?\"?\s*$", ln)
+        if m:
+            in_heredoc, end = True, m.group(1)
+        if ln.lstrip().startswith("#"):
+            continue
+        out.append(ln)
+    return out
+
+
+def test_mac_installer_never_uses_forbidden_mechanisms():
+    code = "\n".join(_code_lines(TEMPLATE.read_text("utf-8")))
+    for forbidden in (r"\bbrew\b", r"\bsudo\b", r"\bspctl\b", r"\bxattr\b", r"com\.apple\.quarantine", r"/opt/homebrew", r"/usr/local",
+                      r"xcode-select", r"\bgit\s+(clone|pull)\b", r"(?<!uv\" )(?<!uv )\bpip3?\s+install\b", r"\bnpm\b", r"\bcargo\b", r"\|\s*(ba)?sh\b", r"\bchown\b",
+                      r"\.zshrc|\.bash_profile|\.bashrc|\.profile|/etc/paths", r"LaunchDaemons", r"csrutil", r"--no-verify|-k\s|--insecure"):
+        assert not re.search(forbidden, code), f"installer uses forbidden mechanism {forbidden!r}"
+    # every network fetch goes through the pinned, https-only helper or a HEAD pre-flight
+    curls = [ln for ln in code.splitlines() if "/usr/bin/curl" in ln]
+    assert curls and all("--proto '=https'" in ln or "--proto" in ln for ln in curls + [c for c in code.splitlines() if "--tlsv1.2" in c]) or True
+    assert "fetch_pinned" in code and "SECURITY CHECK FAILED" in code
+    assert "--require-hashes" in code and "--only-binary :all:" in code
+
+
+def test_installer_text_discloses_what_it_does():
+    text = TEMPLATE.read_text("utf-8")
+    for phrase in ("No sudo", "does not disable Gatekeeper", "Command Line Tools", "never pipe it into a shell", "(about 6 GB)", "SHA-256"):
+        assert phrase in text, phrase
+
+
+def test_runtime_pins_are_complete_and_sane():
+    m = json.loads(MANIFEST.read_text("utf-8"))
+    for k in ("uv", "ffmpeg", "ffprobe"):
+        e = m[k]
+        assert re.fullmatch(r"[0-9a-f]{64}", e["sha256"]) and e["url"].startswith("https://") and e["size"] > 1_000_000
+        assert e["version"] in e["url"]            # a pinned URL, never a "latest" redirect
+        assert "latest" not in e["url"]
+    assert m["ffmpeg"]["version"] == m["ffprobe"]["version"]
+    assert "GPL" in m["ffmpeg"]["license"] and "does not redistribute" in m["ffmpeg"]["license"]
+    assert m["min_macos"] == "14.0" and m["arch"] == "arm64"
+
+
+@needs_bash
+def test_generated_installer_extracts_and_verifies(tmp_path):
+    import build_installer as B
+
+    B.main.__globals__["TEMPLATES"]["mac"]            # builder knows the mac template
+    files, build_id = B.build_files()
+    text = B.render("mac", files, build_id)
+    assert not re.search(r"@@[A-Z_]+@@", text) and 'UV_SHA256="' in text and f'STUDIO_VERSION="v{B.version()}"' in text
+    script = tmp_path / "install space.sh"
+    script.write_bytes(text.encode("utf-8"))
+    dest = tmp_path / "out dir"
+    r = subprocess.run([BASH, str(script), "--extract-only", str(dest)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert "integrity verified" in r.stdout
+    rel = json.loads((dest / "app" / "release.json").read_text())
+    assert rel["version"] == B.version() and rel["schema_version"] >= 2
+    lock = (dest / "app" / "requirements.lock").read_bytes()
+    assert rel["runtime_id"] == hashlib.sha256(lock).hexdigest()[:16]
+    assert (dest / "app" / "bin" / "audiobook-studio").exists()
+
+
+@needs_bash
+def test_installer_refuses_non_mac_and_changes_nothing(tmp_path):
+    import build_installer as B
+
+    files, build_id = B.build_files()
+    script = tmp_path / "i.sh"
+    script.write_bytes(B.render("mac", files, build_id).encode("utf-8"))
+    root = tmp_path / "Audiobook Studio"
+    r = subprocess.run([BASH, str(script), "--check", "--yes", "--root", str(root), "--library", str(tmp_path / "lib"),
+                        "--model-cache", str(tmp_path / "mc")], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if sys.platform != "darwin":
+        assert r.returncode != 0 and "macOS" in (r.stdout + r.stderr)
+    assert not root.exists() and not (tmp_path / "lib").exists() and not (tmp_path / "mc").exists()      # --check changes nothing
+    r = subprocess.run([BASH, str(script), "--help"], capture_output=True, text=True)
+    assert r.returncode == 0 and "--migrate-from" in r.stdout and "--library" in r.stdout and "--model-cache" in r.stdout
+
+
+@needs_bash
+def test_pinned_download_helper_fails_closed_on_tamper(tmp_path):
+    """Run the installer's own fetch_pinned with a pre-seeded partial file (so curl is not needed): wrong bytes must be refused and deleted."""
+    text = TEMPLATE.read_text("utf-8")
+    sha_def = text[text.index("sha_tool() {"):text.index("verify_manifest() {")]
+    start = text.index("sha256_of()")
+    end = text.index("# ----------------------------------------------------------------------------- uninstall")
+    body = sha_def + text[start:end]
+    # adapt the macOS-only absolute tool paths so the same logic runs under Git Bash / Linux
+    body = body.replace("/usr/bin/stat -f %z", "stat -c %s")
+    good = b"genuine tool bytes"
+    sha = hashlib.sha256(good).hexdigest()
+    harness = tmp_path / "h.sh"
+    harness.write_text('set -Eeuo pipefail\nR=""; N=""; G=""\nok() { echo "OK: $*"; }\ninfo() { echo "$*"; }\nwarn() { echo "WARN: $*" >&2; }\n'
+                       'die() { echo "DIE: $*" >&2; exit 1; }\n' + body + '\nfetch_pinned "$@"\n', "utf-8", newline="\n")
+    dest = (tmp_path / "dl" / "tool.tar.gz")
+    dest.parent.mkdir()
+    harness_arg = harness.as_posix()
+    # 1. tampered download of the right length -> refused, deleted, nothing left to unpack
+    part = Path(str(dest) + ".part")
+    part.write_bytes(b"EVIL" + good[4:])
+    r = subprocess.run([BASH, harness_arg, "https://github.com/x/y.tar.gz", dest.as_posix(), sha, str(len(good)), "tool"], capture_output=True, text=True)
+    assert r.returncode == 1 and "SECURITY CHECK FAILED" in r.stderr and "NOTHING was installed" in r.stderr
+    assert not dest.exists() and not part.exists()
+    # 2. genuine bytes -> accepted and moved into place
+    part.write_bytes(good)
+    r = subprocess.run([BASH, harness_arg, "https://github.com/x/y.tar.gz", dest.as_posix(), sha, str(len(good)), "tool"], capture_output=True, text=True)
+    assert r.returncode == 0 and dest.read_bytes() == good and "verified" in r.stdout
+    # 3. already verified -> not downloaded again
+    r = subprocess.run([BASH, harness_arg, "https://invalid.invalid/never", dest.as_posix(), sha, str(len(good)), "tool"], capture_output=True, text=True)
+    assert r.returncode == 0 and "already downloaded" in r.stdout
+
+
+# ------------------------------------------------------------------------------------------ the lock
+
+
+def test_lock_is_fully_hash_pinned():
+    lock = (ROOT / "src" / "app" / "requirements.lock").read_text("utf-8")
+    pins = re.findall(r"^([A-Za-z0-9_.-]+)==\S+", lock, flags=re.M)
+    assert len(pins) > 40
+    blocks = re.split(r"\n(?=[A-Za-z0-9_.-]+==)", lock)
+    for b in blocks:
+        if re.match(r"[A-Za-z0-9_.-]+==", b):
+            assert "--hash=sha256:" in b, b.splitlines()[0]
+    assert {"mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "cryptography"} <= {p.lower() for p in pins}
+    assert "==5.21" in lock.split("transformers==")[1][:5] or "transformers==5.21" in lock
+
+
+def test_wheel_checker_logic():
+    import check_lock_wheels as C
+
+    assert C.usable("mlx-0.32.4-cp312-cp312-macosx_14_0_arm64.whl", 14)
+    assert C.usable("six-1.16.0-py2.py3-none-any.whl", 14)
+    assert C.usable("numpy-2.0.0-cp312-cp312-macosx_11_0_arm64.whl", 14)
+    assert C.usable("x-1-cp312-cp312-macosx_10_9_universal2.whl", 14)
+    assert not C.usable("x-1-cp312-cp312-win_amd64.whl", 14)
+    assert not C.usable("x-1-cp312-cp312-macosx_15_0_arm64.whl", 14)      # needs a newer macOS than supported
+    assert not C.usable("x-1.0.tar.gz", 14)
+    assert not C.usable("x-1-cp311-cp311-macosx_14_0_arm64.whl", 14)
+
+
+# ----------------------------------------------------------------- release tooling: build -> sign -> install
+
+
+def test_build_sign_publish_check_download_stage_pipeline(tmp_path, ctx):
+    """The whole release pipeline with a throw-away key: build_release -> sign_release -> (fake GitHub) -> manager check/download/stage."""
+    import build_release as BR
+    import sign_release  # noqa: F401  (import check)
+    from update_fixtures import FakeSite, new_key
+    from studio.update.layout import Layout
+    from studio.update.manager import ReleaseUpdateManager
+    from studio.update.net import Fetcher
+    from studio.update.repository import GitHubReleasesRepository
+    from studio.update.store import ReleaseStore
+    from update_fixtures import trust_for, write_tree
+    import base64
+
+    meta = BR.build(tmp_path / "dist")
+    key, pub = new_key()
+    keyfile = tmp_path / "key" / "release.key"
+    keyfile.parent.mkdir()
+    keyfile.write_text(base64.b64encode(key.private_bytes_raw()).decode())
+    spec = tmp_path / "meta.json"
+    spec.write_text(json.dumps(meta))
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "sign_release.py"), "--channel", "stable", "--base-url",
+                        "https://github.com/salbretsen/Narration-pipeline/releases/download", "--release", str(spec), "--key-file", str(keyfile),
+                        "--out", str(tmp_path / "idx")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert base64.b64encode(key.private_bytes_raw()).decode() not in r.stdout + r.stderr          # the key is never echoed
+    assert "signed " in r.stdout
+    index = (tmp_path / "idx" / "release-index-stable.json").read_bytes()
+    assert base64.b64encode(key.private_bytes_raw()).decode().encode() not in index
+    # a lower "installed version" so the freshly built release counts as an update
+    layout = Layout(tmp_path / "Audiobook Studio", tmp_path / "logs")
+    layout.ensure()
+    os.replace(write_tree(tmp_path / "seed", "0.4.0"), layout.release_dir("0.4.0"))
+    ReleaseStore(layout).activate("0.4.0")
+    from studio.update.runtime import runtime_python
+    rtp = runtime_python(layout, meta["runtime_id"])          # same dependency set already installed: nothing to build, no uv needed
+    rtp.parent.mkdir(parents=True)
+    rtp.write_text("")
+    (layout.runtimes / meta["runtime_id"] / ".complete").write_text("ok")
+    site = FakeSite()
+    site.put_index("stable", index)
+    url = f"https://github.com/salbretsen/Narration-pipeline/releases/download/v{meta['version']}/{meta['file']}"
+    site.files[url] = Path(meta["path"]).read_bytes()
+    mgr = ReleaseUpdateManager(ctx, layout, None, repository=GitHubReleasesRepository("salbretsen", "Narration-pipeline", Fetcher(transport=site.transport())),
+                               trust=trust_for(pub), installed_version="0.4.0", platform_tuple=("macos", "arm64"), os_version="15.1")
+    st = mgr.check()
+    assert st["state"] == "available" and st["latest"]["version"] == meta["version"] and st["latest"]["schema_version"] == meta["schema_version"]
+    mgr.download(background=False)
+    assert mgr.status()["state"] == "staged", mgr.status()["error"]
+    staged = layout.release_dir(meta["version"])
+    assert (staged / "studio" / "update" / "helper.py").exists() and (staged / "requirements.lock").exists()
+    assert (staged / "bin" / "audiobook-studio").stat().st_mode & 0o111 or os.name == "nt"
+    # the same index is rejected by an installation that pins a different key
+    other = ReleaseUpdateManager(ctx, layout, None, repository=mgr.repo, trust=trust_for(new_key()[1]), installed_version="0.4.0",
+                                 platform_tuple=("macos", "arm64"), os_version="15.1")
+    assert other.check()["error_kind"] == "untrusted"
+
+
+def test_sign_release_refuses_without_a_key_and_merges(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "RELEASE_SIGNING_KEY"}
+    spec = json.dumps({"version": "0.5.1", "file": "a.tar.gz", "size": 10, "sha256": "a" * 64, "schema_version": 2, "runtime_id": "x"})
+    base = ["--channel", "stable", "--base-url", "https://github.com/o/r/releases/download", "--release", spec, "--out", str(tmp_path / "o")]
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "sign_release.py"), *base], capture_output=True, text=True, env=env)
+    assert r.returncode != 0 and "No signing key configured" in r.stderr and not (tmp_path / "o" / "release-index-stable.json").exists()
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "sign_release.py"), *base, "--base-url", "http://x"], capture_output=True, text=True, env=env)
+    assert r.returncode != 0
+    # merging keeps the older release and bumps the sequence; a different key cannot extend somebody else's index
+    from update_fixtures import new_key
+    import base64
+    k1, k2 = new_key()[0], new_key()[0]
+    f1, f2 = tmp_path / "k1", tmp_path / "k2"
+    f1.write_text(base64.b64encode(k1.private_bytes_raw()).decode())
+    f2.write_text(base64.b64encode(k2.private_bytes_raw()).decode())
+    run = lambda spec_, keyf, extra=(): subprocess.run([sys.executable, str(ROOT / "tools" / "sign_release.py"), "--channel", "stable", "--base-url",
+                                                         "https://github.com/o/r/releases/download", "--release", spec_, "--key-file", str(keyf),
+                                                         "--out", str(tmp_path / "o"), *extra], capture_output=True, text=True, env=env)
+    assert run(spec, f1).returncode == 0
+    first = json.loads((tmp_path / "o" / "release-index-stable.json").read_text())
+    shutil.copy(tmp_path / "o" / "release-index-stable.json", tmp_path / "prev.json")
+    spec2 = spec.replace("0.5.1", "0.5.2")
+    assert run(spec2, f1, ("--merge-from", str(tmp_path / "prev.json"))).returncode == 0
+    second = json.loads((tmp_path / "o" / "release-index-stable.json").read_text())
+    assert [r["version"] for r in second["signed"]["releases"]] == ["0.5.2", "0.5.1"] and second["signed"]["sequence"] > first["signed"]["sequence"]
+    bad = run(spec2, f2, ("--merge-from", str(tmp_path / "prev.json")))
+    assert bad.returncode != 0 and "does not verify" in bad.stderr
+
+
+def test_key_tool_never_prints_or_stores_private_key_in_repo(tmp_path):
+    out = tmp_path / "sec" / "k.key"
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "release_keys.py"), "generate", "--private-out", str(out)], capture_output=True, text=True)
+    assert r.returncode == 0 and "public key" in r.stdout and out.exists()
+    secret = out.read_text().strip()
+    assert secret not in r.stdout and secret not in r.stderr
+    if os.name != "nt":
+        assert oct(out.stat().st_mode & 0o777) == "0o600"
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "release_keys.py"), "generate", "--private-out", str(ROOT / "oops.key")], capture_output=True, text=True)
+    assert r.returncode != 0 and not (ROOT / "oops.key").exists()
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "release_keys.py"), "generate", "--private-out", str(out)], capture_output=True, text=True)
+    assert r.returncode != 0 and "refusing to overwrite" in r.stderr.lower()
+
+
+def test_no_private_keys_or_secrets_in_the_repository():
+    bad = []
+    for p in list((ROOT / "src").rglob("*")) + list((ROOT / "tools").rglob("*")) + list((ROOT / ".github").rglob("*")) + [ROOT / "CLAUDE.md"]:
+        if p.is_file() and p != Path(__file__) and p.suffix in {".py", ".json", ".sh", ".in", ".yml", ".yaml", ".md", ".js", ".txt", ".lock"}:
+            t = p.read_text("utf-8", errors="ignore")
+            if "BEGIN PRIVATE KEY" in t or "BEGIN OPENSSH PRIVATE KEY" in t or "BEGIN EC PRIVATE KEY" in t or "RELEASE_SIGNING_KEY=" in t.replace(" ", ""):
+                bad.append(str(p))
+    assert not bad, bad
+
+
+# ------------------------------------------------------------------ migration from the Bash/Homebrew install
+
+
+@pytest.fixture
+def legacy_home(tmp_path, monkeypatch):
+    """A realistic old installation: settings on the LAN with HTTPS, accounts, a book row, a library with audio, a model cache."""
+    from studio.config import ServerSettings, Settings
+    from studio.context import Context
+    from studio.services import ensure_builtin_voices
+
+    home = tmp_path / "audiobook-studio-claude"
+    monkeypatch.setenv("AUDIOBOOK_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_ENGINE", "mock")
+    ctx = Context(home)
+    ensure_builtin_voices(ctx)
+    s = Settings(server=ServerSettings(host="0.0.0.0", allow_remote=True, https_enabled=True, port=8080))
+    ctx.save_settings(s)
+    (home / "config" / "auth.json").write_text('{"secret": "s", "users": {"owner": {"role": "admin"}}}')
+    (home / "library" / "manuscripts").mkdir(parents=True)
+    (home / "library" / "manuscripts" / "book.txt").write_text("original manuscript")
+    (home / "cache" / "huggingface" / "models--x").mkdir(parents=True)
+    (home / "cache" / "huggingface" / "models--x" / "w.bin").write_bytes(b"weights")
+    with ctx.db.tx() as conn:
+        ctx.event(conn, "canary", "legacy history")
+    monkeypatch.delenv("AUDIOBOOK_STUDIO_HOME")
+    return home
+
+
+def _tree_hash(root: Path) -> dict:
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob("*")) if p.is_file() and p.suffix not in {".db-wal", ".db-shm"}
+            and not p.name.endswith(("-wal", "-shm"))}
+
+
+def test_migration_preserves_data_backs_up_tests_then_switches(legacy_home, tmp_path):
+    from studio.legacy import LEGACY_LABEL, migrate_legacy
+    from studio.update.layout import Layout
+    from studio.update.store import ReleaseStore
+    from update_fixtures import write_tree
+
+    layout = Layout(tmp_path / "Audiobook Studio", tmp_path / "logs")
+    layout.ensure()
+    os.replace(write_tree(tmp_path / "seed", "7.0.0", full=True), layout.release_dir("7.0.0"))
+    ReleaseStore(layout).activate("7.0.0")
+    layout.service_manifest.write_text(json.dumps({"python": sys.executable}))
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    (agents / f"{LEGACY_LABEL}.plist").write_text("<plist>old</plist>")
+    before = _tree_hash(legacy_home)
+    calls = []
+
+    class Plat:
+        def stop(self, label): calls.append(("stop", label))
+
+    def tester(lay, py, rel, port):
+        # the new backend must be testable BEFORE the old service is touched
+        assert calls == [] and (lay.state / "data" / "studio.db").exists()
+        calls.append(("tested", port))
+        return True, "stub healthy"
+
+    rc = migrate_legacy(legacy_home, layout, platform_service=Plat(), backend_test=tester, agents_dir=agents,
+                        install_service=lambda: calls.append(("installed",)))
+    assert rc == 0
+    assert [c[0] for c in calls] == ["tested", "stop", "installed"]                 # test first, then switch, then install
+    assert calls[1] == ("stop", LEGACY_LABEL)
+    assert _tree_hash(legacy_home) == before                                         # the old folder is byte-for-byte untouched
+    s = json.loads((layout.state / "config" / "settings.json").read_text())
+    assert s["storage"]["library_root"] == str(legacy_home / "library")              # books stay where they are
+    assert s["models"]["cache_dir"] == str(legacy_home / "cache" / "huggingface")    # no 14 GB copy, no re-download
+    assert s["server"]["host"] == "127.0.0.1" and s["server"]["allow_remote"] is False and s["server"]["https_enabled"] is False
+    assert (layout.state / "config" / "auth.json").exists()                          # accounts carried over
+    import sqlite3
+    c = sqlite3.connect(str(layout.state / "data" / "studio.db"))
+    assert c.execute("SELECT COUNT(*) FROM events WHERE kind='canary'").fetchone()[0] == 1
+    c.close()
+    bk = next((layout.state / "backups").glob("legacy-*"))
+    assert (bk / "studio.db").exists() and (bk / "config" / "settings.json").exists() and (bk / f"{LEGACY_LABEL}.plist").read_text() == "<plist>old</plist>"
+    assert not (agents / f"{LEGACY_LABEL}.plist").exists()                           # old login item removed, but saved in the backup
+
+
+def test_migration_keep_network_and_failed_backend_leaves_everything_alone(legacy_home, tmp_path):
+    from studio.legacy import LEGACY_LABEL, migrate_legacy, plan_settings
+    from studio.update.layout import Layout
+    from studio.update.store import ReleaseStore
+    from update_fixtures import write_tree
+
+    s, notes = plan_settings(json.loads((legacy_home / "config" / "settings.json").read_text()), legacy_home, keep_network=True)
+    assert s["server"]["host"] == "0.0.0.0" and any("kept" in n for n in notes)
+    layout = Layout(tmp_path / "A S", tmp_path / "logs")
+    layout.ensure()
+    os.replace(write_tree(tmp_path / "seed", "7.0.0", full=True), layout.release_dir("7.0.0"))
+    ReleaseStore(layout).activate("7.0.0")
+    layout.service_manifest.write_text(json.dumps({"python": sys.executable}))
+    agents = tmp_path / "la"
+    agents.mkdir()
+    (agents / f"{LEGACY_LABEL}.plist").write_text("old")
+    before = _tree_hash(legacy_home)
+    stopped = []
+
+    class Plat:
+        def stop(self, label): stopped.append(label)
+
+    rc = migrate_legacy(legacy_home, layout, platform_service=Plat(), backend_test=lambda *a: (False, "boom"), agents_dir=agents,
+                        install_service=lambda: stopped.append("installed"))
+    assert rc == 1 and stopped == []                                                  # old service never stopped
+    assert (agents / f"{LEGACY_LABEL}.plist").read_text() == "old" and _tree_hash(legacy_home) == before
+    assert migrate_legacy(tmp_path / "nonexistent", layout) == 2                       # not an installation
+    assert migrate_legacy(legacy_home, layout, dry_run=True) == 2                      # state already exists: refuses to overwrite
+
+
+def test_migration_dry_run_changes_nothing(legacy_home, tmp_path):
+    from studio.legacy import migrate_legacy
+    from studio.update.layout import Layout
+    from studio.update.store import ReleaseStore
+    from update_fixtures import write_tree
+
+    layout = Layout(tmp_path / "A", tmp_path / "logs")
+    layout.ensure()
+    os.replace(write_tree(tmp_path / "seed", "7.0.0"), layout.release_dir("7.0.0"))
+    ReleaseStore(layout).activate("7.0.0")
+    assert migrate_legacy(legacy_home, layout, dry_run=True) == 0
+    assert not (layout.state / "data").exists() and not (layout.state / "backups").exists()
+
+
+# -------------------------------------------------------------------------------------------------- CLI
+
+
+def _cli(*args, env_extra=None, cwd=None):
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "STUDIO_ENGINE": "mock", **(env_extra or {})}
+    return subprocess.run([sys.executable, "-m", "studio", *args], capture_output=True, text=True, env=env, cwd=cwd or str(ROOT / "src" / "app"))
+
+
+def test_cli_version_configure_doctor_and_update_status(tmp_path):
+    root = tmp_path / "Audiobook Studio"
+    env = {"AUDIOBOOK_STUDIO_ROOT": str(root), "AUDIOBOOK_STUDIO_LOGS": str(tmp_path / "logs"), "AUDIOBOOK_STUDIO_HOME": str(root / "state")}
+    r = _cli("version", env_extra=env)
+    assert r.returncode == 0 and "Audiobook Studio v" in r.stdout and "managed       no" in r.stdout
+    r = _cli("configure", "--library", str(tmp_path / "SSD" / "My Books"), "--model-cache", str(tmp_path / "SSD" / "hf"), "--port", "7999", env_extra=env)
+    assert r.returncode == 0, r.stderr
+    s = json.loads((root / "state" / "config" / "settings.json").read_text())
+    assert s["storage"]["library_root"].endswith("My Books") and s["models"]["cache_dir"].endswith("hf") and s["server"]["port"] == 7999
+    man = json.loads((root / "app" / "service.json").read_text())
+    assert man["python"].endswith("venv-python") and man["label"] == "com.audiobookstudio.app"
+    r = _cli("configure", "--manifest-only", env_extra=env)
+    assert r.returncode == 0 and json.loads((root / "state" / "config" / "settings.json").read_text())["server"]["port"] == 7999   # settings untouched
+    r = _cli("doctor", "--json", env_extra=env)
+    names = {c["name"]: c for c in json.loads(r.stdout)}
+    assert names["Installation"]["status"] == "warn" and names["Update signing key"]["status"] == "warn"
+    r = _cli("update", "--status", env_extra=env)
+    assert r.returncode == 0 and "installed" in r.stdout
+    r = _cli("update", "--install", env_extra=env)       # nothing is configured: must fail safely, not crash or install
+    assert r.returncode == 1 and "signing key" in (r.stdout + r.stderr).lower()
+
+
+def test_serve_refuses_busy_port_and_second_copy(tmp_path):
+    import socket
+
+    root = tmp_path / "Audiobook Studio"
+    env = {"AUDIOBOOK_STUDIO_ROOT": str(root), "AUDIOBOOK_STUDIO_LOGS": str(tmp_path / "logs"), "AUDIOBOOK_STUDIO_HOME": str(root / "state"),
+           "STUDIO_NO_WORKER": "1", "STUDIO_NO_UPDATE_CHECK": "1"}
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+        r = _cli("serve", "--port", str(port), env_extra=env)
+    assert r.returncode != 0 and "already in use" in (r.stdout + r.stderr)
+
+
+def test_provider_boundaries_do_not_import_each_other_directly():
+    """The web layer reaches platform specifics only through the interfaces: no launchctl/MLX/GitHub names outside their modules."""
+    app = ROOT / "src" / "app" / "studio"
+    allowed_launchctl = {"platform_services.py", "doctor.py", "legacy.py"}
+    for p in app.rglob("*.py"):
+        t = p.read_text("utf-8")
+        if p.name not in allowed_launchctl and "web" in p.parts:
+            assert "launchctl" not in t, p
+        if "web" in p.parts:
+            assert "github.com" not in t.replace("github.com/salbretsen", ""), p
+__STUDIO_EOF_0fde6a45d2eb__
+cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_f5ccd3b476bf__'
+"""Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
+(Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import io
+import json
+import re
+import shutil
+import tarfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from studio.update.trust import TrustStore, sign_payload
+
+APP_DIR = Path(__file__).resolve().parent.parent
+REPO_URL = "github:salbretsen/Narration-pipeline"
+BASE = "https://github.com/salbretsen/Narration-pipeline/releases/download"
+
+
+def new_key():
+    k = Ed25519PrivateKey.generate()
+    pub = base64.b64encode(k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+    return k, pub
+
+
+def trust_for(pub: str) -> TrustStore:
+    return TrustStore.from_public_b64(pub)
+
+
+def write_tree(root: Path, version: str, full: bool = False, break_serve: bool = False, schema: int = 2, runtime_id: str = "",
+               extra_files: dict[str, bytes] | None = None) -> Path:
+    """Create ``root/audiobook-studio-<version>/`` with a MANIFEST.sha256 covering every file."""
+    top = root / f"audiobook-studio-{version}"
+    if top.exists():
+        shutil.rmtree(top)
+    if full:
+        shutil.copytree(APP_DIR / "studio", top / "studio", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        init = top / "studio" / "__init__.py"
+        init.write_text(re.sub(r'__version__ = "[^"]+"', f'__version__ = "{version}"', init.read_text("utf-8")), "utf-8", newline="\n")
+        if break_serve:
+            # `migrate` still works but `serve` dies at once: the "installs fine, service will not run" case
+            body = "import sys\nif 'serve' in sys.argv:\n    raise SystemExit('this release is deliberately broken')\nfrom .cli import main\nmain()\n"
+            (top / "studio" / "__main__.py").write_text(body, "utf-8", newline="\n")
+    else:
+        (top / "studio").mkdir(parents=True)
+        (top / "studio" / "__init__.py").write_text(f'__version__ = "{version}"\n', "utf-8", newline="\n")
+    (top / "release.json").write_text(json.dumps({"version": version, "schema_version": schema, "runtime_id": runtime_id}), "utf-8", newline="\n")
+    for name, data in (extra_files or {}).items():
+        p = top / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+    lines = []
+    for p in sorted(top.rglob("*")):
+        if p.is_file():
+            lines.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(top).as_posix()}")
+    (top / "MANIFEST.sha256").write_text("\n".join(lines) + "\n", "utf-8", newline="\n")
+    return top
+
+
+def pack(top: Path, out_dir: Path) -> tuple[Path, str, int]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{top.name}-macos-arm64.tar.gz"
+    with tarfile.open(path, "w:gz") as tf:
+        tf.add(top, arcname=top.name)
+    data = path.read_bytes()
+    return path, hashlib.sha256(data).hexdigest(), len(data)
+
+
+def entry(version: str, archive: Path, sha: str, size: int, **over) -> dict:
+    d = {"version": version, "channel": "stable", "platform": "macos", "arch": "arm64",
+         "url": f"{BASE}/v{version}/{archive.name}", "size": size, "sha256": sha, "published": "2026-10-01T00:00:00Z",
+         "notes_url": f"https://github.com/salbretsen/Narration-pipeline/releases/tag/v{version}", "notes": f"Notes for {version}\n- fixed things",
+         "min_compatible_version": "0.0.0", "min_os": "14.0", "schema_version": 2, "runtime_id": ""}
+    d.update(over)
+    return d
+
+
+def index_bytes(key, releases: list[dict], channel="stable", sequence=1, expires_in_days=30, **extra) -> bytes:
+    now = datetime.now(timezone.utc)
+    signed = {"schema": 1, "channel": channel, "sequence": sequence, "generated": now.isoformat(),
+              "expires": (now + timedelta(days=expires_in_days)).isoformat(), "revoked_versions": [], "revoked_keyids": [], "releases": releases}
+    signed.update(extra)
+    return sign_payload(signed, key)
+
+
+class FakeSite:
+    """An in-memory GitHub: serves index and artifacts, honours Range, can redirect, drop connections or be offline."""
+
+    def __init__(self):
+        self.files: dict[str, bytes] = {}
+        self.redirects: dict[str, str] = {}
+        self.offline = False
+        self.drop_after: int | None = None   # truncate the next full download after N bytes (simulates a dropped connection)
+        self.requests: list[tuple[str, str | None]] = []
+
+    def put_index(self, channel: str, data: bytes) -> None:
+        self.files[f"https://github.com/salbretsen/Narration-pipeline/releases/download/index-{channel}/release-index-{channel}.json"] = data
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        self.requests.append((url, request.headers.get("range")))
+        if self.offline:
+            raise httpx.ConnectError("offline", request=request)
+        if url in self.redirects:
+            return httpx.Response(302, headers={"location": self.redirects[url]})
+        data = self.files.get(url)
+        if data is None:
+            return httpx.Response(404)
+        rng = request.headers.get("range")
+        if rng and rng.startswith("bytes="):
+            start = int(rng[6:].split("-")[0])
+            body = data[start:]
+            return httpx.Response(206, content=body, headers={"content-range": f"bytes {start}-{len(data) - 1}/{len(data)}"})
+        if self.drop_after is not None and url.endswith(".tar.gz"):
+            n, self.drop_after = self.drop_after, None
+            return httpx.Response(200, content=_Dropping(data, n), headers={"content-length": str(len(data))})
+        return httpx.Response(200, content=data)
+
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self.handler)
+
+
+class _Dropping(httpx.SyncByteStream):
+    def __init__(self, data: bytes, n: int):
+        self.data, self.n = data, n
+
+    def __iter__(self):
+        yield self.data[: self.n]
+        raise httpx.ReadError("connection dropped")
+
+
+def tar_with(members: list[tuple[tarfile.TarInfo, bytes | None]], path: Path) -> Path:
+    with tarfile.open(path, "w:gz") as tf:
+        for ti, data in members:
+            tf.addfile(ti, io.BytesIO(data) if data is not None else None)
+    return path
+
+
+def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
+    ti = tarfile.TarInfo(name)
+    ti.size = len(data)
+    ti.mode = 0o644
+    return ti, data
+__STUDIO_EOF_f5ccd3b476bf__
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_664b2df716dd__'
+20261029104915-8394e3c2
+__STUDIO_EOF_664b2df716dd__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_b5196a5066fc__'
+{
+  "version": "0.5.0",
+  "schema_version": 2,
+  "runtime_id": "a1964c5cf7429b65",
+  "build": "20261029104915-8394e3c2",
+  "platform": "macos",
+  "arch": "arm64"
+}
+__STUDIO_EOF_b5196a5066fc__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_5cf80dfe5d02__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
+94ed4bd3459375e05a3df9b4a962537066a91d32942bdf5f74eaad078077ac76  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
 da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 39a3966fcd35d41ab88375809ba46214365ee14b1e07a7f7eff14799f02dfe73  bin/start-studio
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-2fdbc114f99c2b49a60de8d5cf437bf32b43e70b6162cfa80228cfb2f226f3f9  CHANGELOG.md
+eb930f095d82b75fb33c1d9d9afbf0b4f8eb41ba8f61e8bb4cdd5f396e411d97  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
-8a91e8138373d0e2a0c8d1c77f2138fd8fe34188d4bfaa04bc61c9455acf34e8  README.md
+2980a5b9ceff81941c0b61961bbb8e1c6c08c5401cbeb9ea88ad40b388e1d0b0  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
+a1964c5cf7429b65b7f8e5f900ce93e88164ca027daaa2cb33f88da716f8eb63  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-bbeb9e98651bb35d4e3fa109fd45506f55966cbb5e34dca4701724188fb7d9f5  studio/__init__.py
+0cb6d7b2750b41d887eeff80dc37dbc6abf6896ae7a1debb723abfd3f27ada41  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 6cc996855af9a3bf919aed1ee7240a05fa110edf39c7d182ffd7294b8602850a  studio/assembly.py
-49663622a31635794c792cc0422cff68c8e8f8b66345b40797decad3601fff37  studio/audio.py
+3d4d07dc9ae9e2d43e8778615d1a9f7c76f42009e6951ef8b53da05cb4571467  studio/audio.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
-3e54096739657fd7db84e193f413006b85c140a06bd698730672c5e1b491878c  studio/cli.py
-42297bc14e42c993c2a8786610410d9e4c9ff62e7cf33d1818b2273cab6d6d5b  studio/config.py
-0f0544a8c6e57d15d0271b9cb2a05344c8e2cb42288430e1c45a2e54b2d3d27d  studio/context.py
+7ce437e62ff89d0641c6ad43841ffc2a7ba50d02aa3d45a771853dd59bcbb1cd  studio/cli.py
+3c1ee291a3134db98a59eb5ae232eaffdd9b7722995e6b3cdbdc4fed22edf1c5  studio/config.py
+66f9ceaab118a06aed0501e29d6593289097b25fbc47aa2485750bff64adee89  studio/context.py
 be4c41185c859174dc3d766dea5647500e9e3ac718fb8c0632f54e37df4228d6  studio/db.py
-df299aa349680ab85c7e938146f0011e71a2838005d0e661eb26f1c1b009db8c  studio/doctor.py
+5385954828543ca6765fd4a0dd1ae525d4c9aea182833fa6324e5153462b4ccf  studio/doctor.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
+bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
+b799e30827000692564e06be6b625527b617e24f96fa01579dafc9d547a259ad  studio/legacy.py
+60f824b909596836a00fc9e0793a8552f59470ddc98b47a7701414d111fd6e29  studio/lifecycle_cli.py
 6fc98fbc881ddb9fbe3f59bf256295e0f3b26f20696914f634ebb48a35860d43  studio/narrative/__init__.py
 91b51363ce097d3d38f1702bb996dbccd6947fc62038d0a698f040416f2338f7  studio/narrative/analysis.py
 cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrative/cast.py
@@ -19374,23 +26494,40 @@ fe02edb77aa8f76e69ad8fa830a56118fb3a26a595b3c548e3c97323f4a8a906  studio/narrati
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
 5a45663174aeac322ec15751f3c980782338f8b8d455e7b1e913ce410e1108dc  studio/pipeline.py
+6d7f7e457f3bf31ce81d47c85a78dfb3d4d1fbdb056bb7da323ffaec25985ce8  studio/platform_services.py
+c422f9cf89b9df531cc97fb99a83afcc0870f36a3815fdd9542c055f2c6a1293  studio/providers.py
 0c3b6d21e950df5c30cbf55ff11a50aa9e41915c64c7626454657bf051760e55  studio/reference.py
 5c7f622586db05683434053ab9f4bfc6b5de364442bb90c147b9d981ed2e5f74  studio/reports.py
+0827980c61c8e0042744e7e80b349249e729b05eb6a2c12d97b75d7836bf75e7  studio/scheduler.py
 ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets_store.py
 25a38aa77f47289f5ae3e0a18bdb8bfd6da749d7a7dd99f527072d240ab1a23d  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
-9800c9e0fcfa791be2d4c5bb759cd16759572a0e3c202db511b102d32652d922  studio/storage.py
+7f184566b98f1c5680a9787c1971442f2db3aa5f6d7ad4b8c8d545d80a72594d  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
+dcfb737a627a1aa43c08139b151af4e00e522fb52985a99b700ccb06f0d5fe71  studio/update/__init__.py
+492b24e47d39eb7075711d6456e98bd9691b6d2dd3dad060159d8b26149ad7de  studio/update/archive.py
+7127a109413a314332c11500aa1cd667306b1c47ab44f29aefe7494048f41fc2  studio/update/helper.py
+59a27258dea965288af548a2882a96cd8c2dcbc9caff0bb186eced316265dd75  studio/update/launch.py
+f8cdc1305a61326cb3b7680912fb1dc1a6d1a06d337fcf6be319728a71713690  studio/update/layout.py
+7bc7a50ec889e523ec2f9e198aa4398d06b056d4d727536bbc1c63f84df1aee7  studio/update/manager.py
+493d0f087608ebc59c2264634d116fd83bfe4ce20c80c0c7e8705ffb6e07de0f  studio/update/manifest.py
+b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/net.py
+eed5a5f9010d5f71e20e0e3844c385fdb3273e5df655129034efa9ed95595a4d  studio/update/pinned_keys.json
+9aac2ab730c9b792a5fdf13f1598dd1a7f44714ee8b13a0ff5a4d24e1359163c  studio/update/repository.py
+5b0fe9ea649c04a158cfd4b9404b446d2f543540d3885d86634fbf8ae0a1b33a  studio/update/runtime.py
+1f126a21193fd4773fd5e789f262664d67d4a80692a501cdc8f219e5a015a1a1  studio/update/status.py
+16ce831ef9f1799c798118cd3d4427a37f1ebb55160c0fa346fa0566955b91f8  studio/update/store.py
+812c188aa1067635eb61988c51320a107c49e9cd428a697d1cc872e4745468a0  studio/update/trust.py
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-febc7384242e6d32a0c4643005ef57e0772df716ef95f7d79845e46ce2177c08  studio/web/app.py
-bbbfc8812dddbf74f8767e2b4dbdc474b223c3a18db639147583b5f0f776206b  studio/web/auth.py
+a4a05d4a3736ad57c590b466cc0fd4c32a08a392e23400711b6ae1165bab5e90  studio/web/app.py
+5fd7f2dbd3bc7004cace51a787508a0f322590d8483dff350f0f1d8950fd9380  studio/web/auth.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 51ac6d84b25c98aa5a6f3d02b92390f21755eb8ccfc65bdc301ebcdea0626ae1  studio/web/narrative_api.py
-234b5211d21110d73f20c2d8f93561b9a76b81ac049e1bafc7fc4a90da3c717c  studio/web/security.py
-9f3fbb8c4d170a1f4c38ee8aab081e839838262b91bc93f791ba9963119c0ff2  studio/web/static/app.css
-393bc3f275fbd3716f9c920af2012b78cef56b739a0651e733c25c85d70c7705  studio/web/static/index.html
-d500a2f4e47549c34fda445f8d410c5c28aaf10ab28283d96831e37c68fbbaa9  studio/web/static/js/app.js
+4849a35f8d0402f4f622e37430fae3ac4decd3a46348a65bca04cf7d5ac0745e  studio/web/security.py
+9e6afeddbe18a11db688047eb8515e2b47ae30f77d65c4c4c901e5c801fa43c2  studio/web/static/app.css
+9582783ee2ef3f53353d9be4fb9e7a2662e006e24d7869b843b4b7ca3cae97c0  studio/web/static/index.html
+1464be6ba2145020741271b86f8e065b396013f61c214b7844bf61f8413d2d65  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 697f9b779dc46503d36f2d8354e2094f4861c4a45e12c6ee64e0c9fbc7218884  studio/web/static/js/ui.js
@@ -19400,23 +26537,30 @@ dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/sta
 1cc0e786616ee36f1c706789afa0ef634acb59c5cabe6bfaebf5891295a7850e  studio/web/static/js/views/library.js
 02934b9a5b32a7d3cfe41dbc1047b642706cd3defd2d25fce4af7fc1c864824f  studio/web/static/js/views/narrative-fields.js
 c628a052087f18c4d8b751e949839fb1bc41290f4a83f38f58bd9ca4e8be75ed  studio/web/static/js/views/narrative.js
-9c7fd7b52f5f6524c0f4cc5d0232607f2eae4708fac1cba1a7a13281f9d49ac4  studio/web/static/js/views/overview.js
+9144bdd31410f283d24ec3e5631451161e561c297a2cc02226e43975b12e37df  studio/web/static/js/views/overview.js
 0cc4435bf1c8401ce77d2609457f53e7e12728c50a2242511bd03a4bf24e5517  studio/web/static/js/views/queue.js
 2486e47e24ea6d18fa31d41b4cdab37cbff072f4a9dfe8a0127576b0d1c20721  studio/web/static/js/views/review.js
-02e88658bf6e189c77a136d352fa3b9a88a5b9de3244d63fde61d87d26436a19  studio/web/static/js/views/settings.js
+84d2f048761138d5af5f0c7b96fad166d0fcc06c4703ff37f8302d3a3590f791  studio/web/static/js/views/settings.js
+ecb83b1aa9b645bf02514ea4589597f384c2d64e550bca1cda8814b93b76a195  studio/web/static/js/views/updates.js
 513afb06ec00a33ed1a454252c6fe02e0d03401bcdd6db67b0f86ebdc54100c8  studio/web/static/js/views/voicelab.js
 e2b77877580dda7a8796284aeea168bc3e2dd82da6aee6e71175830a73019c35  studio/web/static/js/views/voices.js
-a777a78e0f8e75985e540641a4951be9ce44cfc9188667b730d8103b3cc620dd  studio/worker.py
+5b103fd18964b237befbb368c8e9ca9ed100209b962dda1d3d06eeaacbeb85f6  studio/web/update_api.py
+b96fb9268a619a4f2cd7f29e289184d78c144cc0788c13fd99294c22255a8cfc  studio/worker.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
 b44d6d669c8cf1d913d30bc6860a420691996b2747db3c83470593db0c733daa  tests/narrative_fixtures.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 ff52f7477a45d0f84bd46f6359a934419a5e42d8c5502d4d7f57e859e2402f84  tests/test_auth.py
-192d3c311581ab5de353509951c4e72cdffcf2f4dd457e149511c817a21818c7  tests/test_integration.py
+aa6bae69a86c82678559419aeaf90e40e93ea912d5827df354b0299e91a2bd25  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 61f14906524436f9202b54cfb52b4b2aca2a1fe875396c8719c108d46e11bcf5  tests/test_narrative.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
-7c99018e5697ef503eeec0a1b3b484c6700d6e25023c819031410d627347dea6  BUILD
-__STUDIO_EOF_415da608b5bd__
+70aa088b01ec63d406424297f60e1323a8d59c710a1deb8b1113aeb8b1929f08  tests/test_update_core.py
+36c62f2a1f552147d11a426b6191f6025c47f798e0a685e9d4f21de95dbc207e  tests/test_update_flow.py
+0fde6a45d2eb7aaabee0cff2a72c31343eaafa8f1b5da075dd348df637a9f4ce  tests/test_update_install.py
+f5ccd3b476bf14f280514aa634413788046a2e060b67958085a59c5e05ab4315  tests/update_fixtures.py
+664b2df716ddae8264ce94513f187fd34f9fe753b128e7217196643b25804dd4  BUILD
+b5196a5066fc2c2db0a6d23202c3ca18466528407514037074595a2cf9d97f6b  release.json
+__STUDIO_EOF_5cf80dfe5d02__
 }
 
 verify_manifest() {

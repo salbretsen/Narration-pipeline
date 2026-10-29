@@ -3,6 +3,41 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR = a major release update (needs human acceptance); MINOR = feature
 additions or overhauls inside the current major release; PATCH = minor adjustments (visual tweaks, bug fixes).
 
+## v0.5.0
+Installation, launch and updates. Nothing about narration, QA, review or export changed; the data model is unchanged (schema v2).
+**Not yet run on a Mac** (see `docs/10-installation-and-updates.md`, checks M1-M10) and **no release has been signed** (no production key exists).
+- **No-prerequisites installer** `install_audiobook_studio_mac.sh`: needs no Homebrew, Git, Python, pip, FFmpeg, Node, Xcode or Command Line Tools,
+  no sudo, and edits no shell profile or system directory. Installs a private Python 3.12 with the pinned `uv`, FFmpeg/FFprobe 9.0.2 (GPLv3 build,
+  downloaded not bundled, AAC and MP3 encoders verified) into the app folder, and hash-locked prebuilt wheels (`requirements.lock`, 88 packages,
+  `--require-hashes --only-binary :all:`; a package without a wheel stops the install instead of reaching for a compiler). Every download is size- and
+  SHA-256-checked against values pinned in the script before use and fails closed. Pre-flight (macOS 14+, native arm64, RAM, disk per location, mounted
+  external disks, writable paths, reachability, free port), `--check`, prompts or flags for library/model-cache location and the optional model
+  download, idempotent and resumable, `--uninstall` (data only with a typed confirmation). The old Homebrew installer remains for existing installs.
+- **Managed layout**: replaceable releases under `app/releases/<ver>` with an atomic `current` pointer, private runtimes, user data in `state/`, logs in
+  `~/Library/Logs/Audiobook Studio`, model cache and library anywhere you choose (`models.cache_dir` setting; applied as `HF_HOME`).
+- **Per-user launchd service** (`gui/<uid>`, no root): starts at login, restarts after failures only, 10 s throttle, 127.0.0.1 by default, port
+  collision and double-run detection, `GET /healthz` and `GET /api/version`. CLI: `doctor start stop restart status logs version update service migrate-legacy configure`.
+- **Update Center** (sidebar Updates, nav dot, Overview notice): check, release notes (plain text), download and verify, stage, **Install now** (next
+  segment boundary) or **Install after current book**, cancel, restart service, automatic checks (daily by default; never auto-download or install),
+  eight progress phases, history, clear states for offline / incompatible / failed / rolled back / switched off. Admin-only, CSRF/Host/same-origin protected;
+  no endpoint accepts a URL or command.
+- **Signed releases**: Ed25519-signed per-channel release index (version, channel, platform, arch, URL, size, SHA-256, published, notes URL, min compatible
+  version/OS, schema, runtime) with sequence number (anti-rollback), expiry, revoked versions and keys; public key pinned in the app
+  (`pinned_keys.json`, **empty until the owner generates a key**, which keeps the updater off). HTTPS only, host allowlist re-checked on every redirect,
+  size limits, resumable download, hardened archive extraction (traversal, links, bombs, per-file manifest). GitHub Releases first; `HttpsRepository` implements the
+  same contract for a future first-party host.
+- **Separate updater process** (one-shot launchd job or `update --install`): drain the queue at a segment/job boundary, consistent database backup, atomic
+  switch, `studio migrate` from the new release, restart, health check, automatic rollback (database restored only if the schema moved), repair note as a
+  last resort; user data is never deleted.
+- **Migration** from the Bash/Homebrew install (`--migrate-from` / `studio migrate-legacy`): backup, copy, library and model cache kept in place, new backend
+  tested on a spare port first, only then the old LaunchAgent is replaced (plist saved); the old folder is never modified; network binding off unless `--keep-network`.
+- **Boundaries**: `studio/interfaces.py` (PlatformService, InferenceProvider, TTSProvider, ASRProvider, ModelRegistry, ReleaseRepository, UpdateManager,
+  StorageManager, QueueScheduler) with launchd, process, MLX/mock, settings and GitHub/HTTPS implementations. Windows/Linux/containers/remote providers are designed for, not built.
+- **Tooling and CI**: `tools/build_release.py`, `sign_release.py` (refuses without a key), `verify_index.py`, `release_keys.py`, `lock_requirements.py`,
+  `check_lock_wheels.py`, `tools/e2e/updates_ui.py`; GitHub Actions `ci.yml` and `release.yml` (signs only if `RELEASE_SIGNING_KEY` exists, verifies the index
+  against the pinned key, otherwise publishes an UNSIGNED prerelease and no index).
+- FFmpeg lookup now prefers the app-owned copy; error messages no longer suggest Homebrew. 80 new tests (242 total).
+
 ## v0.4.0
 - **API keys can be entered in the web UI.** Settings > Narrative > Local LLM has an API key field with Save key / Remove key, so an
   OpenAI-compatible endpoint no longer needs an environment variable on the Mac. The key is write-only: it is stored in

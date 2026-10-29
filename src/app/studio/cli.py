@@ -47,6 +47,24 @@ def cmd_serve(a):
     if not is_loopback(host) and not AuthStore(ctx.config_dir / "auth.json").enabled():
         sys.exit("Refusing to bind to a network address without any user account. Create one: ./studio auth add-user NAME --role admin --generate")
 
+    ctx.apply_model_cache_env()
+    from .lifecycle_cli import port_free
+
+    bind_host = "127.0.0.1" if host in ("localhost",) else host
+    if not port_free("0.0.0.0" if bind_host == "0.0.0.0" else bind_host, port):
+        # another program owns the port; a non-zero exit lets launchd retry (throttled to one attempt per 10 s) once it is free
+        sys.exit(f"Port {port} on {bind_host} is already in use (another copy of the studio, or another program). "
+                 f"Stop it, or pick a free port in Settings > Server (installer: --port N).")
+    pidfile = ctx.run_dir / "server.pid"
+    if pidfile.exists():
+        try:
+            other = int(pidfile.read_text().strip())
+        except ValueError:
+            other = 0
+        from .platform_services import _alive
+
+        if other and other != os.getpid() and _alive(other):
+            sys.exit(f"Audiobook Studio is already running (pid {other}). Not starting a second copy.")
     app = create_app(ctx)
     app.state.port = port
     pidfile = ctx.run_dir / "server.pid"
@@ -84,6 +102,7 @@ def cmd_worker(a):
     from .worker import main
 
     ctx = Context()
+    ctx.apply_model_cache_env()
     setup_logging(ctx, "worker")
     main(ctx)
 
@@ -360,6 +379,9 @@ def main(argv=None):
     sp.add_argument("--skip-design", action="store_true")
     sp.add_argument("--keep", action="store_true", help="keep the smoke-test books in the library")
     sp.set_defaults(func=cmd_smoke)
+    from . import lifecycle_cli
+
+    lifecycle_cli.register(sub)
     a = p.parse_args(argv)
     a.func(a)
 

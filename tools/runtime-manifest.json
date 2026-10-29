@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "comment": "Version-pinned, architecture-specific bootstrap artifacts for the macOS installer. Every download is verified against sha256 BEFORE it is unpacked or executed; a mismatch aborts the install. Hashes were computed from the downloaded bytes and cross-checked with the publisher's own .sha256 file on 2026-10-29. Update a pin only after repeating both checks.",
+  "platform": "macos",
+  "arch": "arm64",
+  "min_macos": "14.0",
+  "python": {
+    "request": "3.12",
+    "note": "Installed by the pinned uv into <root>/app/python (never the system Python). uv 0.13.6 resolves '3.12' to a fixed python-build-standalone build and verifies that build's digest embedded in uv's own metadata."
+  },
+  "uv": {
+    "version": "0.13.6",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz",
+    "sha256": "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472",
+    "size": 14235670,
+    "license": "MIT OR Apache-2.0",
+    "member": "uv-aarch64-apple-darwin/uv"
+  },
+  "ffmpeg": {
+    "version": "9.0.2",
+    "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",
+    "sha256": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924",
+    "size": 28395699,
+    "member": "ffmpeg",
+    "publisher": "Martin Riedl (ffmpeg.martin-riedl.de), static build; the publisher states the macOS binaries are code-signed",
+    "license": "GPL-3.0-or-later build (configured --enable-gpl --enable-version3). Downloaded from the publisher on the user's Mac and run as a separate program; this project does not redistribute it. Source: https://ffmpeg.org/ and the publisher's page.",
+    "codecs_verified": "AAC encoders aac/aac_at, MP3 encoder libmp3lame, FLAC, PCM (publisher's codecs.txt for this build)"
+  },
+  "ffprobe": {
+    "version": "9.0.2",
+    "url": "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip",
+    "sha256": "fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6",
+    "size": 28317701,
+    "member": "ffprobe",
+    "publisher": "Martin Riedl (ffmpeg.martin-riedl.de), static build; the publisher states the macOS binaries are code-signed",
+    "license": "GPL-3.0-or-later build (same as ffmpeg)"
+  },
+  "native_audio_libraries": "libsndfile and PortAudio are not installed separately: the pinned Python wheels for soundfile/sounddevice bundle them on macOS arm64 (tools/check_lock_wheels.py proves a wheel exists for every pin). If a future dependency needs a system library, it must ship as a wheel or be vendored here with a pin.",
+  "hosts": [
+    "github.com and objects.githubusercontent.com / release-assets.githubusercontent.com (uv, and Python builds fetched by uv)",
+    "ffmpeg.martin-riedl.de (FFmpeg and FFprobe)",
+    "pypi.org and files.pythonhosted.org (Python wheels, hash-locked)",
+    "huggingface.co and its CDN (model weights, only when you choose to download them)"
+  ]
+}

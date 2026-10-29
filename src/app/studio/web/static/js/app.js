@@ -10,8 +10,9 @@ import * as settings from "./views/settings.js";
 import * as about from "./views/about.js";
 import * as narrative from "./views/narrative.js";
 import * as inspector from "./views/inspector.js";
+import * as updates from "./views/updates.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector };
+const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates };
 let cleanup = null;
 let currentKey = "";
 
@@ -148,6 +149,14 @@ function showVersion(st) {
   if (el && st.version_label) { el.textContent = `Audiobook Studio ${st.version_label}`; el.title = "About Audiobook Studio"; }
 }
 
+async function refreshUpdateDot() {
+  try {
+    const u = await get("/api/update/summary");
+    const dot = document.getElementById("update-dot");
+    if (dot) dot.hidden = !(u.managed && ["available", "staged", "failed", "rolled_back"].includes(u.state));
+  } catch (e) { /* not signed in yet, or restarting */ }
+}
+
 async function start() {
   const st = await get("/api/auth/status");
   showVersion(st);
@@ -157,6 +166,9 @@ async function start() {
   document.getElementById("worker-pill").hidden = false;
   showUser();
   try { updateWorkerPill(await get("/api/worker")); } catch (e) { /* shown by banner */ }
+  refreshUpdateDot();
+  setInterval(refreshUpdateDot, 300000);
+  window.addEventListener("hashchange", refreshUpdateDot);
   connectSSE();
   route();
 }

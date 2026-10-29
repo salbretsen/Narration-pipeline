@@ -1,6 +1,6 @@
 # Audiobook Studio
 
-**v0.4.0** · Developed by Scott Albretsen, TSAL Solutions LLC
+**v0.5.0** · Developed by Scott Albretsen, TSAL Solutions LLC
 
 A local, autonomous audiobook production studio for Apple Silicon Macs. Upload complete
 manuscripts in the browser, pick an approved narrator for each, queue them, and let the Mac
@@ -12,10 +12,40 @@ independent verification, FFmpeg for mastering, and SQLite for state. The only n
 is the one-off download of public Python packages and model weights. Manuscripts and voice
 recordings never leave the machine, and there is no telemetry or analytics.
 
-## Install and start
+## Install and start (v0.5: no prerequisites)
+
+Needs only an Apple Silicon Mac on macOS 14 or later and an internet connection. **No Homebrew, Git, Python, FFmpeg, Xcode or Command Line
+Tools are required**, no administrator password is requested, and nothing outside your home folder is changed.
 
 ```bash
-bash install_audiobook_studio_claude.sh          # needs Homebrew; installs python@3.12 + ffmpeg if missing
+bash install_audiobook_studio_mac.sh --check        # pre-flight only: changes nothing
+bash install_audiobook_studio_mac.sh                # install (asks where to keep your library and model cache)
+```
+
+Open the printed address (default `http://127.0.0.1:7861`). The studio then runs as a background service that starts when you log in; use the
+**Updates** page for updates. To add a Dock icon: open the address in Safari, then **File > Add to Dock**.
+
+Read the script first if you like (`less install_audiobook_studio_mac.sh`, or `--extract-only DIR`); never pipe it from the network into a shell.
+It downloads, over HTTPS and verified against checksums pinned inside the script, uv, FFmpeg and FFprobe, then a private Python 3.12 and hash-locked
+Python wheels (about 5 GB on disk); model weights (about 6 GB, up to 15 GB) are optional now or download on first use. Full details, locations,
+security statement, update trust model and the macOS test checklist: `docs/10-installation-and-updates.md`.
+
+| Option | Effect |
+|---|---|
+| `--library DIR` / `--model-cache DIR` | Keep books (or weights) on another disk, e.g. `/Volumes/AudioSSD/...`; they are separate from the application |
+| `--port N` | Web port (default 7861; next free port if busy) |
+| `--download-models` / `--prefetch-all` / `--no-models` | Fetch the two default models now (about 6 GB) / all four (about 14 GB) / never ask |
+| `--migrate-from ~/audiobook-studio-claude [--keep-network]` | Adopt an old Bash/Homebrew install (copied and backed up; the old folder is never changed) |
+| `--check` | Pre-flight only |
+| `--uninstall [--purge-app] [--purge-data]` | Remove the login service; optionally the application files; optionally (after a typed confirmation) your data |
+
+Command line (no PATH changes; use the full path): `~/Library/Application\ Support/Audiobook\ Studio/audiobook-studio doctor | start | stop |
+restart | logs | version | update --check | update --install`.
+
+### The previous Bash/Homebrew installer
+
+```bash
+bash install_audiobook_studio_claude.sh          # legacy: needs Homebrew; installs python@3.12 + ffmpeg if missing
 cd ~/audiobook-studio-claude
 ./start-studio                                   # opens http://127.0.0.1:7861
 ```

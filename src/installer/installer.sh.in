@@ -4,6 +4,9 @@
 #  Developed by Scott Albretsen, TSAL Solutions LLC
 #  Version @@VERSION@@ (build @@BUILD_ID@@)
 #
+#  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
+#  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
+#
 #  Installs a local, autonomous audiobook production studio:
 #    web UI + durable queue + Qwen3-TTS (mlx-audio) narration + mlx-whisper QA +
 #    review workspace + FFmpeg mastering (WAV/MP3/chapter-marked M4B) + release signoff.

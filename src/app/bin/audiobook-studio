@@ -1,0 +1,24 @@
+#!/bin/bash
+# Audiobook Studio command line (managed installation).
+#   audiobook-studio doctor | start | stop | restart | status | logs | version | update --check | update --install
+# Uses only absolute paths under the installation root; changes no PATH, shell profile or system directory.
+set -eu
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+ROOT="${AUDIOBOOK_STUDIO_ROOT:-$(cd "$(dirname "$SELF")" && pwd)}"
+PY="$ROOT/app/venv-python"
+if [ ! -x "$PY" ]; then
+  echo "Audiobook Studio is not installed correctly (missing $PY). Re-run install_audiobook_studio_mac.sh." >&2
+  exit 1
+fi
+export AUDIOBOOK_STUDIO_ROOT="$ROOT"
+export AUDIOBOOK_STUDIO_HOME="${AUDIOBOOK_STUDIO_HOME:-$ROOT/state}"
+export AUDIOBOOK_STUDIO_LOGS="${AUDIOBOOK_STUDIO_LOGS:-$HOME/Library/Logs/Audiobook Studio}"
+export HF_HOME="${HF_HOME:-$ROOT/models/huggingface}"
+export HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1 TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
+export PATH="$ROOT/app/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cd "$ROOT/app/current"
+exec "$PY" -m studio "$@"

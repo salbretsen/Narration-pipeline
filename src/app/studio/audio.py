@@ -230,18 +230,28 @@ def room_tone(n: int, dbfs: float, seed: int = 0) -> np.ndarray:
 # ------------------------------------------------------------------ ffmpeg tools
 
 
-def ffmpeg_bin() -> str:
-    b = os.environ.get("STUDIO_FFMPEG") or shutil.which("ffmpeg") or ("/opt/homebrew/bin/ffmpeg" if Path("/opt/homebrew/bin/ffmpeg").exists() else None)
+def _tool(name: str, env_var: str) -> str:
+    """Resolution order: explicit override, the app-owned copy in <root>/app/tools/bin (managed installs), PATH, and finally a
+    pre-existing Homebrew copy so old Bash-era installs keep working. Nothing here ever installs anything."""
+    b = os.environ.get(env_var)
     if not b:
-        raise AudioToolError("ffmpeg not found. Install it with: brew install ffmpeg")
+        from .update.layout import Layout
+
+        owned = Layout.discover().tools_bin / name
+        if owned.exists():
+            b = str(owned)
+    b = b or shutil.which(name) or (f"/opt/homebrew/bin/{name}" if Path(f"/opt/homebrew/bin/{name}").exists() else None)
+    if not b:
+        raise AudioToolError(f"{name} not found. The app-owned copy is missing: re-run the installer to repair it (audiobook-studio doctor shows details).")
     return b
+
+
+def ffmpeg_bin() -> str:
+    return _tool("ffmpeg", "STUDIO_FFMPEG")
 
 
 def ffprobe_bin() -> str:
-    b = os.environ.get("STUDIO_FFPROBE") or shutil.which("ffprobe") or ("/opt/homebrew/bin/ffprobe" if Path("/opt/homebrew/bin/ffprobe").exists() else None)
-    if not b:
-        raise AudioToolError("ffprobe not found. Install it with: brew install ffmpeg")
-    return b
+    return _tool("ffprobe", "STUDIO_FFPROBE")
 
 
 def run_ffmpeg(args: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:

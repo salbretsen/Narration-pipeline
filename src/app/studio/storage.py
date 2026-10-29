@@ -187,7 +187,7 @@ def storage_overview(ctx) -> dict:
         "registry": registry,
         "app_home": str(ctx.home),
         "database": str(ctx.db.path),
-        "model_cache": os.environ.get("HF_HOME") or str(ctx.cache_dir / "huggingface"),
+        "model_cache": ctx.settings().models.cache_dir or os.environ.get("HF_HOME") or str(ctx.cache_dir / "huggingface"),
         "native_chooser": sys.platform == "darwin",
         "policy": "per-project registry: new locations apply to books imported afterwards; existing books stay findable at their recorded paths and can be moved explicitly.",
     }

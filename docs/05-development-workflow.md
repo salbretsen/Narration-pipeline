@@ -13,7 +13,7 @@ python -m venv .venv                      # .venv/ is gitignored
 # needs on PATH: ffmpeg + ffprobe (tests that touch audio are skipped without them), node (JS syntax checks), bash (Git Bash)
 ```
 
-Run the tests from `src/app`: `..\..\.venv\Scripts\python -m pytest -q -p no:cacheprovider tests` (about 75 s, 158 tests).
+Run the tests from `src/app`: `..\..\.venv\Scripts\python -m pytest -q -p no:cacheprovider tests` (about 2 min; the count is in doc 7).
 Run a local mock studio: from `src/app`, with `AUDIOBOOK_STUDIO_HOME` pointing at a scratch folder,
 `STUDIO_ENGINE=mock python -m studio serve --port 7891` (a worker subprocess is started automatically unless `STUDIO_NO_WORKER=1`).
 Kill stray servers on Windows with `Get-NetTCPConnection -LocalPort 7891 -State Listen | % { Stop-Process -Id $_.OwningProcess -Force }`.
@@ -21,8 +21,17 @@ Kill stray servers on Windows with `Get-NetTCPConnection -LocalPort 7891 -State 
 ## Where to edit
 
 - Application code: `src/app/studio/**`, SPA in `src/app/studio/web/static/**`, launchers in `src/app/bin/*`, tests in `src/app/tests/*`.
-- Installer logic: `src/installer/installer.sh.in` (Bash; placeholders `@@VERSION@@ @@BUILD_ID@@ @@EMBEDDED_FILES@@`).
-- **Never edit `install_audiobook_studio_claude.sh`.** Regenerate it: `python tools/build_installer.py`. The builder embeds every file
+- Installer logic: `src/installer/installer_mac.sh.in` (the supported no-prerequisites installer, macOS `/bin/bash` 3.2; extra placeholder `@@RUNTIME_PINS@@`,
+  rendered from `tools/runtime-manifest.json`) and `src/installer/installer.sh.in` (legacy Homebrew-era installer, kept for existing deployments).
+- Release tooling: `tools/build_release.py` (update archive), `tools/sign_release.py` (signed index, refuses without a key), `tools/verify_index.py`,
+  `tools/release_keys.py` (key generation, owner's machine only), `tools/lock_requirements.py` (regenerate `requirements.lock` with uv),
+  `tools/check_lock_wheels.py` (every pin has a prebuilt macOS arm64 wheel). CI: `.github/workflows/ci.yml`, `release.yml`.
+- **Never edit `install_audiobook_studio_mac.sh` or `install_audiobook_studio_claude.sh`.** Regenerate both: `python tools/build_installer.py`
+  (`--only mac|legacy`); then `bash -n` and `shellcheck -S style` on the mac one.
+- **Backslash escapes in heredocs sent through the Bash tool get mangled** (seen again in v0.5: a Python newline escape and a hex-zero escape inside
+  source text became a real newline and a real NUL byte, which makes a `.py` file unimportable). Write or edit files with the Write/Edit tools, not
+  `python - <<EOF` snippets that contain backslashes, and check a changed module with `python -c "import studio.<module>"`.
+- Changing `requirements*.txt`: run `python tools/lock_requirements.py` and `python tools/check_lock_wheels.py`; the lock's digest is the release's `runtime_id`. The builder embeds every file
   under `src/app` as a quoted heredoc with a content-hash delimiter, appends `BUILD` and a `MANIFEST.sha256`, and the installer
   verifies the manifest after unpacking. It rejects CR characters and unsafe file names.
 - Line endings must be **LF** (`.gitattributes`: `* text=auto eol=lf`). CRLF inside heredocs breaks the Bash installer on macOS.

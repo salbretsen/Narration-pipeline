@@ -107,6 +107,21 @@
 8. Test on Safari/Firefox; real-microphone validation; a CI pipeline.
 9. Second deployment profile (M4 Max, 36 GB): confirm `max_warm_models=1` and memory headroom.
 
+## v0.5 decisions, gotchas and backlog (installation and updates; details in doc 10)
+
+- **Decisions.** Web app + private Python (uv, pinned and hash-checked) rather than a native app; Ed25519-signed index pinned in the installed app rather than
+  trusting a host or a checksum; the updater is a separate launchd job that only the user can trigger; `state/` is the old "home" (so no data code changed);
+  the library and model cache are pinned to their old absolute paths on migration (no copying 14 GB); network binding is turned OFF on migration unless asked.
+- **Gotchas.** (1) Backslash escapes in Bash-tool heredocs corrupt source files (NUL and newline bytes): use Write/Edit. (2) `uv pip compile` for
+  `aarch64-apple-darwin` assumes macOS 13 and rejects MLX, so the lock is `--universal`. (3) `httpx.Response(content=bytes)` is already "consumed";
+  the fetcher serves such in-memory responses in slices (test doubles only). (4) `iter_bytes` re-chunks and loses data on a dropped connection; use `iter_raw`.
+  (5) A missing `request.json` means "cancelled" only for runs that started with one. (6) Playwright's WebKit reports CSP stylesheet notices for `<select>`
+  controls on the pre-existing Settings page too: not ours, but confirm in real Safari. (7) The worker only reports `idle` from `run_forever`; tests that
+  drive `step()` by hand must set it (`drained()` reads it).
+- **Open work.** Generate and pin the production key (nothing is signed yet); run doc 10's manual checks M1-M10 on a Mac; first signed release; optional
+  `launchctl`-less restart for Linux; a Settings control for `updates.repository` is deliberately absent (edit `settings.json`; it is validated);
+  provider selectors only when a second provider exists; Windows/Linux/containers are designed for, not built.
+
 ## Open questions for the owner
 
 - When should the first MAJOR release (v1.0.0) be declared, and what acceptance criteria apply?

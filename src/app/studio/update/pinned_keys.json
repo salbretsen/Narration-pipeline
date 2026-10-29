@@ -1,0 +1,5 @@
+{
+  "_comment": "Pinned release-signing PUBLIC keys (base64 raw Ed25519). Empty until the owner runs tools/release_keys.py generate and commits the public key. While empty, updates are disabled; nothing is signed.",
+  "keys": [],
+  "revoked": []
+}

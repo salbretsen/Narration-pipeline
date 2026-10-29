@@ -149,6 +149,14 @@ class ModelSettings(_M):
     retry_temperatures: list[float] = Field(default_factory=lambda: [0.7, 0.55])
     max_warm_models: int = Field(2, ge=1, le=4)
     allow_downloads: bool = True
+    cache_dir: str = Field("", description="Hugging Face model cache; empty -> the installation default. Kept outside every release.")
+
+    @field_validator("cache_dir")
+    @classmethod
+    def check_cache_dir(cls, v: str) -> str:
+        if "\x00" in v:
+            raise ValueError("path contains a NUL byte")
+        return v.strip()
 
     @field_validator("custom_voice_model", "base_model", "voice_design_model", "asr_model")
     @classmethod
@@ -302,6 +310,22 @@ class NarrativeSettings(_M):
         return self.context_before_chars + self.context_after_chars
 
 
+class UpdateSettings(_M):
+    """Nothing here lets a client choose an arbitrary URL: the repository is validated against the trusted-host list."""
+    channel: Literal["stable", "beta"] = "stable"
+    auto_check: bool = True
+    check_interval_hours: int = Field(24, ge=1, le=168)
+    repository: str = "github:salbretsen/Narration-pipeline"
+    keep_releases: int = Field(3, ge=2, le=10)
+
+    @field_validator("repository")
+    @classmethod
+    def check_repository(cls, v: str) -> str:
+        from .update.net import validate_repository
+
+        return validate_repository(v)
+
+
 class Settings(_M):
     version: int = 1
     narrative: NarrativeSettings = Field(default_factory=NarrativeSettings)
@@ -313,6 +337,7 @@ class Settings(_M):
     export: ExportSettings = Field(default_factory=ExportSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
+    updates: UpdateSettings = Field(default_factory=UpdateSettings)
 
 
 def load_settings(path: Path) -> Settings:

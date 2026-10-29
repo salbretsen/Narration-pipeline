@@ -16,12 +16,25 @@ function liveLine(b) {
   return "";
 }
 
+function updateNotice(u) {
+  if (!u || !u.managed) return "";
+  if (u.state === "failed" || u.state === "rolled_back") return html`<div class="callout warn" role="alert"><strong>Update problem.</strong> ${u.message} <a href="#/updates">Open Updates</a></div>`;
+  if (u.state === "staged") return html`<div class="callout info" role="status"><strong>Version ${u.staged_version} is downloaded and verified.</strong> <a href="#/updates">Install it</a> when you are ready.</div>`;
+  if (u.state === "available") return html`<div class="callout info" role="status"><strong>Version ${u.latest_version} is available.</strong> <a href="#/updates">See what is new</a></div>`;
+  if (["waiting", "draining", "installing", "restarting", "health_check", "downloading", "verifying", "staging"].includes(u.state))
+    return html`<div class="callout info" role="status"><strong>Update in progress:</strong> ${u.message} <a href="#/updates">Details</a></div>`;
+  return "";
+}
+
+let updateSummary = null;
+
 function draw(view, d) {
   const c = d.cards, st = d.segment_states;
   const segFrac = c.segments_total ? c.segments_produced / c.segments_total : 0;
   setHTML(view, html`
   <div class="page-head"><h1>Overview</h1>
     <div class="head-actions"><a class="btn primary" href="#/library">Import manuscripts</a><a class="btn" href="#/queue">Open queue</a></div></div>
+  ${updateNotice(updateSummary)}
   ${!d.worker.online ? html`<div class="callout warn" role="alert"><strong>The GPU worker is offline.</strong> Queued books will start when it is running.
      It restarts automatically; you can also restart it on <a href="#/about">System &amp; Licenses</a>.</div>` : ""}
   <section aria-labelledby="sum-h"><h2 id="sum-h" class="sr-only">Summary</h2>
@@ -76,8 +89,13 @@ function draw(view, d) {
 }
 
 export async function render(view) {
+  updateSummary = await get("/api/update/summary").catch(() => null);
   draw(view, await get("/api/overview"));
+  let n = 0;
   return onState(async () => {
-    try { draw(view, await get("/api/overview")); } catch (e) { if (e.status) toastError(e); }
+    try {
+      if (n++ % 5 === 0) updateSummary = await get("/api/update/summary").catch(() => updateSummary);
+      draw(view, await get("/api/overview"));
+    } catch (e) { if (e.status) toastError(e); }
   }, 2000);
 }

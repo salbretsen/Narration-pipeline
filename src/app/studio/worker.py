@@ -25,6 +25,7 @@ from . import assembly
 from .db import row, rows
 from .engines import EngineUnavailable, VoiceSpec, SynthParams, create_asr, create_tts, max_tokens_for
 from .narrative import store as N_store
+from .scheduler import FileQueueScheduler
 from .pipeline import StorageUnavailable, check_storage, process_segment, recover_interrupted
 from . import audio as A
 from .util import dumps, loads, now
@@ -106,6 +107,7 @@ class Worker:
         self._hb_thread: threading.Thread | None = None
         self._state = {"state": "idle", "job": None, "sid": None, "message": ""}
         self.caffeinate = _Caffeinate(ctx.settings().worker.prevent_sleep)
+        self.gate = FileQueueScheduler(ctx.run_dir)  # update drain: see scheduler.py
 
     # -------------------------------------------------------------- engines
     @property
@@ -178,7 +180,9 @@ class Worker:
         return info
 
     # ------------------------------------------------------------- scheduling
-    def _next_job(self, conn) -> dict | None:
+    def _next_job(self, conn, running_only: bool = False) -> dict | None:
+        if running_only:  # an update is waiting for the current job: continue it, start nothing new
+            return row(conn, "SELECT * FROM jobs WHERE status='running' AND kind IN ('book','analyze','assemble','export') ORDER BY id LIMIT 1")
         j = row(conn, "SELECT * FROM jobs WHERE kind='preview' AND status='queued' ORDER BY id LIMIT 1")
         if j:
             return j
@@ -210,8 +214,13 @@ class Worker:
 
     def step(self) -> bool:
         """Do one unit of work. Returns False when there is nothing to do."""
+        hold = self.gate.current_hold()
+        if hold is not None and hold.mode == "now":
+            return False  # the segment in flight already finished; nothing new starts while an update is installing
         with self.ctx.db.session() as conn:
-            job = self._next_job(conn)
+            job = self._next_job(conn, running_only=hold is not None)
+        if not job and hold is not None:
+            return False
         if not job:
             self._resume_storage_paused()
             with self.ctx.db.session() as conn:

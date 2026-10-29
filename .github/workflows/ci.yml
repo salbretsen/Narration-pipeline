@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies (mock engine only; no MLX on Linux)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install fastapi uvicorn python-multipart pydantic numpy pytest httpx cryptography shellcheck-py
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Tests (mock engine; real-Mac checks are manual, see docs/10)
+        working-directory: src/app
+        run: python -m pytest -q -p no:cacheprovider tests
+      - name: Installers are generated, valid shell and shellcheck-clean
+        run: |
+          python tools/build_installer.py
+          bash -n install_audiobook_studio_mac.sh
+          shellcheck -S style install_audiobook_studio_mac.sh
+          shellcheck -x -S style src/app/bin/audiobook-studio
+          git diff --exit-code -- install_audiobook_studio_claude.sh install_audiobook_studio_mac.sh || echo "::warning::generated installers differ from the committed ones (rebuild and commit)"
+      - name: Every pinned dependency has a prebuilt macOS arm64 wheel (no Xcode needed on a clean Mac)
+        run: python tools/check_lock_wheels.py

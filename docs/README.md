@@ -19,6 +19,7 @@ If you are a new session (human or AI), read these in order. Each file is self-c
 | 7 | [07-testing-and-baseline.md](07-testing-and-baseline.md) | Test inventory and the checklist that **establishes a baseline before you change anything** |
 | 8 | [08-decisions-gotchas-backlog.md](08-decisions-gotchas-backlog.md) | Why things are the way they are, traps already hit, known limits, backlog |
 | 9 | [09-narrative-pipeline.md](09-narrative-pipeline.md) | v0.3 semantic segmentation, Narrative Director, continuity, characters, per-model delivery, caching |
+| 10 | [10-installation-and-updates.md](10-installation-and-updates.md) | v0.5 no-prerequisite macOS installer, per-user launchd service, signed in-app updates, migration, release/CI/signing, provider interfaces, **manual Mac checklist** |
 
 Also: `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
 the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end scripts), `screenshots/`.
@@ -36,4 +37,7 @@ the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end s
   rebuild the installer; run the tests; commit on a version branch and tag; never touch the Mac's firewall or Homebrew;
   use temporary accounts for authenticated testing and remove them; never store or print real passwords in files.
 - **Before adding features:** run the baseline checklist in doc 7 so you know what "working" looks like.
+- **v0.5 changes how the app is installed and updated** (doc 10): `install_audiobook_studio_mac.sh` needs no Homebrew/Git/Python/FFmpeg/Xcode; releases live in
+  `~/Library/Application Support/Audiobook Studio/app/releases/<ver>`, user data in `state/` and the chosen library; updates are Ed25519-signed and applied by a
+  separate updater. **No production signing key exists yet and nothing has been run on a Mac**: read doc 10's limits before claiming otherwise.
 - **v0.3 adds an opt-in narrative layer** (multi-character voices, delivery direction, segment inspector). It is off by default; doc 9 is its reference.
