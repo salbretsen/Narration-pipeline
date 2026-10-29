@@ -451,10 +451,16 @@ CREATE TABLE analysis_stages (
 );
 """
 
+# v0.6 per-chapter tools: chapters.title is the effective title; original_title keeps the parsed title once it is overridden.
+SCHEMA_V3 = """
+ALTER TABLE chapters ADD COLUMN original_title TEXT;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
     (2, SCHEMA_V2),
+    (3, SCHEMA_V3),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

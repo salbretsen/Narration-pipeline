@@ -16,6 +16,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from studio.db import LATEST_VERSION
 from studio.update.trust import TrustStore, sign_payload
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -33,7 +34,7 @@ def trust_for(pub: str) -> TrustStore:
     return TrustStore.from_public_b64(pub)
 
 
-def write_tree(root: Path, version: str, full: bool = False, break_serve: bool = False, schema: int = 2, runtime_id: str = "",
+def write_tree(root: Path, version: str, full: bool = False, break_serve: bool = False, schema: int = LATEST_VERSION, runtime_id: str = "",
                extra_files: dict[str, bytes] | None = None) -> Path:
     """Create ``root/audiobook-studio-<version>/`` with a MANIFEST.sha256 covering every file."""
     top = root / f"audiobook-studio-{version}"
@@ -76,7 +77,7 @@ def entry(version: str, archive: Path, sha: str, size: int, **over) -> dict:
     d = {"version": version, "channel": "stable", "platform": "macos", "arch": "arm64",
          "url": f"{BASE}/v{version}/{archive.name}", "size": size, "sha256": sha, "published": "2026-10-01T00:00:00Z",
          "notes_url": f"https://github.com/salbretsen/Narration-pipeline/releases/tag/v{version}", "notes": f"Notes for {version}\n- fixed things",
-         "min_compatible_version": "0.0.0", "min_os": "14.0", "schema_version": 2, "runtime_id": ""}
+         "min_compatible_version": "0.0.0", "min_os": "14.0", "schema_version": LATEST_VERSION, "runtime_id": ""}
     d.update(over)
     return d
 

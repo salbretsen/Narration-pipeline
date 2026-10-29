@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from .. import chapters as CH
 from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S
 from ..context import Context, setup_logging
 from ..db import row
@@ -135,6 +136,10 @@ class OverrideReq(_Req):
 
 class SelectTakeReq(_Req):
     attempt_id: int
+
+
+class ChapterTitleReq(_Req):
+    title: Optional[str] = Field(None, max_length=300)
 
 
 class ExportReq(_Req):
@@ -560,6 +565,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     async def api_book_cover(book_id: int, file: UploadFile = File(...)):
         data = await read_upload(file, 10 * 1024 * 1024)
         return await run_in_threadpool(S.set_cover, ctx, book_id, file.filename or "cover.jpg", data)
+
+    @app.post("/api/books/{book_id}/chapters/{chapter_id}/regenerate")
+    def api_chapter_regenerate(book_id: int, chapter_id: int, req: ConfirmReq):
+        return CH.regenerate_chapter(ctx, book_id, chapter_id, req.confirm_invalidate)
+
+    @app.patch("/api/books/{book_id}/chapters/{chapter_id}")
+    def api_chapter_title(book_id: int, chapter_id: int, req: ChapterTitleReq):
+        return CH.set_chapter_title(ctx, book_id, chapter_id, req.title)
 
     @app.post("/api/books/{book_id}/assemble")
     def api_book_assemble(book_id: int):

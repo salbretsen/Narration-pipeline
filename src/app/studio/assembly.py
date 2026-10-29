@@ -55,6 +55,9 @@ def takes_digest(conn, book: dict, chapter_id: int) -> str:
     snap = loads(book["settings_json"], {})
     payload = {"sel": [(r["sid"], r["selected_attempt_id"]) for r in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
                "meta": [book["title"], book["author"]]}
+    ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    if ov:  # only retitled chapters, so digests of existing renders stay unchanged
+        payload["chapter_title"] = ov["title"]
     return short_hash(dumps(payload), 16)
 
 

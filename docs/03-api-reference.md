@@ -41,9 +41,11 @@ or network bind without users.
 | GET/PATCH | `/api/books/{id}` | full detail (chapters, renders, exports, release check, logs) / edit metadata |
 | POST | `/api/books/{id}/narrator` | `{voice_id, instructions, confirm_invalidate}`; `409` with `rendered_segments` until confirmed |
 | POST | `/api/books/{id}/resnapshot` | apply current global settings; `{confirm_invalidate}` |
-| POST | `/api/books/{id}/cover` | multipart JPEG/PNG |
+| POST | `/api/books/{id}/cover` | multipart JPEG/PNG (extension, size <= 10 MB and magic bytes checked); embedded as attached picture in M4B exports. Generated placeholder covers are not offered: they would need Pillow, which is not a dependency |
+| POST | `/api/books/{id}/chapters/{cid}/regenerate` | regenerate every rendered segment of one chapter; `{confirm_invalidate}`; `409` with `rendered_segments` until confirmed; deletes that chapter's masters, revokes any release, queues the book at the front |
+| PATCH | `/api/books/{id}/chapters/{cid}` | `{title}`: title override (empty restores the parsed title); `chapters.title` is the effective title, `chapters.original_title` (schema v3) keeps the parsed one; book detail exposes `title_overridden` and `original_title`. Audio is never invalidated; the chapter master just becomes "outdated" until re-assembled |
 | POST | `/api/books/{id}/assemble` | enqueue chapter-master assembly |
-| POST | `/api/books/{id}/export` | `{kind: m4b | chapter_m4b | mp3_zip, chapter_id?}` enqueues an export job |
+| POST | `/api/books/{id}/export` | `{kind: m4b | chapter_m4b | mp3_zip, chapter_id?}` enqueues an export job; `chapter_m4b` exports one chapter (chapter markers/title tags use the effective title), blocked like the book export if any segment lacks usable audio, labelled DRAFT until the book is released |
 | POST | `/api/books/{id}/report` | write the QA report (HTML + JSON) |
 | POST | `/api/books/{id}/release` | `{approved_by, listen_scope: full|partial, attest, notes}`; `409` with blockers |
 | POST | `/api/books/{id}/release/revoke` | `{reason}` |

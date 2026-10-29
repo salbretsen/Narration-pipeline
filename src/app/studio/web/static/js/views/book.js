@@ -49,7 +49,9 @@ export async function render(view, parts) {
         <tbody>${b.chapters.map((c) => {
           const sc = c.status_counts, mp3 = c.renders.mp3, wav = c.renders.wav;
           return html`<tr><td>${c.index}</td>
-            <td><strong>${c.title}</strong><div class="small muted">${c.words.toLocaleString()} words · est. ${fmtDuration(c.est_duration_s)}</div></td>
+            <td><strong>${c.title}</strong>${c.title_overridden ? html` <span class="small muted">(renamed; original: ${c.original_title})</span>` : ""}
+              <div class="small"><button class="linklike" data-act="chapter-title" data-ch="${c.id}">Edit title</button> · <button class="linklike" data-act="chapter-regen" data-ch="${c.id}" ${busyJob ? html`disabled` : ""}>Regenerate chapter</button></div>
+              <div class="small muted">${c.words.toLocaleString()} words · est. ${fmtDuration(c.est_duration_s)}</div></td>
             <td class="small">${(sc.passed || 0) + (sc.approved || 0) + (sc.flagged || 0)}/${c.segments} rendered${sc.flagged ? html` · <a href="#/review/${id}?chapter=${c.id}&filter=flagged" class="warn-text">${sc.flagged} flagged</a>` : ""}
               ${c.missing_audio ? html`<div class="err">${c.missing_audio} missing – assembly blocked</div>` : ""}</td>
             <td>${mp3 ? html`${player(`/media/chapter/${c.id}.mp3`, `Chapter ${c.index} master`, "mini")}<div class="small muted">${fmtDuration(mp3.duration_s)} · ${mp3.draft ? "DRAFT" : "final"}${c.render_current ? "" : html` · <span class="warn-text">outdated</span>`}</div>` : html`<span class="small muted">not assembled</span>`}</td>
@@ -199,6 +201,21 @@ export async function render(view, parts) {
       else if (a === "export-m4b") await busy(t, () => post(`/api/books/${id}/export`, { kind: "m4b" }), "M4B export queued");
       else if (a === "export-zip") await busy(t, () => post(`/api/books/${id}/export`, { kind: "mp3_zip" }), "MP3 ZIP export queued");
       else if (a === "chapter-m4b") await busy(t, () => post(`/api/books/${id}/export`, { kind: "chapter_m4b", chapter_id: Number(t.dataset.ch) }), "Chapter M4B export queued");
+      else if (a === "chapter-title") {
+        const c = b.chapters.find((x) => x.id === Number(t.dataset.ch));
+        const res = await dialog({ title: `Chapter ${c.index} title`, form: true, buttons: [{ label: "Save", value: "ok", kind: "primary" }],
+          body: html`<label>Title (empty restores the original) <input name="title" maxlength="300" value="${c.title}"></label><p class="small muted">Original: ${c.original_title}. Renaming never regenerates audio; re-assemble to update the chapter master tags.</p>` });
+        if (!res) return;
+        await busy(t, () => patch(`/api/books/${id}/chapters/${c.id}`, { title: res.data.title || "" }), "Chapter title saved");
+      } else if (a === "chapter-regen") {
+        const cid = Number(t.dataset.ch);
+        try { await busy(t, () => post(`/api/books/${id}/chapters/${cid}/regenerate`, { confirm_invalidate: false }), "Chapter queued for regeneration"); }
+        catch (err) {
+          if (err.status === 409 && (await confirmDialog("Regenerate this chapter?", err.message, "Regenerate chapter", true))) {
+            await busy(t, () => post(`/api/books/${id}/chapters/${cid}/regenerate`, { confirm_invalidate: true }), "Chapter queued for regeneration");
+          }
+        }
+      }
       else if (a === "report") { const r = await busy(t, () => post(`/api/books/${id}/report`)); toast(`QA report written (${r.findings} findings)`, "success"); }
       else if (a === "revoke") {
         const res = await dialog({ title: "Revoke release approval", form: true, buttons: [{ label: "Revoke", value: "ok", kind: "danger" }], body: html`<label>Reason <input name="reason" maxlength="500"></label>` });
