@@ -16,7 +16,7 @@ signed in (loopback without accounts); CLI uses `cli`, the worker `system`. Rele
 and each `review_actions[].actor`. No schema change.
 
 **Admin-only** (operators get 403): `PUT /api/settings`, `GET /api/storage`, `GET /api/storage/browse`, `POST /api/storage/*`,
-`POST /api/books/{id}/move`, `POST /api/books/{id}/archive`, `POST /api/worker/restart`, `POST /api/voices/{id}/archive`,
+`POST /api/books/{id}/move`, `POST /api/books/{id}/archive`, `POST /api/worker/restart`, `POST /api/voices/{id}/archive`, `DELETE /api/voices/{id}/refs/{ref_id}`,
 `GET|POST /api/auth/users`, `GET /api/doctor`, and everything under `/api/disk/` (disk management, below).
 
 ## Auth and system
@@ -45,7 +45,8 @@ and each `review_actions[].actor`. No schema change.
 | POST | `/api/imports/{token}/confirm` | `{title, author, narrator_credit, publisher, year, description, genre, language, voice_id, instructions, include[], queue}`; idempotent |
 | GET | `/api/books` | summaries (`?archived=true` to include archived) |
 | GET/PATCH | `/api/books/{id}` | full detail (chapters, renders, exports, release check, logs) / edit metadata |
-| POST | `/api/books/{id}/narrator` | `{voice_id, instructions, confirm_invalidate}`; `409` with `rendered_segments` until confirmed |
+| POST | `/api/books/{id}/narrator` | replace THIS version's narrator: `{voice_id, instructions, confirm_invalidate}`; `409` with `rendered_segments` until confirmed (regenerates this version) |
+| POST | `/api/books/{id}/versions` | **narrate the same manuscript with another voice** as a NEW book (v0.7.0): `{voice_id, instructions?, queue?}`. Copies manuscript, chapters, characters, attribution, Director guidance and text edits; every segment starts pending; the source book is untouched. `409` if that voice+instructions already has a version, or the source is rendering. Book payloads carry `work_uid`, `narrator`, `display_title` (`Title - Narrator`), `version_count`; `GET /api/books/{id}` also has `versions[]` |
 | POST | `/api/books/{id}/resnapshot` | apply current global settings; `{confirm_invalidate}` |
 | POST | `/api/books/{id}/cover` | multipart JPEG/PNG (extension, size <= 10 MB and magic bytes checked); embedded as attached picture in M4B exports. Generated placeholder covers are not offered: they would need Pillow, which is not a dependency |
 | POST | `/api/books/{id}/chapters/{cid}/regenerate` | regenerate every rendered segment of one chapter; `{confirm_invalidate}`; `409` with `rendered_segments` until confirmed; deletes that chapter's masters, revokes any release, queues the book at the front |
@@ -97,6 +98,14 @@ and each `review_actions[].actor`. No schema change.
 | POST | `/api/segments/{id}/boundary` | `{op: split|merge_next|move_end, offset}` |
 | POST | `/api/segments/{id}/preview` | queues a preview with the segment's own voice and delivery (not saved as a take) |
 | POST | `/api/segments/{id}/redirect` | marks the direction stale and queues a Director run |
+| POST | `/api/books/{id}/narrative/apply-delivery` | **v0.7.0** `{confirm=false, include_approved=false}`: bring already rendered takes in line with the delivery settings now in force. Without `confirm` a `409` (NeedsConfirmation) with `details {segments, approved, chapters, approved_included}` and nothing changes; with it, only segments whose selected take's `gen_key` differs from the current plan are reset (approved ones only with `include_approved`), release approval is revoked, the book is queued first. Returns `{segments, reset, queued, job_id, approved, chapters}` (`reset: 0`, `message` when nothing differs). Old takes stay as history |
+| POST | `/api/segments/{id}/ab` | **v0.7.0** `{comparison}` (`directed_vs_undirected`, `llm_vs_template_translator`, `bank_vs_base_clip`, `pace_on_vs_off`): queue a blind A/B round, two `preview` jobs with the same seed. `409` when the pair would sound identical or the voice kind does not apply; `422` for an unknown comparison. Returns `{round_id, jobs, segment_id, book_id, comparison}` |
+| GET | `/api/ab/{round_id}` | the round as the listener sees it: `{status pending|ready|failed, sides:[{side x|y, job_id, status, media_url}], voted, mock, engine, title, segment_id, book_id}`; after a vote also `revealed {x, y}` (setting labels), `vote`, `tally`. Clips are `/media/preview/{job_id}`. The mapping of X/Y to settings is not in the response until a vote exists |
+| POST | `/api/ab/{round_id}/vote` | `{choice: x|y|same, other_narrator=false}`; one vote per round (`409` otherwise, or while a clip is unfinished). Returns `{winner a|b|same, revealed, tally, comparison}` |
+| GET | `/api/books/{id}/ab` | `{comparisons: [{id, title, a_label, b_label, applies}], tally: {comparison: {a_wins, b_wins, same, votes, non_tie, a_share, other_narrator_flags, other_narrator_share, ...}}}` for the book |
+| GET | `/api/books/{id}/ab/random` | `?comparison=&exclude=1,2,3`: a segment where the two settings give different audio (`{segment_id, sid, chapter_idx, excerpt}`), `404` if none among up to 200 sampled |
+
+Narrative status (`GET /api/books/{id}/narrative`) now also carries `ab` (the tally of every comparison). `GET /api/segments/{id}/inspect` `delivery` carries `pace`, `pace_reason`, `ref_id`, `ref_bucket`, and each attempt `pace_used` and `ref_id_used`. Director stage stats gain `chapter_plans`, `chapter_plan_failures`, `chapter_plan_cache_hits`, `scene_calls`, `reasoning_chars`, `would_escalate`, `translations`, `translation_cache_hits`, `translation_failures`.
 
 List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/segments/{id}` now include `gen_key, instruct_used, delivery_applied, asr_skipped, peak_mem_gb, voice_id_used`.
 
@@ -111,12 +120,16 @@ List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/
 | POST | `/api/voices/{id}/preview` | `{text, instruct, verify, seed}` enqueues a preview job (real synthesis) |
 | POST | `/api/voices/promote` | `{job_id, name}` turn a designed-voice preview into a stable clone narrator |
 | POST | `/api/voices/{id}/archive` | admin |
+| GET | `/api/voices/{id}/refs` | **v0.7.0** emotion reference bank of a CLONED voice (`422` for other kinds): `{voice_id, synthetic, source_voice {id, name, archived}|null, buckets:[{bucket tense|tender|sorrow|bright, label, emotion_text, script_id, ref|null}]}`; a `ref` is `{id, bucket, ref_text, duration_s, source recording|synthetic, source_ref, metrics {gain_db, f0_delta_hz, centroid_delta_hz, wer, engine, ...}, mock}` |
+| POST | `/api/voices/{id}/refs/candidates` | `{bucket, source_voice_id?, n=3 (1-5)}`: queue `n` preview jobs on the designed voice the clone was promoted from, each delivering that bucket's lab script in that register (`to_lab`). Each finished job registers a draft recording (result carries `recording_id`, `asr_check`, `drift`). `422` unless the clone came from a designed voice |
+| POST | `/api/voices/{id}/refs/adopt` | `{bucket, recording_id, owner_attest=false, statement=""}`: adopt a lab recording as the bucket's clip (replaces an existing one). `422` unless the recording has a Whisper check with word error <= 8%, is not rated poor (microphone recordings), and satisfies the consent rule: human clone = `owner_attest` + statement >= 10 chars and a non-synthetic recording; synthetic clone = a candidate generated by its own source voice, no attestation needed. Returns the new `GET .../refs` body |
+| DELETE | `/api/voices/{id}/refs/{ref_id}` | **admin only**: remove a clip and its files. Takes already made with it keep their audio |
 | GET | `/api/reference-scripts` | the lab's sample scripts (id, tier core/range, category, title, purpose, text, words, est_seconds) and the audition text |
 | POST | `/api/recordings` | multipart `file, script_id, ref_text, label` → draft recording with quality report; `422` (with `details.quality`) if too short/silent/undecodable |
 | GET | `/api/recordings` | drafts (newest first; drafts older than 14 days are deleted on listing) |
 | GET | `/api/recordings/compare?ids=rec_a,rec_b[,...]` | 2-8 saved takes side by side → `{rows:[{id, label, script_title, verdict, duration_s, peak_dbfs, rms_dbfs, noise_floor_dbfs, snr_db, clip_ratio, warnings, fails, ref_text, rank, recommended}], recommended_id}`. Advisory rank: verdict, then fewer warnings, then voice-to-noise; poor takes are never recommended (`recommended_id` null if all poor). `422` outside 2-8 ids, `404` unknown id. Whisper transcript match comes from the existing `check` jobs (the UI merges them). Picking a take = the existing `POST /api/voices/from-recording` |
 | PATCH / DELETE | `/api/recordings/{rid}` | edit the transcript `{ref_text}` / delete |
-| POST | `/api/recordings/{rid}/job` | `{mode: check|audition, text?}` → a preview-kind job. `check` = Whisper vs transcript; `audition` = Base-model clone of `text` |
+| POST | `/api/recordings/{rid}/job` | `{mode: check|audition, text?}` → a preview-kind job. `check` = Whisper vs transcript; `audition` = Base-model clone of `text` |; since v0.7.0 a finished `check` also stores `asr_check {matches, wer, ...}` in the recording's meta (editing the transcript clears it), and recordings made from reference-bank candidates carry `source: synthetic`, `source_voice_id`, `bucket`, `drift` |
 | POST | `/api/voices/from-recording` | `{recording_id, name, rights_holder, owner_attest, statement}`; `422` if not attested or rated poor |
 
 ## Pronunciation and voice pace (C2; `web/pronunciation_api.py`, logic in `pronunciation.py`)
@@ -137,7 +150,7 @@ revoked). Writes that affect no rendered segment succeed immediately with `stale
 ## Media (all support GET and HEAD, single-range requests, correct MIME)
 
 `/media/attempt/{id}` (a take; `?download=1`) · `/media/chapter/{chapter_id}.{wav|mp3}` · `/media/export/{id}` ·
-`/media/preview/{job_id}` · `/media/recording/{rid}` · `/media/voice/{voice_id}/reference` · `/media/cover/{book_id}` ·
+`/media/preview/{job_id}` · `/media/recording/{rid}` · `/media/voice/{voice_id}/reference` · `/media/voice/{voice_id}/ref/{ref_id}` (a bank clip, v0.7.0) · `/media/cover/{book_id}` ·
 `/media/manuscript/{book_id}`. Every path is checked to lie inside the book's registered storage (or the data dir); otherwise `403`.
 
 ## Settings and storage
@@ -163,6 +176,7 @@ transaction, keep the old copy).
 | GET | `/api/disk/usage` | per book and per category sizes (manuscripts, segments = selected takes, alternates = other takes/attempts, reports, masters, exports; plus a `purgeable` estimate), global items (voices, recordings, previews, import copies, database, backups, logs, model cache), free space of the library volume, model cache and backups folder, and the backup list |
 | GET | `/api/disk/backups` | `{books: [...zip files in backups/books], databases: [...files in backups/db]}` |
 | POST | `/api/disk/books/{id}/delete` | `{confirm: true}`: delete the book (database rows, its storage folders, its import copy). Audited. Moved-away old copies are not touched |
+| POST | `/api/disk/books/{id}/delete-all-versions` | `{confirm: true}`: remove the book entirely, i.e. every narrator version of its manuscript (v0.7.0). All-or-nothing: refused with `409` if any version is queued, rendering or paused. Admin only; `409` + preview (versions, bytes) until confirmed. Audited. `/delete` above removes just one version |
 | POST | `/api/disk/books/{id}/purge` | `{scope: takes\|exports\|masters, confirm: true}`. `takes` removes attempts that are not any segment's selected take (selected and therefore approved takes always survive; in-progress attempts are skipped); `exports` removes export rows and files; `masters` removes chapter renders (re-run Assemble). Audited |
 | POST | `/api/disk/books/{id}/backup` | write a book backup zip to `backups/books/` (refused with `409` while the book's job is running) |
 | POST | `/api/disk/restore` | `{name}`: restore a zip from `backups/books/` as a NEW book (new uid and ids, title gets " (restored)") |
@@ -194,7 +208,8 @@ and a warning is returned), and removes everything it created if any step fails.
 - `models`: `engine` (mlx on Apple Silicon else mock), `custom_voice_model`, `base_model`, `voice_design_model`
   (`mlx-community/Qwen3-TTS-12Hz-1.7B-{CustomVoice,Base,VoiceDesign}-bf16`), `asr_model` (`mlx-community/whisper-large-v3-turbo`),
   `language`, `temperature/top_p/repetition_penalty` (null = model default), `retry_temperatures [0.7, 0.55]`, `max_warm_models 2`, `allow_downloads`.
-- `narrative` (v0.3, doc 9): `semantic_segmentation` (default off), `max_segment_chars 500`, `min_segment_chars 120`, `context_before_chars 1250`, `context_after_chars 1250`, `attribution_threshold 0.6`, `emotion_sensitivity 0.5`, `director_enabled`, `director_lookahead 12`, `continuity_smoothing`, `smoothing_strength 0.6`, `reset_scope`, `cascade_limit 24`, `verify_mode every|sample|off`, `delivery{...}`, `llm{...}` (the API key is not a setting: save it with `PUT /api/secrets/llm`; `api_key_env` is a fallback environment-variable name `STUDIO_LLM_*`).
+- `narrative` (v0.3, doc 9): `semantic_segmentation` (default off), `max_segment_chars 500`, `min_segment_chars 120`, `context_before_chars 1250`, `context_after_chars 1250`, `attribution_threshold 0.6`, `emotion_sensitivity 0.5`, `director_enabled`, `director_lookahead 12`, `continuity_smoothing`, `smoothing_strength 0.6`, `reset_scope`, `cascade_limit 24`, `verify_mode every|sample|off`, `delivery{custom_voice, voice_design, max_instruct_chars, clone, pace_from_direction, pauses_from_direction, translator, bank_min_intensity}`, `director_chapter_plan`, `llm{provider, base_url, model, chapter_model, scene_model, translator_model, api_key_env, timeout_s, temperature, max_tokens, chapter_max_tokens, chapter_timeout_s}` (new keys and defaults: doc 9; the API key is not a setting: save it with `PUT /api/secrets/llm`; `api_key_env` is a fallback environment-variable name `STUDIO_LLM_*`).
+- `POST /api/narrative/llm/test` `{base_url, model, chapter_model?, scene_model?, translator_model?}` (Settings > Narrative > Local LLM > Test connection; admin; uses the typed values, saved or not, and the saved key): returns `{ok, checks:[{name, ok, detail}]}` for reachable, key accepted, model listed, one tiny question answered, and (v0.7.0, when the server lists its models) each distinct chapter/scene/translator model is listed. A model that only produces reasoning fails the question check instead of reporting an empty reply.
 - `PUT /api/secrets/{slot}` `{"value": "..."}` and `DELETE /api/secrets/{slot}` (admin only; slot `llm` today): save or remove an API key for an outbound OpenAI-compatible endpoint. Write-only: `GET /api/settings` returns `secrets: {slot: {label, configured, updated_at}}` and never the key. Keys are visible ASCII without spaces, at most 400 characters; the audit log records the action without the value.
 - `export`: `sample_rate 44100`, `mp3_bitrate_kbps 192`, `m4b_bitrate_kbps 96`, `loudness_normalize`, `target_lufs -19`, `true_peak_db -3`, `auto_assemble_drafts`.
 - `server`: `host 127.0.0.1`, `port 7861`, `allow_remote false`, `https_enabled false`, `https_port 8443`, `allowed_hosts []`,

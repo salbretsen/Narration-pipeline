@@ -68,10 +68,10 @@ function draw(view, d) {
     ${d.recent.length ? html`<div class="table-wrap"><table class="table recent">
       <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Duration</th><th scope="col">State</th></tr></thead>
       <tbody>${d.recent.map((b) => html`<tr>
-        <td><a href="#/book/${b.id}"><strong>${b.title}</strong></a><div class="muted small">${b.source || ""} · imported ${fmtDate(b.created_at)}</div>
+        <td><a href="#/book/${b.id}"><strong>${b.display_title}</strong></a><div class="muted small">${b.source || ""} · imported ${fmtDate(b.created_at)}</div>
             ${liveLine(b)}${b.last_error ? html`<div class="err small">Last error: ${b.last_error}</div>` : ""}</td>
         <td>${b.voice || "–"}</td>
-        <td class="nowrap">${progressBar(b.progress, `${b.title} progress`)}<div class="small muted">${b.produced}/${b.segments} segments${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
+        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments} segments${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
         <td class="small nowrap">est. ${fmtDuration(b.est_duration_s)}<br>actual ${b.audio_duration_s ? fmtDuration(b.audio_duration_s) : "–"}</td>
         <td>${badge(b.state)}</td></tr>`)}</tbody></table></div>`
       : html`<div class="empty"><p>No books yet.</p><a class="btn primary" href="#/library">Import your first manuscript</a></div>`}

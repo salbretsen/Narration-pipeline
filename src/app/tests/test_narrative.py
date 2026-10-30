@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import httpx
 import pytest
 
+import narrative_fixtures as NF
 from conftest import make_text, needs_ffmpeg
 from narrative_fixtures import BOOK, CH1, CH2, SCENE, TXT, P
 from studio.config import DeliverySettings, LLMSettings, NarrativeSettings
@@ -507,7 +508,8 @@ class RecordingEngine(MockEngine):
         self.log = []
 
     def synthesize(self, voice, text, params, sid=None):
-        self.log.append({"sid": sid, "text": text, "instruct": params.instruct, "kind": voice.kind, "speaker": voice.speaker, "model": voice.model_id})
+        self.log.append({"sid": sid, "text": text, "instruct": params.instruct, "kind": voice.kind, "speaker": voice.speaker, "model": voice.model_id,
+                         "ref_audio_path": voice.ref_audio_path, "ref_text": voice.ref_text})
         return super().synthesize(voice, text, params, sid)
 
 
@@ -769,6 +771,38 @@ def test_director_results_are_cached_across_runs(client, ctx):
     assert stats["cache_hits"] >= n
 
 
+def test_director_holds_no_write_lock_during_llm_requests(client, ctx):
+    """Regression (found on the Mac, v0.6.2): director_batch kept one BEGIN IMMEDIATE open across every LLM request, so the worker
+    heartbeat hit 'database is locked', the lease went stale and the web server killed the worker in a loop."""
+    import sqlite3
+
+    from studio.narrative import analysis
+
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    worker_with(ctx).run_until_idle()
+    with ctx.db.tx() as conn:
+        conn.execute("DELETE FROM directions WHERE book_id=?", (bid,))
+        conn.execute("DELETE FROM director_cache WHERE 1=1")
+    probes = []
+
+    def handler(req):
+        other = sqlite3.connect(str(ctx.db.path), timeout=0, isolation_level=None)
+        try:
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("ROLLBACK")
+            probes.append("free")
+        except sqlite3.OperationalError:
+            probes.append("locked")
+        finally:
+            other.close()
+        return httpx.Response(500, text="stub")
+
+    r = analysis.director_batch(ctx, bid, 3, llm_client(handler))
+    assert probes and set(probes) == {"free"}, probes
+    assert r["directed"] == 3
+
+
 @needs_ffmpeg
 def test_clone_voice_gets_no_instruction_but_keeps_reference_conditioning(client, ctx):
     from conftest import make_wav_bytes
@@ -922,11 +956,19 @@ class _Stub(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         user = body["messages"][1]["content"]
         _Stub.seen.append(user)
-        if "Cast:" in user:  # attribution request
-            m = re.search(r"(Hale said nothing|Tom Briggs, standing a little apart[^.]*)", user)
+        if user.startswith("Cast:"):  # attribution request
             reply = {"speaker": "Hale", "confidence": 0.8, "evidence": "told the doctor"} if "told the doctor" in user else {"speaker": "UNKNOWN", "confidence": 0, "evidence": ""}
-        else:
+        elif user.startswith("Chapter beat sheet"):
+            reply = NF.beats_reply(user)
+        elif user.startswith("Direct this scene"):
+            reply = NF.scene_reply(user)
+        elif user.startswith("Direct this segment."):
             reply = good_reply(speaker=json.loads(user.split("\n", 1)[1])["segment"]["speaker"] or "Narrator", facts=[], context_refs=[])
+        elif user.startswith("Translate this direction"):
+            reply = {"instruction": "voice low and unsteady, pausing between phrases"}
+        else:  # e.g. the abstractive chapter summary: this stub has no answer
+            self.send_error(500)
+            return
         data = json.dumps({"choices": [{"message": {"content": json.dumps(reply)}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -948,6 +990,8 @@ def test_llm_stage_end_to_end_against_a_stub_endpoint(client, ctx):
         st = client.get(f"/api/books/{bid}/narrative").json()
         assert st["stages"]["attribution"]["stats"]["tried"] >= 1
         assert st["stages"]["director"]["stats"]["llm_calls"] >= 1
+        assert st["stages"]["director"]["stats"]["chapter_plans"] >= 1 and st["stages"]["director"]["stats"]["scene_calls"] >= 1
+        assert any(u.startswith("Chapter beat sheet") for u in _Stub.seen) and any(u.startswith("Direct this scene") for u in _Stub.seen)
         with ctx.db.session() as conn:
             srcs = {r["source"] for r in rows(conn, "SELECT source FROM directions WHERE book_id=?", (bid,))}
             llm_spans = rows(conn, "SELECT * FROM nar_spans WHERE book_id=? AND attribution='llm'", (bid,))

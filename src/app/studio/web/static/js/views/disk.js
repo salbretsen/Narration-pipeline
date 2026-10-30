@@ -53,14 +53,14 @@ function draw(view, u) {
   <section class="card" aria-labelledby="books-h"><h2 id="books-h">Books</h2>
     ${u.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Book</th>
       ${CATS.map((c) => html`<th scope="col" title="${labels[c] || c}">${labels[c] || c}</th>`)}<th scope="col">Total</th><th scope="col">Actions</th></tr></thead><tbody>
-      ${u.books.map((b) => html`<tr><td>${b.title}${b.archived ? html` <span class="badge tone-neutral">archived</span>` : ""}${b.busy ? html` <span class="badge tone-warn">in queue</span>` : ""}</td>
+      ${u.books.map((b) => html`<tr><td>${b.display_title}${b.archived ? html` <span class="badge tone-neutral">archived</span>` : ""}${b.busy ? html` <span class="badge tone-warn">in queue</span>` : ""}</td>
         ${CATS.map((c) => html`<td>${fmtBytes(b.categories[c] || 0)}</td>`)}<td><strong>${fmtBytes(b.total_bytes)}</strong></td>
         <td class="actions">
           <button class="btn small" data-act="backup" data-id="${b.id}">Back up</button>
           <button class="btn small" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
           <button class="btn small" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
           <button class="btn small" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
-          <button class="btn small danger" data-act="delete" data-id="${b.id}" data-title="${b.title}" ${b.busy ? "disabled" : ""}>Delete book</button></td></tr>`)}
+          <button class="btn small danger" data-act="delete" data-id="${b.id}" data-title="${b.display_title}" ${b.busy ? "disabled" : ""}>Delete</button></td></tr>`)}
       <tr><th scope="row">All books</th>${CATS.map((c) => html`<td>${fmtBytes(u.category_totals[c] || 0)}</td>`)}<td><strong>${fmtBytes(u.library_bytes)}</strong></td><td></td></tr>
       </tbody></table></div>
       <p class="small muted">Books that are queued, rendering or paused cannot be purged or deleted; cancel their job first. Purging takes keeps every selected (and therefore every approved) take.</p>`

@@ -2,6 +2,9 @@
 changing emotions, scene transitions, recurring characters with changing names)."""
 from __future__ import annotations
 
+import json
+import re
+
 from studio.parsing import Block
 
 
@@ -47,3 +50,31 @@ TXT = (
     + "\n\n".join(b.text for b in CH2)
     + "\n"
 )
+
+
+# ------------------------------------------------------------------ stub LLM replies for the Director v2 prompts
+
+
+def beats_reply(user: str, emotions=("calm", "fear")) -> dict:
+    """A valid chapter beat sheet for a 'Chapter beat sheet.' request: two beats split at the middle paragraph."""
+    n = max(int(m) for m in re.findall(r"\[P(\d+)\]", user))
+    half = max(1, n // 2)
+    beat = lambda a, b, emo, inten: {"paras": [a, b], "emotion": emo, "intensity": inten, "pacing": "measured", "tension": inten, "purpose": "stub", "pause": "beat"}  # noqa: E731
+    beats = [beat(1, half, emotions[0], 2)]
+    if n > half:
+        beats.append(beat(half + 1, n, emotions[1], 3))
+    return {"arc": "quiet, then dread", "scenes": [{"paras": [1, n], "summary": "A stub scene.", "beats": beats}]}
+
+
+def scene_payload(user: str) -> dict:
+    """The JSON object of a 'Direct this scene.' request (a re-ask appends a sentence after it)."""
+    obj, _ = json.JSONDecoder().raw_decode(user.split("\n", 1)[1])
+    return obj
+
+
+def scene_reply(user: str, **over) -> dict:
+    """A valid scene reply covering exactly the segment ids in the request."""
+    base = {"emotion": "calm", "intensity": 2, "pacing": "normal", "tension": 2, "delivery": "even and unhurried", "change": False,
+            "pause": "none", "confidence": 0.8, "review": False}
+    base.update(over)
+    return {"items": [{"id": s["id"], **base} for s in scene_payload(user)["segments"]]}

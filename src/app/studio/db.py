@@ -470,11 +470,58 @@ ALTER TABLE voices ADD COLUMN pace REAL NOT NULL DEFAULT 1.0;
 ALTER TABLE chapters ADD COLUMN original_title TEXT;
 """
 
+# v0.7.0: narrator versions. Versions of one manuscript are separate books that share a work_uid (every existing book is its own work).
+SCHEMA_V4 = """
+ALTER TABLE books ADD COLUMN work_uid TEXT;
+UPDATE books SET work_uid = uid WHERE work_uid IS NULL;
+CREATE INDEX IF NOT EXISTS ix_books_work ON books(work_uid);
+"""
+
+# v0.7.x: per-clone-voice emotion reference bank, A/B listening votes, and the pace / reference used by each take.
+SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS voice_refs (
+    id INTEGER PRIMARY KEY,
+    voice_id INTEGER NOT NULL REFERENCES voices(id),
+    bucket TEXT NOT NULL,
+    ref_audio_path TEXT NOT NULL,
+    ref_original_path TEXT,
+    ref_text TEXT NOT NULL,
+    ref_sha256 TEXT NOT NULL,
+    ref_duration_s REAL,
+    source TEXT NOT NULL,
+    source_ref TEXT,
+    consent_json TEXT NOT NULL,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    UNIQUE(voice_id, bucket)
+);
+CREATE INDEX IF NOT EXISTS ix_voice_refs_voice ON voice_refs(voice_id);
+CREATE TABLE IF NOT EXISTS ab_votes (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id),
+    segment_id INTEGER,
+    comparison TEXT NOT NULL,
+    a_label TEXT NOT NULL,
+    b_label TEXT NOT NULL,
+    a_gen_key TEXT,
+    b_gen_key TEXT,
+    winner TEXT NOT NULL CHECK (winner IN ('a','b','same')),
+    other_narrator INTEGER NOT NULL DEFAULT 0,
+    actor TEXT,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ab_votes_book ON ab_votes(book_id, comparison);
+ALTER TABLE attempts ADD COLUMN pace_used REAL;
+ALTER TABLE attempts ADD COLUMN ref_id_used INTEGER;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
     (2, SCHEMA_V2),
     (3, SCHEMA_V3),
+    (4, SCHEMA_V4),
+    (5, SCHEMA_V5),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

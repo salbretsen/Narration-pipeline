@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import chapters as CH
-from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S
+from .. import APP_NAME, COMPANY, COPYRIGHT, DEVELOPER, VERSION_LABEL, __version__, services as S, versions as V
 from ..context import Context, setup_logging
 from ..db import row
 from ..doctor import MODEL_LICENSES, run_checks
@@ -74,6 +74,12 @@ class NarratorReq(_Req):
     voice_id: int
     instructions: Optional[str] = Field(None, max_length=1000)
     confirm_invalidate: bool = False
+
+
+class NarratorVersionReq(_Req):
+    voice_id: int
+    instructions: Optional[str] = Field(None, max_length=1000)
+    queue: bool = False
 
 
 class ConfirmReq(_Req):
@@ -189,6 +195,9 @@ class PasswordReq(_Req):
 class LLMTestReq(_Req):
     base_url: str = Field(max_length=300)
     model: str = Field("", max_length=200)
+    chapter_model: str = Field("", max_length=200)
+    scene_model: str = Field("", max_length=200)
+    translator_model: str = Field("", max_length=200)
 
 
 class UserReq(_Req):
@@ -211,6 +220,19 @@ class FromRecordingReq(_Req):
     recording_id: str = Field(max_length=40)
     name: str = Field(min_length=1, max_length=80)
     rights_holder: str = Field(max_length=120)
+    owner_attest: bool = False
+    statement: str = Field("", max_length=1000)
+
+
+class RefCandidatesReq(_Req):
+    bucket: str = Field(max_length=20)
+    source_voice_id: Optional[int] = None
+    n: int = Field(3, ge=1, le=5)
+
+
+class RefAdoptReq(_Req):
+    bucket: str = Field(max_length=20)
+    recording_id: str = Field(max_length=40)
     owner_attest: bool = False
     statement: str = Field("", max_length=1000)
 
@@ -558,6 +580,11 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_book_narrator(book_id: int, req: NarratorReq):
         return S.change_narrator(ctx, book_id, req.voice_id, req.instructions, req.confirm_invalidate)
 
+    @app.post("/api/books/{book_id}/versions")
+    def api_book_add_version(book_id: int, req: NarratorVersionReq, request: Request):
+        """Narrate the same manuscript with another voice as a NEW book; the existing narration is left untouched."""
+        return V.add_version(ctx, book_id, req.voice_id, req.instructions, req.queue, (getattr(request.state, "user", None) or {}).get("name", "operator"))
+
     @app.post("/api/books/{book_id}/resnapshot")
     def api_book_resnapshot(book_id: int, req: ConfirmReq):
         return S.resnapshot_settings(ctx, book_id, req.confirm_invalidate)
@@ -678,6 +705,23 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     def api_voice_archive(voice_id: int):
         S.archive_voice(ctx, voice_id)
         return {"ok": True}
+
+    # ------------------------------------------- emotion reference bank (cloned voices)
+    @app.get("/api/voices/{voice_id}/refs")
+    def api_voice_refs(voice_id: int):
+        return S.list_refs(ctx, voice_id)
+
+    @app.post("/api/voices/{voice_id}/refs/candidates")
+    def api_voice_ref_candidates(voice_id: int, req: RefCandidatesReq):
+        return S.generate_ref_candidates(ctx, voice_id, req.bucket, req.source_voice_id, req.n)
+
+    @app.post("/api/voices/{voice_id}/refs/adopt")
+    def api_voice_ref_adopt(voice_id: int, req: RefAdoptReq):
+        return S.adopt_ref(ctx, voice_id, req.bucket, req.recording_id, req.owner_attest, req.statement)
+
+    @app.delete("/api/voices/{voice_id}/refs/{ref_id}")
+    def api_voice_ref_delete(voice_id: int, ref_id: int):
+        return S.remove_ref(ctx, voice_id, ref_id)
 
     @app.post("/api/voices/{voice_id}/preview")
     def api_voice_preview(voice_id: int, req: PreviewReq):
@@ -823,7 +867,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
             if not r:
                 raise S.ServiceError("Chapter has not been assembled yet", 404)
             b = _book(conn, r["book_id"])
-        name = title_filename(b["title"], f"{r['idx']:03d} {r['title']}", "DRAFT" if r["draft"] else "") + f".{ext}"
+            narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (b["voice_id"],)) or {}).get("name")
+        name = title_filename(b["title"], narrator or "", f"{r['idx']:03d} {r['title']}", "DRAFT" if r["draft"] else "") + f".{ext}"
         return _serve(Path(r["path"]), [book_dirs(b)["masters"]], request, name if download else None)
 
     @app.api_route("/media/export/{export_id}", methods=["GET", "HEAD"])
@@ -855,6 +900,15 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         p = Path(vv["ref_audio_path"])
         return _serve(p, [p.parent], request, None)
 
+    @app.api_route("/media/voice/{voice_id}/ref/{ref_id}", methods=["GET", "HEAD"])
+    def media_voice_bank_ref(voice_id: int, ref_id: int, request: Request):
+        with ctx.db.session() as conn:
+            r = row(conn, "SELECT * FROM voice_refs WHERE id=? AND voice_id=?", (ref_id, voice_id))
+        if not r:
+            raise S.ServiceError("No such reference clip", 404)
+        p = Path(r["ref_audio_path"])
+        return _serve(p, [p.parent], request, None)
+
     @app.api_route("/media/cover/{book_id}", methods=["GET", "HEAD"])
     def media_cover(book_id: int, request: Request):
         with ctx.db.session() as conn:
@@ -883,7 +937,8 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     @app.post("/api/narrative/llm/test")
     def api_llm_test(req: LLMTestReq):
-        return S.test_llm(ctx, req.base_url, req.model)
+        return S.test_llm(ctx, req.base_url, req.model, chapter_model=req.chapter_model, scene_model=req.scene_model,
+                          translator_model=req.translator_model)
 
     @app.put("/api/secrets/{slot}")
     def api_secret_put(slot: str, req: SecretReq, request: Request):

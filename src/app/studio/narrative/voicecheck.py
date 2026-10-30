@@ -68,3 +68,28 @@ def consistency(items: list[tuple[str, np.ndarray, int]]) -> dict:
             "centroid_cv": round(float(cen.std() / cen.mean()), 3) if cen.size > 1 and cen.mean() else None,
         }
     return out
+
+
+def speech_rms(audio: np.ndarray, sr: int) -> float:
+    """RMS over the louder frames only (speech, not the silence around it)."""
+    x = np.asarray(audio, dtype=np.float64)
+    size = max(1, int(0.03 * sr))
+    n = x.size // size
+    if n == 0:
+        return float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+    fr = x[: n * size].reshape(n, size)
+    e = np.sqrt(np.mean(fr ** 2, axis=1))
+    keep = e >= 0.25 * e.max() if e.max() > 0 else np.ones(n, bool)
+    return float(np.sqrt(np.mean(fr[keep] ** 2)))
+
+
+def match_level(clip: np.ndarray, clip_sr: int, ref: np.ndarray, ref_sr: int, max_peak: float = 0.97) -> tuple[np.ndarray, float]:
+    """Simple gain so ``clip`` has the same speech level as ``ref``, never pushing its peak past ``max_peak``.
+    -> (adjusted clip as float32, gain in dB)."""
+    c = np.asarray(clip, dtype=np.float32)
+    rc, rr = speech_rms(c, clip_sr), speech_rms(ref, ref_sr)
+    peak = float(np.max(np.abs(c))) if c.size else 0.0
+    if rc <= 1e-6 or rr <= 1e-6 or peak <= 0:
+        return c, 0.0
+    gain = min(rr / rc, max_peak / peak)
+    return (c * gain).astype(np.float32), float(20 * np.log10(gain))

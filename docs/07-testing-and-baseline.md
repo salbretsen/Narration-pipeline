@@ -5,7 +5,7 @@ done until the same checks pass (plus new tests for the new behaviour).
 
 ## Automated suite (`src/app/tests`, mock engine, real FFmpeg, FastAPI TestClient)
 
-Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **304 passed** (about 2 min; 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
+Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **451 passed** (about 2 min; 324 at v0.6.x, 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
 without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per test), the mock engine, a worker you drive in-process
 (`make_worker(faults).run_until_idle()`), and builders for TXT, DOCX, EPUB and WAV fixtures.
 
@@ -21,6 +21,8 @@ without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per t
 | `test_update_flow.py` (30) | v0.5: manager check/download/stage (replayed index, tampered/mislabelled/malicious archives, untrusted origin, low disk, interrupted download resumes, background download), the updater `Applier` (success, failed migration + DB restore, unhealthy release rollback, double failure repair mode, post-staging tamper, drain waits for the segment/for the running book, single-updater lock), worker drain with the real worker (`now` and `after_job`), the HTTP API (CSRF, roles, no URL/command accepted, preferences), and a **real-process E2E** (two real releases, real server and migrate, good update then a failing one that rolls back) |
 | `test_update_install.py` (18) | v0.5: installer policy scan (no brew/sudo/xattr/spctl/curl-pipe/profile edits), pins sane, `--extract-only` and `--check` in real bash, **fail-closed pinned download in real bash**, hash-locked `requirements.lock`, wheel-checker logic, build->sign->check->download->stage pipeline with a throw-away key, `sign_release` refusal without a key/merge, key tool, no secrets in repo, legacy migration (old tree hash-identical, test-before-switch, failure leaves old service), CLI, busy-port refusal |
 
+v0.7.0 added `test_plumbing_v5.py` (schema v5, settings defaults, `LLMClient.derive`, `resolve_models`, thinking mode, Test connection with extra models), `test_delivery_audio.py` (pace from direction, pause hints and digests, reference bank selection/adoption/consent/candidates, `calibrated_wpm`, preview stretch), `test_director_v2.py` (beat sheet validation and cache, scene windows, per-item validation and re-ask, rules fallback, `direct_scope`, no write lock across an LLM request), `test_translator.py` (translation validation and cache keys, `plan_for_segment` stays read-only, `translate_pending`, worker back-off) and `test_ab.py` (comparisons, blind rounds, vote and reveal, tally, `random_differing_segment`, apply-delivery with dry run and confirmation), plus the narrator-version, delete and import tests added earlier in the release. They all use the mock engine and HTTP stub LLM servers.
+
 Also (not in pytest): `python tools/e2e/updates_ui.py OUT chromium|webkit` (Update Center in a real browser, offline and phone-width included),
 `python tools/check_lock_wheels.py` (network), shellcheck on the generated Mac installer. Real Mac checks: doc 10 (M1-M10).
 
@@ -31,6 +33,24 @@ What these cannot show: real speech quality, the GPU engine, a real browser's mi
 New parsing/text logic → `test_text.py`; audio/DSP → `test_audio.py`; end-to-end HTTP behaviour → `test_integration.py`; auth/roles/storage
 admin → `test_auth.py`; recording lab/TLS → `test_lab.py`. Inject faults with `make_worker({"text:substring": ["drop","repeat","silence","babble","clip","quiet","error"]})`.
 Remember fault keys match the **spoken (normalised)** text, not the manuscript text ("3rd" becomes "third").
+
+## Verification status of v0.7.0
+
+Honest list of what ran where. Nothing in this release has run on the Mac.
+
+| Area | Ran | Where / how | Not run |
+|---|---|---|---|
+| Automated suite (451) | yes | Windows dev, mock engine, stub LLM servers, real FFmpeg | the GPU engine, a real LLM, real Whisper |
+| Narrator versions, library grouping, admin delete, import form, review list scroll, pronunciation delete | yes | pytest plus `tools/e2e/versions_ui.py` in Edge against a local mock server | real Safari, the Mac, the real library and its 19+ books |
+| Director write-lock fix, thinking-model handling (400 fallback, empty/reasoning-only errors, Test connection) | stubs only | HTTP stub servers that answer like the oMLX server did; a test fails if a write lock is held during a request | a real thinking model; the original findings came from the earlier Mac session |
+| Chapter beat sheet, scene batches, `direct_scope`, LLM translator | stubs only | scripted stub replies (valid, invalid, partial, truncated, failing) | quality or speed with a real model; chapter-pass time and token budget |
+| Reference bank, pace, pause hints | mock engine | mock tones; adoption rules, consent, generation keys, digests, drift metrics are unit-tested | whether any of it sounds better; Whisper WER on real emotional speech; WSOLA at 0.92-1.08 on real speech |
+| Blind A/B tool | mock engine | pair creation, randomised mapping, vote, reveal, tally, "same audio" refusal | listening on real output; the 60% / 10% rule has never been applied to real votes |
+| Schema v5 migration | mock databases | `migrate()` from v4 in tests | the Mac's real database (a pre-migration backup is written automatically) |
+| Voices reference-bank panel, Inspector A/B card, Narrative A/B results and apply-delivery dialog | `node --check` + `tools/e2e/delivery_ui.py` (13 checks, Edge, mock engine; the bank generate/adopt flow and the apply-delivery dialog not exercised) | the mock engine produces tones, not speech | real Safari, real engine |
+| Installer, updater | not touched | no code change | M1-M10 (doc 10) for the release itself |
+
+Before relying on any of the new delivery features on a book: run the Mac smoke test, enable one feature on a copy of a book, use *Apply new delivery settings*, and compare with the A/B tool by ear.
 
 ## Static checks
 

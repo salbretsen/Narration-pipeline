@@ -33,6 +33,30 @@ export function applyBars(root) {
   });
 }
 
+// The signed-in user, set by app.js. Mirrors the server: with sign-in off (loopback only) there is no user and everything is allowed.
+// This only hides controls; the server enforces administrator-only actions itself.
+let sessionUser = null;
+export const setSessionUser = (u) => { sessionUser = u || null; };
+export const isAdmin = () => !sessionUser || sessionUser.role === "admin";
+
+/** Snapshot a form's values (checkbox groups by value), so a view that redraws itself can put back what the user had typed or chosen. */
+export function snapshotForm(form) {
+  const d = {};
+  if (!form) return d;
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    if (el.type === "checkbox") { if (!d[el.name]) d[el.name] = {}; d[el.name][el.value] = el.checked; } else d[el.name] = el.value;
+  }
+  return d;
+}
+export function applyForm(form, snap) {
+  if (!form || !snap) return;
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in snap)) continue;
+    if (el.type === "checkbox") { if (el.value in snap[el.name]) el.checked = snap[el.name][el.value]; } else el.value = snap[el.name];
+  }
+}
+
 export class ApiError extends Error {
   constructor(message, status, details) { super(message); this.status = status; this.details = details; }
 }

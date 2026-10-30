@@ -50,23 +50,49 @@ def _chapter_takes(conn, book: dict, chapter_id: int):
     return segs, out, problems
 
 
-def takes_digest(conn, book: dict, chapter_id: int) -> str:
+PAUSE_HINT_MS = {"beat": 350, "long": 900}  # minimum gap after a sentence/paragraph the Director marked with a pause hint
+HINTABLE_KINDS = ("sentence", "paragraph")
+
+
+def pause_hints(conn, ctx, book: dict, chapter_id: int) -> dict[str, str]:
+    """sid -> 'beat' | 'long' for segments whose direction asks for a longer pause, only when the book's
+    ``delivery.pauses_from_direction`` is on. Empty otherwise, so digests and gaps of existing books never change.
+    Without a ``ctx`` only the book's own override is consulted."""
+    from .config import effective_narrative
+
+    ov = loads(book.get("narrative_json"), {})
+    on = (ov.get("delivery") or {}).get("pauses_from_direction") if ctx is None else effective_narrative(ctx.settings(), ov).delivery.pauses_from_direction
+    if not on:
+        return {}
+    out = {}
+    for r in rows(conn, """SELECT s.sid, s.pause_kind, d.final_json FROM segments s JOIN directions d ON d.segment_id=s.id
+                           WHERE s.chapter_id=? AND s.pause_kind IN ('sentence','paragraph')""", (chapter_id,)):
+        hint = loads(r["final_json"], {}).get("pause")
+        if hint in PAUSE_HINT_MS:
+            out[r["sid"]] = hint
+    return out
+
+
+def takes_digest(conn, book: dict, chapter_id: int, ctx=None) -> str:
     sel = rows(conn, "SELECT sid, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
     snap = loads(book["settings_json"], {})
     payload = {"sel": [(r["sid"], r["selected_attempt_id"]) for r in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
                "meta": [book["title"], book["author"]]}
+    hints = pause_hints(conn, ctx, book, chapter_id)
+    if hints:  # only non-none hints, so digests of existing renders stay unchanged
+        payload["pause_hints"] = sorted(hints.items())
     ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
     if ov:  # only retitled chapters, so digests of existing renders stay unchanged
         payload["chapter_title"] = ov["title"]
     return short_hash(dumps(payload), 16)
 
 
-def chapter_readiness(conn, book: dict) -> list[dict]:
+def chapter_readiness(conn, book: dict, ctx=None) -> list[dict]:
     out = []
     for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],)):
         segs, takes, problems = _chapter_takes(conn, book, ch["id"])
         renders = {r["kind"]: r for r in rows(conn, "SELECT * FROM chapter_renders WHERE chapter_id=?", (ch["id"],))}
-        digest = takes_digest(conn, book, ch["id"])
+        digest = takes_digest(conn, book, ch["id"], ctx)
         current = bool(renders.get("wav") and renders.get("mp3") and renders["wav"]["takes_digest"] == digest
                        and Path(renders["wav"]["path"]).exists() and Path(renders["mp3"]["path"]).exists())
         out.append({"chapter": ch, "segments": len(segs), "ready_takes": len(takes), "problems": problems,
@@ -117,7 +143,8 @@ def assemble_chapter(ctx, book_id: int, chapter_id: int) -> dict:
             raise AssemblyBlocked(f"Chapter {ch['idx']} '{ch['title']}' cannot be assembled: {len(problems)} segment(s) without usable audio.", problems)
         if not takes:
             raise AssemblyBlocked(f"Chapter {ch['idx']} has no segments.")
-        digest = takes_digest(conn, book, chapter_id)
+        digest = takes_digest(conn, book, chapter_id, ctx)
+        hints = pause_hints(conn, ctx, book, chapter_id)
         draft = active_release(conn, book_id) is None
     check_storage(book, ("masters",))
     snap = loads(book["settings_json"], {})
@@ -139,7 +166,10 @@ def assemble_chapter(ctx, book_id: int, chapter_id: int) -> dict:
         seg_map.append({"sid": s["sid"], "start_s": round(cursor / sr, 3), "end_s": round((cursor + a.size) / sr, 3)})
         pieces.append(a.astype(np.float32))
         cursor += a.size
-        gap = A.room_tone(int(sr * gaps.get(s["pause_kind"], gaps["sentence"]) / 1000), tone_db, seed=k + 2)
+        gap_ms = gaps.get(s["pause_kind"], gaps["sentence"])
+        if s["sid"] in hints and s["pause_kind"] in HINTABLE_KINDS:
+            gap_ms = max(gap_ms, PAUSE_HINT_MS[hints[s["sid"]]])
+        gap = A.room_tone(int(sr * gap_ms / 1000), tone_db, seed=k + 2)
         pieces.append(gap)
         cursor += gap.size
     raw_audio = np.concatenate(pieces)
@@ -190,7 +220,7 @@ def assemble_chapter(ctx, book_id: int, chapter_id: int) -> dict:
 def assemble_book(ctx, book_id: int, only_ready: bool = True, progress=None) -> dict:
     with ctx.db.session() as conn:
         book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
-        ready = chapter_readiness(conn, book)
+        ready = chapter_readiness(conn, book, ctx)
     done, blocked, skipped = [], [], []
     for r in ready:
         ch = r["chapter"]
@@ -218,7 +248,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
         raise ValueError(f"unknown export kind {kind}")
     with ctx.db.session() as conn:
         book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
-        ready = chapter_readiness(conn, book)
+        ready = chapter_readiness(conn, book, ctx)
     if kind == "chapter_m4b":
         ready = [r for r in ready if r["chapter"]["id"] == chapter_id]
         if not ready:
@@ -235,6 +265,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
             assemble_chapter(ctx, book_id, r["chapter"]["id"])
     with ctx.db.session() as conn:
         book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (book["voice_id"],)) or {}).get("name")
         draft = active_release(conn, book_id) is None
         chapters = []
         for r in ready:
@@ -246,7 +277,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
     out_dir = book_dirs(book)["exports"]
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    label_parts = [book["title"], book["author"]]
+    label_parts = [book["title"], narrator, book["author"]]  # the narrator keeps files of different narrations of one book apart once saved elsewhere
     if kind == "chapter_m4b":
         label_parts.append(f"Chapter {chapters[0][0]['idx']}")
     if draft:

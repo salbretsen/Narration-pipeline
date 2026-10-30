@@ -27,15 +27,15 @@ server restart). `index.html` loads `/static/app.css` and the module `/static/js
 | `js/ui.js` | shared helpers (below) |
 | `js/recorder.js`, `js/recorder-worklet.js` | microphone capture (`Mic`), WAV encoder, room/noise metrics, waveform envelope |
 | `js/views/overview.js` | dashboard |
-| `js/views/library.js` | upload, import preview, confirm, library list |
+| `js/views/library.js` | upload, import preview (form values survive redraws; narrator must be chosen), library list grouped by manuscript with a narrator dropdown when a book has several narrations |
 | `js/views/queue.js` | queue with drag/keyboard reorder, logs, controls, ETA only after 20 measured segments |
-| `js/views/voices.js` | Narrator Studio: **Add a narrator** tabs (Preset, Designed, Clone by upload, **Record a reference voice**), voice cards, previews |
+| `js/views/voices.js` | Narrator Studio: **Add a narrator** tabs (Preset, Designed, Clone by upload, **Record a reference voice**), voice cards, previews; cloned voices carry a **Reference clips (emotion bank)** panel (below) |
 | `js/views/voicelab.js` | the Reference voice lab (mounted inside the "Record a reference voice" tab) |
 | `js/views/review.js` | review workspace (segment list, detail, takes, ASR diff, shortcuts J K A R E P /) |
 | `js/views/book.js` | book page: chapters/masters (per-chapter Edit title, Regenerate chapter, M4B), exports, QA report, release signoff, metadata, narrator, storage move |
 | `js/views/settings.js` | every setting, storage paths with Check / Browse / Finder, the folder-browser dialog |
-| `js/views/narrative.js`, `narrative-fields.js` | route `#/narrative/ID`: analysis stages and actions, project overrides, character directory (edit, merge, voices), story notes; the settings fields are shared with Settings |
-| `js/views/inspector.js` | route `#/inspect/ID`: the Segment Inspector (context, attribution evidence, direction layers, instruction sent, boundary editing, preview, attempts) |
+| `js/views/narrative.js`, `narrative-fields.js` | route `#/narrative/ID`: analysis stages and actions, **Apply new delivery settings to existing takes**, **Blind A/B listening results**, project overrides, character directory (edit, merge, voices), story notes; the settings fields (including the v0.7.0 delivery, chapter/scene/translator model and chapter-pass fields) are shared with Settings |
+| `js/views/inspector.js` | route `#/inspect/ID[?ab=ROUND]`: the Segment Inspector (context, attribution evidence, direction layers, instruction sent, boundary editing, preview, attempts) and the **Compare settings (blind A/B)** card |
 | `js/views/disk.js` | route `#/disk` (admin): disk usage per book and category, free space, purge/delete with typed or dialog confirmation (the server's `409` preview feeds the dialog), book and database backup, restore |
 | `js/views/pronunciation.js` | route `#/pronunciation` (side nav "Pronunciation"): global or per-book dictionary (add/edit/toggle/delete via dialogs), a Try box, and per-voice pace; changes that would re-render finished segments ask for confirmation using the `409 details.stale_segments` convention |
 | `js/views/about.js` | About page (version, credits), worker, environment check, QA limits, licences |
@@ -82,6 +82,26 @@ playing the mic back, the WAV is 16-bit mono at the AudioContext's rate (often 4
 **Secure-context requirement:** `navigator.mediaDevices` is **undefined on plain `http://` pages except localhost**. `micSupport()`
 detects this and the lab shows a notice with the HTTPS URL (from `/api/auth/status.https_port`), the certificate download and
 trust steps, and the upload alternative. Do not "fix" this in code; it is a browser rule. Keep `Permissions-Policy: microphone=(self)`.
+
+## v0.7.0 panels (driven in Edge by `tools/e2e/delivery_ui.py` against the mock engine: panel renders, blind A/B pair, vote, reveal, Narrative card; the bank generate/adopt flow and the apply-delivery dialog were not exercised; no real engine, no Safari)
+
+**Reference clips panel (`voices.js`, `bankPanel`).** Shown on every cloned voice card (`#bank-<id>`, loaded from `GET /api/voices/{id}/refs` into the module-level `banks` map; candidate jobs live in
+`cands` and are polled every 2 s via `GET /api/jobs/{id}` until finished; the timers are cleared with the rest on route change). One row per bucket (tense, tender, sorrow, bright): the adopted clip (length,
+synthetic or recorded, pitch/brightness drift from the base clip, a "mock test tones" badge for mock-engine clips, an audio player on `/media/voice/{id}/ref/{ref}`), **Remove** (only when `isAdmin()`; confirmation),
+**Generate candidates...** (only when the clone came from a designed voice that can still be found; posts `n: 3`, rows appear under *Candidates* with Whisper WER and an *Adopt for bucket* button that is disabled
+unless the Whisper check matched) and **Adopt a lab recording...** (lists only recordings whose `asr_check.matches` is true; for a human clone a dialog asks for the ownership checkbox and a consent statement,
+for a synthetic clone a plain confirmation). The panel only manages clips; switching the feature on is Settings > Narrative > Delivery > *Cloned voices: emotion via reference clips*.
+
+**Blind A/B card (`inspector.js`).** `render(view, parts, query)` now builds two elements, `mainEl` (the redrawn inspector) and `abEl` (`#ab-card`), because the inspector repaints on live updates and a round
+in progress (selected comparison, playing clips, the chosen radio, the checkbox) must not be rebuilt by those repaints. State lives in the `ab` object. Flow: pick a comparison (`GET /api/books/{id}/ab`), *Create A/B pair*
+(`POST /api/segments/{id}/ab`), poll `GET /api/ab/{round}` every 1.5 s until `ready`, two players (clips X and Y; a MOCK ENGINE warning when the engine was mock), choose X, Y or "No real difference" plus
+"Sounds like a different narrator", *Submit vote* (`POST /api/ab/{round}/vote`), then the reveal and the book's running tally for that comparison. *Pick a segment where they differ* opens the segment returned by
+`GET /api/books/{id}/ab/random`. `?ab=<round_id>` resumes a round (the Narrative page uses it). A `change` listener on the view handles the form; the cleanup sets `ab.dead` to stop polling.
+
+**Narrative page additions (`narrative.js`).** `#nar-ab` renders the tally table from `status.ab` (per comparison: votes, share of non-tie votes for the first setting with an at/above-60% badge, "another
+narrator" flags with an at/below-10% badge, and *Start a round on a random differing segment*, which creates the pair and navigates to the inspector with `?ab=`). `applyDelivery` calls
+`POST /api/books/{id}/narrative/apply-delivery` without `confirm` first; the `409` message and counts feed a dialog (with an *Also regenerate approved segments* checkbox when approved ones would change), and
+confirming posts again with `confirm: true`. Settings' **Test connection** now also sends the chapter, scene and translator model names.
 
 ## Folder browser (`settings.js`)
 

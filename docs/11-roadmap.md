@@ -69,6 +69,14 @@ Nothing else is required of the owner; pushing is done only when asked.
 | C4 | ~~Per-chapter regenerate/export, title editing~~ done v0.6.0; generated cover not built (no Pillow) | M | done | |
 | C5 | 50k-word validation run: throughput, memory, false-positive statistics; tune QA thresholds | M | P2 | uses real hardware time |
 | C6 | Real local LLM through the Narrative Director (for example `mlx_lm.server`): measure attribution and direction quality, listening study | L | P2 | `tools/e2e/narrative_real.py` is ready |
+| C10 | ~~Narrator versions~~, ~~admin delete of a version/book~~, ~~import form and review scroll fixes~~ done v0.7.0 (mock engine and Edge only; not on the Mac) | M | done | one manuscript, several narrators, each with its own audio and release |
+| C11 | ~~Delivery for clone voices: emotion reference bank, pace and pause hints from the direction~~ done v0.7.0 (mock engine only) | L | done | off by default; effect on real speech unmeasured |
+| C12 | ~~Director redesign: chapter beat sheet, scene batches, direct the picked segment, optional LLM translator, extra LLM models, thinking-model handling~~ done v0.7.0 (stub LLMs only) | L | done | includes the former 0.6.3 and 0.6.4 fixes |
+| C13 | ~~Blind A/B listening tool and apply-to-existing-takes~~ done v0.7.0 (mock engine only; UI panels driven in Edge via `delivery_ui.py` on the mock engine) | M | done | |
+| C14 | **Mac listening A/B session**: run the four comparisons on real output (real clone with generated or recorded bank clips, a real LLM for the Director), apply the 60% / 10% rule per feature, then decide which defaults to flip | M | P1 | needs the Mac, a real LLM and an owner who listens; first real use of the v0.7.0 features |
+| C15 | **Scene-model benchmark**: compare `llm.scene_model` candidates (smaller vs the main model) and the chapter pass on a real thinking model for time, validity rate, fallback rate and `would_escalate`, using `tools/e2e/narrative_real.py` extended or a one-off script | M | P2 | the chapter pass token budget (16000) and timeout (900 s) are guesses |
+| C16 | **Escalation tier**: ask a stronger model about the segments `would_escalate` flags (low confidence, review, cue disagreement) and keep the better direction | M | P3 | deferred until C14/C15 show it is worth the memory and complexity |
+| C17 | Reference bank follow-ups: candidates for human-voice clones from a recording checklist, more buckets if listening shows the four are too coarse, a drift threshold if listening shows where "another narrator" starts | M | P3 | |
 | C7 | ~~Multi-take reference comparison~~ done v0.6.0 | M | done | |
 | C8 | Boot-time hosting (LaunchDaemon) and trusted HTTPS | M | P3 | needs an administrator password once; only if the Mac must serve after a reboot with nobody logged in |
 | C9 | Second deployment profile (M4 Max, 36 GB), `max_warm_models=1` | S | P3 | needs the hardware |
@@ -93,4 +101,4 @@ Nothing else is required of the owner; pushing is done only when asked.
 1. Decide E2, then B1, B2 and A4 (small, remove the sharpest edges).
 2. A1, A2, A3 and A5 (finish proving v0.5 and the channel model; A1 and A2 need you or hardware).
 3. C1, then C2 and C3 as the next feature releases (each a beta first, then promoted).
-4. C5 and C6 when you have time for long hardware runs; D-items only on demand.
+4. C14 (the first real listening session for v0.7.0), then C5, C6 and C15 when you have time for long hardware runs; C16 only if C14/C15 justify it; D-items only on demand.

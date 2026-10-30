@@ -419,3 +419,5 @@ pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--su
 .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
 .nav-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); margin-left: .25rem; vertical-align: middle; }
 .nav-dot[hidden] { display: none; }
+.ab-choice { border: 1px solid var(--border); border-radius: 8px; margin: .6rem 0; padding: .4rem .8rem; }
+.ab-choice .check { display: block; margin: .25rem 0; }

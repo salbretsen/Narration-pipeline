@@ -1,5 +1,5 @@
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
-import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy } from "./ui.js";
+import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy, setSessionUser } from "./ui.js";
 import * as overview from "./views/overview.js";
 import * as library from "./views/library.js";
 import * as queue from "./views/queue.js";
@@ -188,6 +188,7 @@ async function start() {
   if (st.auth_required && !st.user) { showLogin(); return; }
   if (st.user && st.user.must_change) { showForcedPasswordChange(); return; }
   authUser = st.user;
+  setSessionUser(st.user);
   document.body.classList.remove("signed-out");
   document.getElementById("worker-pill").hidden = false;
   showUser();
@@ -204,7 +205,7 @@ window.addEventListener("studio:unauth", () => showLogin("Your session ended. Pl
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("signout").addEventListener("click", async () => {
     await post("/api/auth/logout").catch(() => {});
-    authUser = null; showLogin();
+    authUser = null; setSessionUser(null); showLogin();
   });
   document.getElementById("chpw").addEventListener("click", async () => {
     const res = await dialog({ title: "Change password", form: true, buttons: [{ label: "Change", value: "ok", kind: "primary" }],

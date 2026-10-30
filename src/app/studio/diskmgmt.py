@@ -25,7 +25,7 @@ from pathlib import Path
 from .config import STORAGE_CATEGORIES
 from .db import LATEST_VERSION, row, rows
 from .pipeline import book_dirs, resolve_take
-from .services import NeedsConfirmation, ServiceError, _book_storage
+from .services import NeedsConfirmation, ServiceError, _book_storage, display_title, siblings, work_key
 from .storage import SYSTEM_PREFIXES
 from .util import dumps, new_uid, now, safe_filename
 from .worker import refresh_book_state
@@ -184,11 +184,17 @@ def usage(ctx) -> dict:
                 total += size
             purge = _purgeable(conn, b, dirs)
             cats_exports = cats.get("exports", 0)
-            books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "archived": bool(b["archived"]), "state": b["state"],
+            narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (b["voice_id"],)) or {}).get("name")
+            books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "narrator": narrator, "display_title": display_title(b["title"], narrator),
+                          "work_uid": work_key(b), "archived": bool(b["archived"]), "state": b["state"],
                           "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats_exports, "masters_bytes": cats.get("masters", 0)},
                           "busy": bool(row(conn, "SELECT id FROM jobs WHERE book_id=? AND status IN ('queued','running','paused')", (b["id"],)))})
         vfiles = set()
         for v in rows(conn, "SELECT ref_audio_path, ref_original_path FROM voice_versions"):
+            for k in ("ref_audio_path", "ref_original_path"):
+                if v[k]:
+                    vfiles.add(v[k])
+        for v in rows(conn, "SELECT ref_audio_path, ref_original_path FROM voice_refs"):  # emotion reference bank clips
             for k in ("ref_audio_path", "ref_original_path"):
                 if v[k]:
                     vfiles.add(v[k])
@@ -221,6 +227,7 @@ def usage(ctx) -> dict:
 # ------------------------------------------------------------------ delete / purge
 
 _BOOK_DELETE_ORDER = [
+    ("ab_votes", "book_id=?"),
     ("direction_log", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
     ("directions", "book_id=?"),
     ("review_actions", "segment_id IN (SELECT id FROM segments WHERE book_id=?)"),
@@ -238,6 +245,7 @@ _BOOK_DELETE_ORDER = [
     ("exports", "book_id=?"),
     ("releases", "book_id=?"),
     ("manuscripts", "book_id=?"),
+    ("pronunciations", "book_id=?"),
     ("job_logs", "book_id=? OR job_id IN (SELECT id FROM jobs WHERE book_id=?)"),
     ("jobs", "book_id=?"),
     ("events", "book_id=?"),
@@ -250,8 +258,13 @@ def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator
         _assert_idle(conn, book_id, "delete it")
     dirs = _safe_book_dirs(ctx, b)
     sizes = {c: dir_size(d) if d.exists() else 0 for c, d in dirs.items()}
-    _need_confirm(confirm, f"This permanently deletes '{b['title']}' with all its audio, exports and history.",
-                  {"book": b["title"], "bytes": sum(sizes.values()), "categories": sizes})
+    with ctx.db.session() as conn:
+        narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (b["voice_id"],)) or {}).get("name")
+        others = [x for x in siblings(conn, b) if x["id"] != book_id]
+    shown = display_title(b["title"], narrator)
+    _need_confirm(confirm, f"This permanently deletes '{shown}' with all its audio, exports and history."
+                  + (f" The other {len(others)} narrator version(s) of this book are not affected." if others else ""),
+                  {"book": b["title"], "narrator": narrator, "display_title": shown, "other_versions": len(others), "bytes": sum(sizes.values()), "categories": sizes})
     with ctx.db.tx() as conn:
         _assert_idle(conn, book_id, "delete it")
         imports = rows(conn, "SELECT id, stored_path FROM imports WHERE consumed_book_id=?", (book_id,))
@@ -275,6 +288,30 @@ def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator
         if imp["stored_path"]:
             freed += _remove_file(Path(imp["stored_path"]), [imp_root])
     return {"deleted": True, "title": b["title"], "freed_bytes": freed, "errors": errors}
+
+
+def delete_work(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
+    """Remove a book entirely: every narrator version of its manuscript, with all audio, exports and history."""
+    with ctx.db.session() as conn:
+        b = _book(conn, book_id)
+        versions = siblings(conn, b)
+        for v in versions:
+            _assert_idle(conn, v["id"], f"remove the book (its '{v['title']}' version has a queued, rendering or paused job)")
+        narrators = {v["id"]: (row(conn, "SELECT name FROM voices WHERE id=?", (v["voice_id"],)) or {}).get("name") for v in versions}
+    sizes = {}
+    for v in versions:
+        sizes[v["id"]] = sum(dir_size(d) if d.exists() else 0 for d in _safe_book_dirs(ctx, v).values())
+    _need_confirm(confirm, f"This permanently removes '{b['title']}' and all {len(versions)} narrator version(s) of it, with all their audio, exports and history.",
+                  {"book": b["title"], "bytes": sum(sizes.values()),
+                   "versions": [{"id": v["id"], "narrator": narrators[v["id"]], "bytes": sizes[v["id"]]} for v in versions]})
+    freed, errors = 0, []
+    for v in versions:
+        r = delete_book(ctx, v["id"], True, actor)
+        freed += r["freed_bytes"]
+        errors += r["errors"]
+    with ctx.db.tx() as conn:
+        ctx.audit(conn, "book", book_id, "work_removed", {"title": b["title"], "versions": len(versions), "bytes": freed}, actor)
+    return {"deleted": True, "title": b["title"], "versions_deleted": len(versions), "freed_bytes": freed, "errors": errors}
 
 
 def purge(ctx, book_id: int, scope: str, confirm: bool = False, actor: str = "operator") -> dict:
@@ -663,7 +700,7 @@ def _restore_rows(ctx, doc: dict, old_uid: str, uid: str, storage: dict, actor: 
         nv = voice(old_book.get("voice_id"))
         if old_book.get("voice_id") is not None and nv is None:
             warnings.append("The narrator voice of this book does not exist here; choose a narrator before queueing it.")
-        bid = _insert(conn, "books", old_book, uid=uid, title=f"{old_book['title']} (restored)", voice_id=nv,
+        bid = _insert(conn, "books", old_book, uid=uid, work_uid=uid, title=f"{old_book['title']} (restored)", voice_id=nv,
                       voice_version_id=version(old_book.get("voice_version_id"), nv), storage_json=dumps(storage),
                       cover_path=path_of(old_book.get("cover_path")), state="imported", archived=0, created_at=now(), updated_at=now())
         chmap: dict[int, int] = {}

@@ -297,7 +297,10 @@ export async function render(view) {
       try {
         const r = await busy(b, () => post("/api/narrative/llm/test", {
           base_url: view.querySelector('[name="narrative.llm.base_url"]').value.trim(),
-          model: view.querySelector('[name="narrative.llm.model"]').value.trim() }));
+          model: view.querySelector('[name="narrative.llm.model"]').value.trim(),
+          chapter_model: view.querySelector('[name="narrative.llm.chapter_model"]')?.value.trim() || "",
+          scene_model: view.querySelector('[name="narrative.llm.scene_model"]')?.value.trim() || "",
+          translator_model: view.querySelector('[name="narrative.llm.translator_model"]')?.value.trim() || "" }));
         setHTML(out, html`<ul class="plain">${r.checks.map((c) => html`<li class="${c.ok ? "good-text" : "bad-text"}">${c.ok ? "✓" : "✗"} <strong>${c.name}:</strong> ${c.detail}</li>`)}</ul>
           <p><strong>${r.ok ? "The endpoint and model work." : "The test failed."}</strong> (${r.seconds} s)</p>`);
       } catch { setHTML(out, html``); } // the server's message is already shown

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import services as S
 from ..db import row, rows
+from ..narrative import ab as AB
 from ..narrative import analysis as AN
 from ..narrative import cast as C
 from ..narrative import store as ST
@@ -49,6 +50,20 @@ class BoundaryReq(_Req):
 
 class SegPreviewReq(_Req):
     seed: Optional[int] = Field(None, ge=0, le=2**31)
+
+
+class ABCreateReq(_Req):
+    comparison: str = Field(min_length=1, max_length=60)
+
+
+class ABVoteReq(_Req):
+    choice: Literal["x", "y", "same"]
+    other_narrator: bool = False
+
+
+class ApplyDeliveryReq(_Req):
+    confirm: bool = False
+    include_approved: bool = False
 
 
 class CharCreateReq(_Req):
@@ -192,6 +207,32 @@ def register(app, ctx) -> None:
     @app.post("/api/segments/{segment_id}/preview")
     def api_seg_preview(segment_id: int, req: SegPreviewReq):
         return S.preview_segment(ctx, segment_id, req.seed)
+
+    # ------------------------------------------------- blind A/B listening
+    @app.post("/api/segments/{segment_id}/ab")
+    def api_ab_create(segment_id: int, req: ABCreateReq):
+        return S.enqueue_ab(ctx, segment_id, req.comparison)
+
+    @app.get("/api/ab/{round_id}")
+    def api_ab_round(round_id: str):
+        return S.get_ab_round(ctx, round_id)
+
+    @app.post("/api/ab/{round_id}/vote")
+    def api_ab_vote(round_id: str, req: ABVoteReq):
+        return S.vote_ab(ctx, round_id, req.choice, req.other_narrator)
+
+    @app.get("/api/books/{book_id}/ab/random")
+    def api_ab_random(book_id: int, comparison: str, exclude: str = ""):
+        ids = [int(x) for x in exclude.split(",") if x.strip().isdigit()][:500]
+        return S.random_differing_segment(ctx, book_id, comparison, ids)
+
+    @app.get("/api/books/{book_id}/ab")
+    def api_ab_tally(book_id: int):
+        return {"comparisons": AB.catalog(), "tally": S.ab_tally(ctx, book_id)}
+
+    @app.post("/api/books/{book_id}/narrative/apply-delivery")
+    def api_apply_delivery(book_id: int, req: ApplyDeliveryReq):
+        return S.apply_delivery_to_takes(ctx, book_id, req.confirm, req.include_approved)
 
     @app.post("/api/segments/{segment_id}/redirect")
     def api_seg_redirect(segment_id: int):

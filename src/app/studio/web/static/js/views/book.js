@@ -1,5 +1,6 @@
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
-import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, busy, dialog, confirmDialog, onState, player, ApiError } from "../ui.js";
+import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, player, ApiError,
+  isAdmin, navigate, snapshotForm, applyForm } from "../ui.js";
 
 function narrativeCard(b, id) {
   const n = b.narrative;
@@ -17,16 +18,25 @@ export async function render(view, parts) {
   const id = Number(parts[0]);
   let b = await get(`/api/books/${id}`);
   let voices = (await get("/api/voices")).voices;
+  let painted = false;
 
   const paint = () => {
     const rc = b.release_check;
     const busyJob = b.utility_jobs.find((j) => ["queued", "running"].includes(j.status));
     const lastUtil = b.utility_jobs[0];
     const activeBookJob = b.job && ["queued", "running", "paused"].includes(b.job.status);
-    setHTML(view, html`<div class="page-head"><h1>${b.title}</h1>
+    // This page redraws while a job runs: keep a voice chosen but not yet submitted. Only from OUR earlier paint: the view element is reused
+    // when navigating to another book, and its old form must not leak into the new page.
+    const keepVer = painted ? snapshotForm(view.querySelector("#ver-form")) : null;
+    const replaceOpen = painted && !!view.querySelector("#replace-narrator[open]");
+    painted = true;
+    setHTML(view, html`<div class="page-head"><h1>${b.display_title}</h1>
       <div class="head-actions">${badge(b.state)}
         <a class="btn primary" href="#/review/${id}?filter=${b.flagged ? "flagged" : "all"}">Review audio</a>
         ${b.pending && !activeBookJob ? html`<button class="btn" data-act="queue">Queue generation</button>` : ""}</div></div>
+    ${b.versions.length > 1 ? html`<div class="card version-bar"><label>Narrator version
+        <select id="ver-pick">${b.versions.map((v) => html`<option value="${v.id}" ${v.current ? html`selected` : ""}>${v.narrator || "–"} · ${Math.round(v.progress * 100)}% rendered${v.archived ? " · archived" : ""}</option>`)}</select></label>
+      <span class="small muted">${b.versions.length} narrations of this manuscript. Each has its own audio, review and exports.</span></div>` : ""}
     <div class="callout ${b.release ? "good" : "info"} small">${b.release
       ? html`<strong>Approved for publication</strong> by ${b.release.approved_by} on ${fmtDate(b.release.approved_at)} (${b.release.listen_scope} listen). Exports made after approval are final; earlier ones stay labelled DRAFT.`
       : html`<strong>Draft.</strong> Exports are labelled DRAFT until a human signs off below. This studio produces local publication candidates only – nothing is uploaded to Audible, ACX or any host.`}</div>
@@ -110,10 +120,19 @@ export async function render(view, parts) {
       <p><strong>${b.voice_detail.name}</strong> (${b.voice_detail.kind}, v${b.voice_detail.version}) · <code class="small">${b.voice_detail.model_id}</code>
         ${b.voice_detail.speaker ? html` · speaker ${b.voice_detail.speaker}` : ""}</p>
       ${b.voice_outdated ? html`<p class="callout info small">This voice has a newer version. Switching regenerates the whole book.</p>` : ""}
-      <form id="nar-form" class="form">
-        <label>Voice <select name="voice_id">${voices.map((v) => html`<option value="${v.id}" ${v.id === b.voice_detail.id ? html`selected` : ""}>${v.name} (${v.kind})</option>`)}</select></label>
+      <h3>Narrate with another voice</h3>
+      <p class="small muted">Starts a new version of this book (same text, chapters and characters) in a different voice. The ${b.voice_detail.name} narration stays exactly as it is.</p>
+      <form id="ver-form" class="form">
+        <label>Voice <select name="voice_id" required><option value="" disabled selected>Choose a narrator…</option>${voices.map((v) => html`<option value="${v.id}">${v.name} (${v.kind})${b.versions.some((x) => x.narrator === v.name) ? " – has a version" : ""}</option>`)}</select></label>
         <label>Delivery instructions <input name="instructions" maxlength="1000" value="${b.instructions}"></label>
-        <button class="btn" type="submit">Apply narrator change…</button></form>
+        <div class="form-actions"><button class="btn primary" type="submit" data-queue="0">Create new version</button>
+          <button class="btn" type="submit" data-queue="1">Create &amp; queue for narration</button></div></form>
+      <details id="replace-narrator"><summary>Replace this version's narrator instead</summary>
+        <p class="small muted">This changes the voice of <strong>this</strong> version and regenerates its audio; the earlier take is kept as history only. Use “Narrate with another voice” above to keep it.</p>
+        <form id="nar-form" class="form">
+          <label>Voice <select name="voice_id">${voices.map((v) => html`<option value="${v.id}" ${v.id === b.voice_detail.id ? html`selected` : ""}>${v.name} (${v.kind})</option>`)}</select></label>
+          <label>Delivery instructions <input name="instructions" maxlength="1000" value="${b.instructions}"></label>
+          <button class="btn" type="submit">Apply narrator change…</button></form></details>
       <p class="small muted">Book settings are a snapshot taken at import (fingerprint <code>${b.synth_fingerprint}</code>). Takes with another fingerprint are never mixed into this book.</p>
       <button class="btn ghost small" data-act="resnapshot">Apply current global settings to this book…</button>
     </section></div>
@@ -133,10 +152,38 @@ export async function render(view, parts) {
       <button class="btn small ghost" data-act="archive">${b.archived ? "Unarchive" : "Archive book"}</button>
     </section></div>
 
+    ${isAdmin() ? html`<section class="card" aria-labelledby="del-h"><h2 id="del-h">Delete</h2>
+      <p class="small muted">Administrators only. Deleting removes the audio, exports and history for good and cannot be undone; use Disk &amp; Backups to back a book up first. A book with a queued, rendering or paused job cannot be deleted.</p>
+      ${b.versions.length > 1
+        ? html`<p class="small">This book has <strong>${b.versions.length} narrator versions</strong>. You can delete just this one, or the whole book.</p>
+          <button class="btn danger" type="button" data-act="del-version">Delete the ${b.narrator} version…</button>
+          <button class="btn danger" type="button" data-act="del-book">Remove book and all ${b.versions.length} versions…</button>`
+        : html`<button class="btn danger" type="button" data-act="del-book">Remove this book…</button>`}
+    </section>` : ""}
+
     <section class="card" aria-labelledby="log-h"><h2 id="log-h">Project log</h2>
       <ol class="feed small">${b.logs.map((l) => html`<li class="lvl-${l.level}"><span class="muted">${fmtAgo(l.created_at)}</span> ${l.message}</li>`)}</ol></section>`);
     wire();
+    applyForm(view.querySelector("#ver-form"), keepVer);
+    if (replaceOpen) view.querySelector("#replace-narrator").open = true;
   };
+
+  /** Two-step admin delete: ask the server what would go (409 + preview), then require the name to be typed before sending confirm:true. */
+  async function deleteFlow(path, { heading, typed, intro }) {
+    let preview;
+    try { await post(path, { confirm: false }); return false; }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.details) preview = e.details;
+      else { toastError(e); return false; }       // e.g. the book still has an active job
+    }
+    const res = await dialog({ title: heading, form: true, buttons: [{ label: "Delete forever", value: "ok", kind: "danger" }],
+      body: html`<p>${intro(preview)}</p><label>Type <strong>${typed}</strong> to confirm <input name="typed" autocomplete="off" required></label>` });
+    if (!res) return false;
+    if (res.data.typed.trim() !== typed.trim()) { toast("That did not match. Nothing was deleted.", "error", 8000); return false; }
+    const r = await busy(null, () => post(path, { confirm: true }));
+    toast(`Deleted. Freed ${fmtBytes(r.freed_bytes)}`, "success");
+    return true;
+  }
 
   function blockedList(job) {
     let r = {};
@@ -163,6 +210,18 @@ export async function render(view, parts) {
   }
 
   function wire() {
+    const pick = view.querySelector("#ver-pick");
+    if (pick) pick.addEventListener("change", () => navigate(`#/book/${pick.value}`));
+    view.querySelector("#ver-form").addEventListener("submit", async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      if (!fd.get("voice_id")) { toast("Choose a narrator for the new version.", "error"); e.target.voice_id.focus(); return; }
+      const queue = !!(e.submitter && e.submitter.dataset.queue === "1");
+      try {
+        const nb = await busy(e.submitter, () => post(`/api/books/${id}/versions`, { voice_id: Number(fd.get("voice_id")), instructions: fd.get("instructions"), queue }));
+        toast(`“${nb.display_title}” created${queue ? " and queued" : ""}. The ${b.narrator} narration is unchanged.`, "success", 8000);
+        navigate(`#/book/${nb.id}`);
+      } catch { /* toast shown */ }
+    });
     view.querySelector("#meta-form").addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = Object.fromEntries(new FormData(e.target).entries());
       b = await busy(e.submitter, () => patch(`/api/books/${id}`, fd), "Metadata saved"); paint();
@@ -228,6 +287,15 @@ export async function render(view, parts) {
           }
         }
       } else if (a === "archive") { await busy(t, () => post(`/api/books/${id}/archive`, { archived: !b.archived }), b.archived ? "Unarchived" : "Archived"); }
+      else if (a === "del-version") {
+        const ok = await deleteFlow(`/api/disk/books/${id}/delete`, { heading: `Delete the ${b.narrator} version`, typed: b.display_title,
+          intro: (p) => `This permanently deletes “${b.display_title}” with all its audio, exports and history (${fmtBytes(p.bytes)}). The other ${p.other_versions} narrator version(s) are not affected.` });
+        if (ok) { const other = b.versions.find((v) => v.id !== id); navigate(other ? `#/book/${other.id}` : "#/library"); return; }
+      } else if (a === "del-book") {
+        const ok = await deleteFlow(`/api/disk/books/${id}/delete-all-versions`, { heading: "Remove book", typed: b.title,
+          intro: (p) => `This permanently removes “${b.title}” and ${p.versions.length === 1 ? "its narration" : `all ${p.versions.length} narrator versions`}, with all audio, exports and history (${fmtBytes(p.bytes)}).` });
+        if (ok) { navigate("#/library"); return; }
+      }
     } catch { /* toast shown */ }
     await reload();
   }

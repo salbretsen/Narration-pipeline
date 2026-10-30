@@ -246,6 +246,17 @@ class LLMSettings(_M):
     timeout_s: float = Field(120.0, ge=5.0, le=1800.0)
     temperature: float = Field(0.2, ge=0.0, le=1.5)
     max_tokens: int = Field(1200, ge=100, le=8000)
+    # Optional per-pass models. Blank chapter/scene = use ``model``; blank translator = no LLM translator.
+    chapter_model: str = Field("", max_length=200)
+    scene_model: str = Field("", max_length=200)
+    translator_model: str = Field("", max_length=200)
+    chapter_max_tokens: int = Field(16000, ge=1000, le=32000)
+    chapter_timeout_s: float = Field(900.0, ge=30.0, le=3600.0)
+
+    @field_validator("chapter_model", "scene_model", "translator_model")
+    @classmethod
+    def strip_model_names(cls, v: str) -> str:
+        return (v or "").strip()
 
     @field_validator("base_url")
     @classmethod
@@ -273,6 +284,13 @@ class DeliverySettings(_M):
     custom_voice: Literal["instruct", "off"] = "instruct"
     voice_design: Literal["append", "off"] = "append"
     max_instruct_chars: int = Field(160, ge=40, le=400)
+    # Cloned (Base) voices: pick an emotion reference clip from the voice's reference bank. Off keeps today's single reference.
+    clone: Literal["reference_bank", "off"] = "off"
+    # Per-segment pace from the Director. auto = only when no instruct reaches the model. Default off so existing takes never change silently.
+    pace_from_direction: Literal["auto", "always", "off"] = "off"
+    pauses_from_direction: bool = False
+    translator: Literal["template", "llm"] = "template"
+    bank_min_intensity: int = Field(3, ge=1, le=5)
 
 
 class NarrativeSettings(_M):
@@ -288,6 +306,7 @@ class NarrativeSettings(_M):
     tags_with_speaker: bool = False  # let a character voice read a short tag ("she said.") attached to their line
     director_enabled: bool = False
     director_lookahead: int = Field(12, ge=1, le=200)
+    director_chapter_plan: bool = True
     continuity_smoothing: bool = True
     smoothing_strength: float = Field(0.6, ge=0.0, le=1.0)
     reset_scope: Literal["none", "scene", "chapter"] = "chapter"

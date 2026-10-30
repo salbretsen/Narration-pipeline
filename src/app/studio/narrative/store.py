@@ -8,6 +8,7 @@ replaced. That is what limits the effect of an edit to the artifacts that really
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass
 
@@ -16,8 +17,10 @@ from ..db import row, rows, scalar
 from ..engines import VoiceSpec
 from ..normalize import to_speech
 from ..util import dumps, loads, new_uid, now, sha256_bytes, short_hash
+from . import ab as AB
 from . import cast as C
 from . import delivery as DL
+from . import refbank as RB
 from . import segmenter as G
 from . import structure as S
 from . import windows as W
@@ -34,6 +37,28 @@ def _err(message: str, status: int = 400, details=None):
 
 def book_ns(ctx, book: dict) -> NarrativeSettings:
     return effective_narrative(ctx.settings(), loads(book.get("narrative_json"), {}))
+
+
+PATCHABLE_DELIVERY = ("clone", "pace_from_direction", "pauses_from_direction", "translator", "bank_min_intensity")
+
+
+def effective_narrative_with(ns: NarrativeSettings, patch: dict | None) -> NarrativeSettings:
+    """``ns`` with a transient patch merged over it. Only ``director_enabled`` and the delivery keys can be patched
+    (anything else is ignored), so an A/B round can never change segmentation, the LLM connection or storage."""
+    from ..config import merge_patch
+
+    safe: dict = {}
+    if isinstance(patch, dict):
+        if isinstance(patch.get("director_enabled"), bool):
+            safe["director_enabled"] = patch["director_enabled"]
+        d = patch.get("delivery")
+        if isinstance(d, dict):
+            keep = {k: v for k, v in d.items() if k in PATCHABLE_DELIVERY}
+            if keep:
+                safe["delivery"] = keep
+    if not safe:
+        return ns
+    return NarrativeSettings.model_validate(merge_patch(ns.model_dump(mode="json"), safe))
 
 
 def is_semantic(ctx, book: dict) -> bool:
@@ -351,15 +376,21 @@ class Plan:
     text: str
     voice_kind: str = "preset"
     pace: float = 1.0
+    pace_reason: str = ""
+    ref_id: int | None = None
+    ref_bucket: str | None = None
 
 
 def spoken_text(seg: dict) -> str:
     return (seg.get("override_text") or seg.get("narration_text") or seg.get("original_text") or "").strip()
 
 
-def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
-    """Everything that determines how a segment sounds: voice, delivery instruction and the cache key."""
+def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = None) -> Plan:
+    """Everything that determines how a segment sounds: voice, delivery instruction and the cache key.
+    ``ns_patch`` (A/B listening only) overrides whitelisted narrative settings for this one call."""
     ns = book_ns(ctx, book)
+    if ns_patch:
+        ns = effective_narrative_with(ns, ns_patch)
     voice_id = None
     vv = None
     if seg.get("voice_override_id"):
@@ -384,24 +415,42 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict) -> Plan:
     final = None
     info = {"applied": False, "reason": "delivery guidance is off for this book"}
     delivery = None
+    pace_final = None  # the direction pace is taken from (the Director's, or a user's own when the Director is off)
     if ns.director_enabled:
         d = row(conn, "SELECT final_json FROM directions WHERE segment_id=?", (seg["id"],))
         if d:
             final = loads(d["final_json"], None)
-            delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery)
+            pace_final = final
+            translated = DL.stored_translation(conn, final, v["kind"], seg, ns) if ns.delivery.translator == "llm" else None  # read-only, never asks the LLM
+            delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, translated)
         else:
             info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
+    elif ns.delivery.pace_from_direction != "off":
+        d = row(conn, "SELECT final_json, user_json FROM directions WHERE segment_id=?", (seg["id"],))
+        if d and loads(d["user_json"], {}):
+            pace_final = loads(d["final_json"], None)
     from ..pronunciation import apply_for_book
 
     text = apply_for_book(conn, book["id"], spoken_text(seg))  # dictionary respellings; the stored text is untouched
-    pace = float(v.get("pace") or 1.0)
+    pace, pace_reason = DL.effective_pace(float(v.get("pace") or 1.0), pace_final, ns.delivery.pace_from_direction, delivery is not None)
+    ref_row = None
+    if v["kind"] == "clone" and ns.delivery.clone == "reference_bank" and final:
+        refs = {r["bucket"]: r for r in rows(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (voice_id,))}
+        ref_row, why = RB.select(ns, final, v["kind"], refs)
+        if ref_row:
+            spec = dataclasses.replace(spec, ref_audio_path=ref_row["ref_audio_path"], ref_text=ref_row["ref_text"])
+            info = {"applied": True, "reason": why}
+        else:
+            info = {"applied": False, "reason": why}
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
     snap = loads(book["settings_json"], {}).get("models", {})
     key = short_hash(dumps({
         "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
         "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
-        "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {})}), 20)
-    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace)
+        "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {}),
+        **({"ref": ref_row["ref_sha256"]} if ref_row else {})}), 20)
+    return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace,
+                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -428,9 +477,10 @@ def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 1
     return first
 
 
-def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = None, include_approved: bool = False) -> list[int]:
+def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = None, include_approved: bool = False, dry_run: bool = False) -> list[int]:
     """Segments whose rendered take no longer matches the plan (voice or delivery changed) go back to
-    pending; unchanged ones are untouched. -> ids of segments reset."""
+    pending; unchanged ones are untouched. -> ids of segments reset. ``dry_run`` returns the ids that
+    WOULD be reset and writes nothing."""
     book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
     reset = []
     sql = """SELECT s.*, a.gen_key AS sel_key FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id
@@ -441,13 +491,16 @@ def invalidate_changed(conn, ctx, book_id: int, only_ids: list[int] | None = Non
         if not s["sel_key"]:
             continue
         if plan_for_segment(conn, ctx, s, book).gen_key != s["sel_key"]:
+            if dry_run:
+                reset.append(s["id"])
+                continue
             conn.execute("UPDATE segments SET round=round+1, attempts_used=0, status='pending', selected_attempt_id=NULL, flag_reason=NULL, updated_at=? WHERE id=?",
                          (now(), s["id"]))
             conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (s["chapter_id"],))
             conn.execute("INSERT INTO review_actions(segment_id, action, detail_json, actor, created_at) VALUES (?,?,?,?,?)",
                          (s["id"], "regenerate", dumps({"note": "voice or delivery changed"}), "system", now()))
             reset.append(s["id"])
-    if reset:
+    if reset and not dry_run:
         from .. import services as SV
 
         SV._revoke(conn, ctx, book_id, f"{len(reset)} segment(s) changed voice or delivery")
@@ -575,7 +628,8 @@ def inspect_segment(ctx, segment_id: int) -> dict:
             "final": loads(d["final_json"], {}), "smoothing_note": d["smoothing_note"], "needs_review": bool(d["needs_review"]), "stale": bool(d["stale"]),
             "updated_at": d["updated_at"]}
         out["delivery"] = {"instruct": plan.instruct, "applied": plan.delivery_applied, "reason": plan.delivery_reason, "gen_key": plan.gen_key,
-                           "spoken_text_sent_to_tts": plan.text}
+                           "spoken_text_sent_to_tts": plan.text, "pace": round(plan.pace, 3), "pace_reason": plan.pace_reason,
+                           "ref_id": plan.ref_id, "ref_bucket": plan.ref_bucket}
         prev = row(conn, "SELECT * FROM segments WHERE chapter_id=? AND idx<? ORDER BY idx DESC LIMIT 1", (s["chapter_id"], s["idx"]))
         nxt = row(conn, "SELECT * FROM segments WHERE chapter_id=? AND idx>? ORDER BY idx LIMIT 1", (s["chapter_id"], s["idx"]))
         out["previous"], out["next"] = _nbr_direction(conn, prev), _nbr_direction(conn, nxt)
@@ -584,7 +638,7 @@ def inspect_segment(ctx, segment_id: int) -> dict:
             h["payload"] = loads(h.pop("payload_json"), {})
         out["attempts"] = [{"id": a["id"], "round": a["round"], "attempt_no": a["attempt_no"], "status": a["status"], "passed": a["passed"], "wer": a["wer"],
                             "gen_key": a["gen_key"], "instruct_used": a["instruct_used"], "delivery_applied": a["delivery_applied"],
-                            "asr_skipped": bool(a["asr_skipped"]), "current": a["gen_key"] == plan.gen_key, "selected": a["id"] == s["selected_attempt_id"],
+                            "asr_skipped": bool(a["asr_skipped"]), "pace_used": a["pace_used"], "ref_id_used": a["ref_id_used"], "current": a["gen_key"] == plan.gen_key, "selected": a["id"] == s["selected_attempt_id"],
                             "created_at": a["created_at"], "duration_s": a["duration_s"]}
                            for a in rows(conn, "SELECT * FROM attempts WHERE segment_id=? ORDER BY id DESC", (segment_id,))]
         out["settings"] = {"context_before_chars": ns.context_before_chars, "context_after_chars": ns.context_after_chars, "max_segment_chars": ns.max_segment_chars}
@@ -725,9 +779,10 @@ def narrative_status(ctx, book_id: int) -> dict:
         job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
         cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
         chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
+        ab = AB.tally(conn, book_id)
     if job:
         job["result"] = loads(job.pop("result_json"), None)
-    return {"semantic": semantic > 0, "segments": total, "semantic_segments": semantic, "directed": directed, "stale": stale,
+    return {"semantic": semantic > 0, "segments": total, "semantic_segments": semantic, "directed": directed, "stale": stale, "ab": ab,
             "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
             "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
                          "semantic_segmentation": ns.semantic_segmentation}}

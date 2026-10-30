@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 import uuid
+from pathlib import Path
 
 from . import assembly
 from .db import row, rows
@@ -28,7 +29,7 @@ from .narrative import store as N_store
 from .scheduler import FileQueueScheduler
 from .pipeline import StorageUnavailable, check_storage, process_segment, recover_interrupted
 from . import audio as A
-from .util import dumps, loads, now
+from .util import atomic_write_text, dumps, loads, now
 
 log = logging.getLogger("studio.worker")
 LEASE_STALE_S = 60.0
@@ -287,6 +288,10 @@ class Worker:
             errors = [i for i in ev["issues"] if i["severity"] == "error"]
             result = {"mode": "check", "asr_text": tr["text"], "expected": meta["ref_text"], "wer": ev["wer"], "diff": ev["diff"], "issues": ev["issues"],
                       "matches": ev["wer"] <= 0.08 and not errors, "engine": tr.get("engine")}
+            from . import services as SV
+
+            SV.update_recording_meta(self.ctx, p["recording_id"], asr_check={"matches": result["matches"], "wer": result["wer"], "asr_text": tr["text"],
+                                                                              "engine": tr.get("engine"), "checked_at": now()})
         else:
             self._set(state="previewing", job=job["id"], sid=None, message="Audition: cloning from a recording")
             spec = VoiceSpec(kind="clone", model_id=s.models.base_model, language=s.models.language, ref_audio_path=str(ref), ref_text=meta["ref_text"])
@@ -332,9 +337,50 @@ class Worker:
             result.update({"asr_text": tr["text"], "wer": ev["wer"], "issues": ev["issues"]})
         if res.engine == "mock":
             result["note"] = "Mock engine: synthetic test tones, not speech."
+        if p.get("to_lab"):
+            result.update(self._candidate_to_lab(job, p, v, out, res, text))
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
         self._cleanup_previews()
+
+    def _candidate_to_lab(self, job: dict, p: dict, voice: dict, wav: Path, res, text: str) -> dict:
+        """A reference-bank candidate made by a designed voice becomes a draft recording in the lab (so the lab's check, audition and compare
+        views work on it): Whisper-checked against the script, with its acoustic drift from the target clone's base reference."""
+        from . import services as SV
+        from .align import evaluate
+        from .narrative import voicecheck as VC
+
+        mock = res.engine == "mock"
+        label = f"{p.get('bucket', 'emotion')} candidate {p.get('candidate', '')} from {voice['name']}".strip()[:70] + (" [mock]" if mock else "")
+        meta = SV.create_recording(self.ctx, "candidate.wav", wav.read_bytes(), p.get("script_id") or "", text, label)
+        rid = meta["id"]
+        rdir = self.ctx.data_dir / "recordings" / rid
+        # provenance next to the converted clip (the mock ASR reads its transcript from here; real Whisper ignores it)
+        atomic_write_text(str(rdir / "reference-24k.wav.json"), dumps({"engine": res.engine, "model_id": res.model_id, "meta": res.meta}))
+        extra = {"source": "synthetic", "source_voice_id": voice["id"], "source_voice_name": voice["name"], "bucket": p.get("bucket"),
+                 "engine": res.engine, "model_id": res.model_id, "seed": p.get("seed"), "emotion_instruct": p.get("instruct")}
+        if mock:
+            extra["note"] = "Mock engine: synthetic test tones, not speech."
+        if p.get("verify", True):
+            tr = self.asr.transcribe(rdir / "reference-24k.wav")
+            ev = evaluate(text, tr["text"], tr.get("words"), meta.get("duration_s"), 1, 1)
+            errors = [i for i in ev["issues"] if i["severity"] == "error"]
+            extra["asr_check"] = {"matches": ev["wer"] <= 0.08 and not errors, "wer": ev["wer"], "asr_text": tr["text"], "engine": tr.get("engine"), "checked_at": now()}
+        try:  # drift vs the clone this candidate is meant for
+            with self.ctx.db.session() as conn:
+                vv = row(conn, "SELECT vv.ref_audio_path FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id WHERE v.id=?", (p.get("target_voice_id"),))
+            if vv and vv["ref_audio_path"]:
+                base, bsr = A.read_wav(Path(vv["ref_audio_path"]))
+                cand, csr = A.read_wav(rdir / "reference-24k.wav")
+                f0, f0b = VC.f0_median(cand, csr), VC.f0_median(base, bsr)
+                cen, cenb = VC.spectral_centroid(cand, csr), VC.spectral_centroid(base, bsr)
+                extra["drift"] = {"f0_hz": round(f0, 1) if f0 else None, "base_f0_hz": round(f0b, 1) if f0b else None,
+                                  "f0_delta_hz": round(f0 - f0b, 1) if f0 and f0b else None, "centroid_hz": round(cen, 1), "base_centroid_hz": round(cenb, 1),
+                                  "centroid_delta_hz": round(cen - cenb, 1)}
+        except Exception as exc:  # advisory only
+            extra["drift"] = {"error": str(exc)[:200]}
+        SV.update_recording_meta(self.ctx, rid, **extra)
+        return {"recording_id": rid, "to_lab": True, "bucket": p.get("bucket"), "asr_check": extra.get("asr_check"), "drift": extra.get("drift")}
 
     def _run_segment_preview(self, job: dict, p: dict) -> None:
         """Preview one segment exactly as production would render it: its character voice, its delivery
@@ -343,19 +389,26 @@ class Worker:
             conn.execute("UPDATE jobs SET status='running', started_at=?, updated_at=? WHERE id=?", (now(), now(), job["id"]))
             seg = row(conn, "SELECT * FROM segments WHERE id=?", (p["segment_id"],))
             book = row(conn, "SELECT * FROM books WHERE id=?", (seg["book_id"],)) if seg else None
-            plan = N_store.plan_for_segment(conn, self.ctx, seg, book) if seg else None
+            plan = N_store.plan_for_segment(conn, self.ctx, seg, book, ns_patch=p.get("ns_patch")) if seg else None
         if not plan:
             raise ValueError("segment not found for preview")
         self._set(state="previewing", job=job["id"], sid=seg["sid"], message=f"Preview of {seg['sid']}")
         text = plan.text
         params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct)
         res = self.tts.synthesize(plan.voice, text, params, sid=None)
+        audio = A.to_mono_float(res.audio)
+        if abs(plan.pace - 1.0) > 1e-6:  # the same pitch-preserving stretch production applies, so A/B previews match real takes
+            audio = A.time_stretch(audio, res.sample_rate, plan.pace)
         out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
-        A.write_wav(out, res.audio, res.sample_rate)
-        result = {"path": str(out), "duration_s": round(res.audio.size / res.sample_rate, 2), "engine": res.engine, "model_id": res.model_id,
+        A.write_wav(out, audio, res.sample_rate)
+        result = {"path": str(out), "duration_s": round(audio.size / res.sample_rate, 2), "engine": res.engine, "model_id": res.model_id,
                   "rtf": res.rtf, "peak_mem_gb": res.peak_mem_gb, "seconds": round(res.seconds, 2), "sample_rate": res.sample_rate,
                   "segment_id": seg["id"], "instruct": plan.instruct, "delivery_applied": plan.delivery_applied, "delivery_reason": plan.delivery_reason,
-                  "text_sent_to_tts": text, "gen_key": plan.gen_key}
+                  "text_sent_to_tts": text, "gen_key": plan.gen_key, "pace": round(plan.pace, 3), "ref_id": plan.ref_id}
+        if p.get("ns_patch"):
+            result["ns_patch"] = p["ns_patch"]  # an A/B preview: which transient settings this clip was rendered with
+        if p.get("ab"):
+            result["ab"] = {k: p["ab"].get(k) for k in ("round_id", "comparison", "side", "slot")}
         if res.engine == "mock":
             result["note"] = "Mock engine: synthetic test tones, not speech."
         with self.ctx.db.tx() as conn:
@@ -438,6 +491,7 @@ class Worker:
                 self.ctx.job_log(conn, jid, bid, "Generation started" if not cur["started_at"] else "Generation resumed")
                 refresh_book_state(conn, bid)
             book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
+            book["label"] = book["title"] + (f" - {nm}" if (nm := (row(conn, "SELECT name FROM voices WHERE id=?", (book["voice_id"],)) or {}).get("name")) else "")  # shown in status/events
             seg = row(conn, """SELECT s.* FROM segments s JOIN chapters c ON c.id = s.chapter_id
                                WHERE s.book_id=? AND s.status IN ('pending','synthesizing')
                                ORDER BY c.idx, s.idx LIMIT 1""", (bid,))
@@ -447,7 +501,7 @@ class Worker:
             with self.ctx.db.tx() as conn:
                 conn.execute("UPDATE jobs SET status='paused', paused_reason=?, updated_at=? WHERE id=?", (f"storage: {exc}", now(), jid))
                 self.ctx.job_log(conn, jid, bid, f"Paused: {exc}. It resumes automatically when the storage is available.", "warning")
-                self.ctx.event(conn, "storage", f"'{book['title']}' paused: {exc}", bid, "warning")
+                self.ctx.event(conn, "storage", f"'{book['label']}' paused: {exc}", bid, "warning")
                 refresh_book_state(conn, bid)
             return
         if seg is None:
@@ -464,17 +518,26 @@ class Worker:
             if not has_dir:
                 from .narrative import analysis
 
-                self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['title']}: directing the next {ns.director_lookahead} segments")
-                try:
-                    analysis.director_batch(self.ctx, bid, ns.director_lookahead, analysis.make_llm(ns, getattr(self, "llm_transport", None), self.ctx.secrets))
+                self._set(state="analyzing", job=jid, sid=seg["sid"], message=f"{book['label']}: directing the scene around {seg['sid']}")
+                try:  # the picked segment itself (pick_segment may have jumped ahead), not just the earliest undirected ones
+                    analysis.direct_scope(self.ctx, bid, seg["id"], analysis.make_llm(ns, getattr(self, "llm_transport", None), self.ctx.secrets))
                 except Exception as exc:  # a Director failure must never stop narration; the plan then has no delivery guidance
                     log.exception("director batch failed")
                     with self.ctx.db.tx() as conn:
                         self.ctx.job_log(conn, jid, bid, f"Narrative Director failed ({type(exc).__name__}: {exc}); narrating without delivery guidance.", "warning")
-        self._set(state="generating", job=jid, sid=seg["sid"], message=f"{book['title']}: {seg['sid']}")
+            elif ns.delivery.translator == "llm" and time.time() >= getattr(self, "_translator_retry_at", 0.0):
+                from .narrative import analysis  # already directed (analysis ran, or the direction was edited): make sure its instruction is translated
+
+                try:
+                    tr = analysis.translate_pending(self.ctx, bid, [seg["id"]], analysis.make_llm(ns, getattr(self, "llm_transport", None), self.ctx.secrets))
+                    if tr["translation_failures"] and not (tr["translations"] or tr["translation_cache_hits"]):
+                        self._translator_retry_at = time.time() + 120.0  # the translator model looks down: narrate with the template for a while
+                except Exception:  # a translator failure must never stop narration (the plan then uses the template)
+                    log.exception("delivery translation failed")
+        self._set(state="generating", job=jid, sid=seg["sid"], message=f"{book['label']}: {seg['sid']}")
 
         def on_attempt(s, n):
-            self._set(message=f"{book['title']}: {s['sid']} attempt {n}")
+            self._set(message=f"{book['label']}: {s['sid']} attempt {n}")
 
         try:
             status = process_segment(self.ctx, self.tts, self.asr, seg["id"], jid, on_attempt)
@@ -489,7 +552,7 @@ class Worker:
             if j and j["consecutive_errors"] >= limit:
                 conn.execute("UPDATE jobs SET status='failed', error=?, finished_at=?, updated_at=? WHERE id=?",
                              (f"{limit} consecutive segments produced no audio - the engine looks broken. Fix and press Retry.", now(), now(), jid))
-                self.ctx.event(conn, "job_failed", f"'{book['title']}' stopped after {limit} consecutive synthesis failures", bid, "error")
+                self.ctx.event(conn, "job_failed", f"'{book['label']}' stopped after {limit} consecutive synthesis failures", bid, "error")
             if status == "flagged":
                 self.ctx.job_log(conn, jid, bid, f"{seg['sid']} flagged for human review after exhausting retries", "warning")
             conn.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now(), jid))
@@ -502,7 +565,7 @@ class Worker:
                          (now(), now(), dumps(counts), job["id"]))
             msg = f"Generation finished: {counts.get('passed', 0)} passed QA, {counts.get('flagged', 0)} need review, {counts.get('approved', 0)} approved."
             self.ctx.job_log(conn, job["id"], book["id"], msg)
-            self.ctx.event(conn, "book_done", f"'{book['title']}' {msg}", book["id"])
+            self.ctx.event(conn, "book_done", f"'{book.get('label', book['title'])}' {msg}", book["id"])
             refresh_book_state(conn, book["id"])
             snap = loads(book["settings_json"], {})
             if snap.get("export", {}).get("auto_assemble_drafts", True):

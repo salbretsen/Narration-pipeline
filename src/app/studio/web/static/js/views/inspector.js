@@ -1,5 +1,5 @@
 // Segment Inspector: text, context windows, speakers, direction, delivery sent to the engine, boundaries, takes.
-import { get, post, patch, html, setHTML, badge, fmtDate, fmtDuration, toast, busy, confirmDialog, onState, player, qs, navigate } from "../ui.js";
+import { get, post, patch, html, setHTML, badge, fmtDate, fmtDuration, toast, toastError, busy, confirmDialog, onState, player, qs, navigate } from "../ui.js";
 
 const DIR_FIELDS = [["emotion", "Emotion"], ["intensity", "Intensity"], ["pacing", "Pacing"], ["tension", "Tension"], ["delivery", "Delivery note"]];
 
@@ -13,10 +13,17 @@ function stateLine(n, label) {
     <div class="small muted">${n.text}</div></div>`;
 }
 
-export async function render(view, parts) {
+export async function render(view, parts, query) {
   const sid = Number(parts[0]);
   const vocab = await get("/api/narrative/vocabulary");
   const st = { ins: null, det: null, chars: [], voices: [], mode: null, preview: null, bookId: null };
+  // The page redraws itself on live updates; the A/B card lives in its own element next to the redrawn part, so a round in progress
+  // (selected comparison, playing clips, chosen radio, checkbox) is never rebuilt by those refreshes.
+  const mainEl = document.createElement("div");
+  const abEl = document.createElement("section");
+  abEl.className = "card"; abEl.id = "ab-card"; abEl.setAttribute("aria-labelledby", "ab-h");
+  view.replaceChildren(mainEl, abEl);
+  const ab = { comparisons: [], cmp: "directed_vs_undirected", rid: null, round: null, choice: "", other: false, creating: false, voting: false, error: "", note: "", dead: false, tally: null };
 
   async function load() {
     st.ins = await get(`/api/segments/${sid}/inspect`);
@@ -139,8 +146,8 @@ export async function render(view, parts) {
   function paint() {
     const i = st.ins, d = st.det, s = d.segment;
     const busyState = i.status === "pending" || i.status === "synthesizing";
-    setHTML(view, html`<div class="page-head"><h1>Segment <code>${i.sid}</code></h1>
-      <div class="head-actions"><a class="btn" href="#/review/${st.bookId}?seg=${sid}">Review view</a><a class="btn" href="#/narrative/${st.bookId}">Narrative page</a>
+    setHTML(mainEl, html`<div class="page-head"><h1>Segment <code>${i.sid}</code></h1>
+      <div class="head-actions"><a class="btn" href="#/review/${st.bookId}?seg=${sid}">Review view</a><a class="btn" href="#/narrative/${st.bookId}">Narrative page</a><button type="button" class="btn" data-act="ab-jump">Blind A/B</button>
         <a class="btn ghost ${d.prev_id ? "" : "disabled"}" ${d.prev_id ? html`href="#/inspect/${d.prev_id}"` : ""} aria-label="Previous segment">← Prev</a>
         <a class="btn ghost ${d.next_id ? "" : "disabled"}" ${d.next_id ? html`href="#/inspect/${d.next_id}"` : ""} aria-label="Next segment">Next →</a></div></div>
     <section class="card">
@@ -184,6 +191,106 @@ export async function render(view, parts) {
     </section>`);
   }
 
+  // ------------------------------------------------------------ blind A/B listening
+  const abCmp = () => ab.comparisons.find((c) => c.id === ab.cmp) || null;
+
+  function tallyBlock(t) {
+    if (!t || !t.votes) return html`<p class="small muted">No votes yet for this comparison in this book.</p>`;
+    return html`<p class="small">Votes so far in this book: <strong>${t.votes}</strong>. “${t.a_label}” won ${t.a_wins}, “${t.b_label}” won ${t.b_wins}, no real difference ${t.same}.
+      ${t.a_share === null ? "" : html`“${t.a_label}” has ${Math.round(t.a_share * 100)}% of the ${t.non_tie} non-tie votes.`}
+      “Sounds like a different narrator” was flagged ${t.other_narrator_flags} time(s).</p>`;
+  }
+
+  function paintAB() {
+    const r = ab.round, c = abCmp();
+    const voted = !!(r && r.voted), ready = !!(r && r.status === "ready" && !voted), failed = !!(r && r.status === "failed");
+    const pending = ab.creating || !!(r && r.status === "pending");
+    const lock = pending || ready;
+    const clips = (r && r.sides ? r.sides : []).filter((s) => s.media_url);
+    setHTML(abEl, html`<h2 id="ab-h" tabindex="-1">Compare settings (blind A/B)</h2>
+      <p class="small muted">Renders this segment twice with two different settings and the same random seed, so only the settings differ. You hear two clips, X and Y, without being told which is which.
+        Vote, then the answer is revealed. Nothing here changes the book's takes.</p>
+      <div class="inline-form"><label>Comparison
+        <select data-ab="cmp" ${lock ? html`disabled` : ""}>${ab.comparisons.map((x) => html`<option value="${x.id}" ${x.id === ab.cmp ? html`selected` : ""}>${x.title}</option>`)}</select></label>
+        <button type="button" class="btn" data-act="ab-create" ${lock ? html`disabled` : ""}>Create A/B pair</button>
+        <button type="button" class="btn ghost" data-act="ab-pick" ${lock ? html`disabled` : ""}>Pick a segment where they differ</button></div>
+      ${c ? html`<p class="small muted">The two settings: <strong>${c.a_label}</strong> and <strong>${c.b_label}</strong>. Applies to: ${c.applies}.</p>` : ""}
+      <div id="ab-live" role="status" aria-live="polite" class="small">${pending ? html`<span class="spinner" aria-hidden="true"></span> Rendering the two clips on the worker…` : ""}
+        ${failed ? html`<span class="err">${r.error || "A clip failed to render."}</span>` : ""}${ab.error ? html`<span class="err">${ab.error}</span>` : ""}</div>
+      ${r && r.mock && (ready || voted) ? html`<div class="callout warn small"><strong>MOCK ENGINE: tones, not speech.</strong> These clips are synthetic test tones, so a vote here says nothing about real narration.</div>` : ""}
+      ${ready || voted ? html`<div class="two-col">${clips.map((s) => html`<div><h3>Clip ${s.side.toUpperCase()}${voted && r.revealed ? html` <span class="badge tone-info">${r.revealed[s.side]}</span>` : ""}</h3>
+        ${player(s.media_url, `Clip ${s.side.toUpperCase()}`)}</div>`)}</div>` : ""}
+      ${ready ? html`<fieldset class="ab-choice"><legend>Which clip sounds better?</legend>
+          <label class="check"><input type="radio" name="ab-choice" value="x" ${ab.choice === "x" ? html`checked` : ""}> X sounds better</label>
+          <label class="check"><input type="radio" name="ab-choice" value="y" ${ab.choice === "y" ? html`checked` : ""}> Y sounds better</label>
+          <label class="check"><input type="radio" name="ab-choice" value="same" ${ab.choice === "same" ? html`checked` : ""}> No real difference</label></fieldset>
+        <label class="check"><input type="checkbox" name="ab-other" ${ab.other ? html`checked` : ""}> Sounds like a different narrator</label>
+        <div class="form-actions"><button type="button" class="btn primary" data-act="ab-vote" ${ab.voting ? html`disabled` : ""}>Submit vote</button>
+          <button type="button" class="btn ghost" data-act="ab-new">Discard this pair</button></div>` : ""}
+      ${voted ? html`<div class="callout good small"><strong>Vote recorded.</strong> Clip X was “${r.revealed.x}” and clip Y was “${r.revealed.y}”.
+          You chose ${r.vote.winner === "same" ? "“no real difference”" : html`“${r.revealed[r.vote.choice]}”`}${r.vote.other_narrator ? " and flagged “sounds like a different narrator”" : ""}.</div>
+        <div class="form-actions"><button type="button" class="btn" data-act="ab-new">Start another pair</button></div>` : ""}
+      ${failed ? html`<div class="form-actions"><button type="button" class="btn" data-act="ab-new">Close</button></div>` : ""}
+      ${tallyBlock(ab.tally && ab.tally[ab.cmp])}`);
+  }
+
+  function abReset() { ab.rid = null; ab.round = null; ab.choice = ""; ab.other = false; ab.error = ""; ab.voting = false; }
+
+  async function abPoll(rid) {
+    for (let n = 0; n < 400 && !ab.dead && ab.rid === rid; n++) {
+      let r;
+      try { r = await get(`/api/ab/${rid}`); } catch (e) { if (ab.rid === rid) { ab.error = e.message || "Could not read the A/B round."; ab.round = null; ab.rid = null; paintAB(); } return; }
+      if (ab.dead || ab.rid !== rid) return;
+      ab.round = r; ab.cmp = r.comparison || ab.cmp;
+      if (r.status !== "pending") { paintAB(); return; }
+      if (n === 0) paintAB();
+      await new Promise((res) => setTimeout(res, 1500));
+    }
+  }
+
+  async function abAct(name) {
+    if (name === "ab-jump") { abEl.scrollIntoView({ block: "start" }); abEl.querySelector("h2").focus(); return; }
+    if (name === "ab-new") { abReset(); paintAB(); return; }
+    if (name === "ab-pick") {
+      try {
+        const r = await get(`/api/books/${st.bookId}/ab/random` + qs({ comparison: ab.cmp, exclude: sid }));
+        toast(`Opening segment ${r.sid}, where the two settings sound different.`, "info");
+        navigate(`#/inspect/${r.segment_id}`);
+      } catch (e) { ab.error = e.message || "No segment differs for this comparison."; toastError(e); paintAB(); }
+      return;
+    }
+    if (name === "ab-create") {
+      abReset(); ab.creating = true; paintAB();
+      try {
+        const r = await post(`/api/segments/${sid}/ab`, { comparison: ab.cmp });
+        ab.rid = r.round_id; ab.round = { status: "pending" };
+      } catch (e) { ab.error = e.message || "Could not create the pair."; toastError(e); }
+      ab.creating = false; paintAB();
+      if (ab.rid) abPoll(ab.rid);
+      return;
+    }
+    if (name === "ab-vote") {
+      if (!ab.choice) { ab.error = "Choose X, Y or “No real difference” first."; paintAB(); const f = abEl.querySelector("input[name=ab-choice]"); if (f) f.focus(); return; }
+      ab.error = ""; ab.voting = true;
+      try {
+        const v = await post(`/api/ab/${ab.rid}/vote`, { choice: ab.choice, other_narrator: ab.other });
+        if (!ab.tally) ab.tally = {};
+        ab.tally[v.comparison] = v.tally;
+        ab.round = await get(`/api/ab/${ab.rid}`);
+        toast("Vote recorded", "success");
+      } catch (e) { ab.error = e.message || "Could not record the vote."; toastError(e); }
+      ab.voting = false; paintAB();
+    }
+  }
+
+  function onChange(e) {
+    const t = e.target;
+    if (!abEl.contains(t)) return;
+    if (t.name === "ab-choice") ab.choice = t.value;
+    else if (t.name === "ab-other") ab.other = t.checked;
+    else if (t.dataset && t.dataset.ab === "cmp") { ab.cmp = t.value; paintAB(); const s = abEl.querySelector("[data-ab=cmp]"); if (s) s.focus(); }
+  }
+
   async function reload() { await load(); paint(); }
 
   async function goToOffset(chapterId, off) {
@@ -205,6 +312,7 @@ export async function render(view, parts) {
   }
 
   async function act(name, t) {
+    if (name.startsWith("ab-")) return abAct(name);
     const i = st.ins;
     if (name === "mode") { st.mode = st.mode === t.dataset.mode ? null : t.dataset.mode; paint(); return; }
     if (name === "pick") {
@@ -265,7 +373,13 @@ export async function render(view, parts) {
 
   await load();
   paint();
+  try { const c = await get(`/api/books/${st.bookId}/ab`); ab.comparisons = c.comparisons; ab.tally = c.tally; } catch { /* the card then offers no comparisons */ }
+  const resume = query && query.get ? query.get("ab") : null;
+  if (resume && /^[0-9a-f]{32}$/.test(resume)) { ab.rid = resume; ab.round = { status: "pending" }; }
+  paintAB();
+  if (ab.rid) abPoll(ab.rid);
   view.addEventListener("click", onClick);
+  view.addEventListener("change", onChange);
   view.addEventListener("submit", onSubmit);
   const off = onState(async () => {
     const ae = document.activeElement;
@@ -273,5 +387,5 @@ export async function render(view, parts) {
     if ([...view.querySelectorAll("audio")].some((x) => !x.paused) || st.mode || (st.preview && st.preview.pending)) return;
     try { await reload(); } catch { /* transient */ }
   }, 3000);
-  return () => { st.preview = null; off(); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); };
+  return () => { ab.dead = true; st.preview = null; off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
 }

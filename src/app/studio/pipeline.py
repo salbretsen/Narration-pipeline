@@ -145,13 +145,15 @@ def place_takes(conn, book: dict, segment_id: int) -> None:
 def calibrated_wpm(conn, book_id: int, default: float) -> float:
     recent = rows(
         conn,
-        """SELECT a.duration_s, a.text_spoken FROM attempts a JOIN segments s ON s.id = a.segment_id
+        """SELECT a.duration_s, a.text_spoken, a.pace_used FROM attempts a JOIN segments s ON s.id = a.segment_id
            WHERE s.book_id=? AND a.passed=1 AND a.duration_s > 1 ORDER BY a.id DESC LIMIT 40""",
         (book_id,),
     )
     if len(recent) < 10:
         return default
-    rates = [len(r["text_spoken"].split()) * 60.0 / r["duration_s"] for r in recent if r["duration_s"]]
+    # Stored durations are already time-stretched by that take's pace (faster = shorter). Undo it so the rate is the
+    # model's natural one: process_segment multiplies by the new take's pace again when it sets the expected duration.
+    rates = [len(r["text_spoken"].split()) * 60.0 / (r["duration_s"] * float(r["pace_used"] or 1.0)) for r in recent if r["duration_s"]]
     rates = [r for r in rates if 60 <= r <= 300]
     return statistics.median(rates) if len(rates) >= 10 else default
 
@@ -258,11 +260,13 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
             params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, plan.instruct or "")
             cur = conn.execute(
                 """INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id,
-                       fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped,
+                       pace_used, ref_id_used)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (segment_id, seg["round"], attempt_no, "in_progress", tts.name, voice.model_id, voice.version_id,
                  book["synth_fingerprint"], params.seed, params.temperature, text, now(), plan.gen_key, plan.instruct,
-                 1 if plan.delivery_applied else 0, plan.voice_id, 0 if verify else 1),
+                 1 if plan.delivery_applied else 0, plan.voice_id, 0 if verify else 1,
+                 round(pace, 4) if abs(pace - 1.0) > 1e-6 else None, plan.ref_id),
             )
             attempt_id = cur.lastrowid
             conn.execute("UPDATE segments SET status='synthesizing', attempts_used=?, updated_at=? WHERE id=?",

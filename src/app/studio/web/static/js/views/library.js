@@ -1,9 +1,17 @@
 // Multi-manuscript library: upload, import preview, metadata + narrator, add to queue.
-import { api, get, post, html, setHTML, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState } from "../ui.js";
+import { api, get, post, html, setHTML, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState, snapshotForm, applyForm } from "../ui.js";
 
 // Previews survive navigation within the session (the server also keeps them for 48 h).
 const pending = [];
 let selectedToken = null;
+// What was typed or chosen in each preview's form. The page is redrawn on uploads, queueing and tab switches; without this a narrator picked
+// in the form silently snapped back to the first voice in the list.
+const drafts = {};
+// The narrator version shown for each book that has more than one (work_uid -> book id).
+const chosen = {};
+
+const saveDraft = (form, token) => { drafts[token] = snapshotForm(form); };
+const restoreDraft = (form, token) => applyForm(form, drafts[token]);
 
 function uploadCard() {
   return html`<section class="card" aria-labelledby="up-h">
@@ -53,7 +61,7 @@ function previewPanel(p, voices) {
       <fieldset><legend>Narrator</legend>
         <div class="form-grid">
           <label>Approved narrator voice
-            <select name="voice_id" required>${voices.map((v) => html`<option value="${v.id}">${v.name} – ${v.kind === "preset" ? "preset " + (v.version.speaker || "") : v.kind === "clone" ? "cloned (consent on file)" : "designed"}</option>`)}</select></label>
+            <select name="voice_id" required><option value="" disabled selected>Choose a narrator…</option>${voices.map((v) => html`<option value="${v.id}">${v.name} – ${v.kind === "preset" ? "preset " + (v.version.speaker || "") : v.kind === "clone" ? "cloned (consent on file)" : "designed"}</option>`)}</select></label>
           <label>Delivery instructions (optional)
             <input name="instructions" maxlength="1000" placeholder="e.g. Warm and intimate; slightly slower for dialogue"></label>
         </div>
@@ -80,20 +88,35 @@ function previewPanel(p, voices) {
     </form></section>`;
 }
 
+/** One entry per manuscript: its narrator versions (newest first), with the one the reader picked (or the newest) as `shown`. */
+function groupByWork(books) {
+  const groups = new Map();
+  for (const b of books) {
+    if (!groups.has(b.work_uid)) groups.set(b.work_uid, []);
+    groups.get(b.work_uid).push(b);
+  }
+  return [...groups.entries()].map(([work, versions]) => ({ work, versions, shown: versions.find((v) => v.id === chosen[work]) || versions[0] }));
+}
+
 function bookList(books) {
+  const groups = groupByWork(books);
   return html`<section class="card" aria-labelledby="lib-h">
-    <h2 id="lib-h">Library (${books.length})</h2>
+    <h2 id="lib-h">Library (${groups.length})</h2>
     ${books.length ? html`<div class="table-wrap"><table class="table">
       <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Length</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-      <tbody>${books.map((b) => html`<tr>
+      <tbody>${groups.map((g) => { const b = g.shown; return html`<tr>
         <td><a href="#/book/${b.id}"><strong>${b.title}</strong></a><div class="small muted">${b.author || ""}${b.author ? " · " : ""}${b.source || ""} · ${fmtDate(b.created_at)}</div></td>
-        <td>${b.voice || "–"}</td>
-        <td class="nowrap">${progressBar(b.progress, `${b.title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
+        <td>${g.versions.length > 1
+          ? html`<label class="sr-only" for="nv-${g.work}">Narrator version of ${b.title}</label>
+              <select id="nv-${g.work}" data-work="${g.work}">${g.versions.map((v) => html`<option value="${v.id}" ${v.id === b.id ? html`selected` : ""}>${v.voice || "–"}</option>`)}</select>
+              <div class="small muted">${g.versions.length} narrations</div>`
+          : (b.voice || "–")}</td>
+        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
         <td class="small">${fmtDuration(b.audio_duration_s || b.est_duration_s)}${b.audio_duration_s ? "" : " est."}</td>
         <td>${badge(b.state)}</td>
         <td class="actions">
           ${b.pending && !(b.job && ["queued", "running", "paused"].includes(b.job.status)) ? html`<button class="btn small primary" data-act="queue" data-id="${b.id}">Queue</button>` : ""}
-          <a class="btn small" href="#/review/${b.id}">Review</a></td></tr>`)}</tbody></table></div>`
+          <a class="btn small" href="#/review/${b.id}">Review</a></td></tr>`; })}</tbody></table></div>`
       : html`<p class="muted">No books yet.</p>`}
   </section>`;
 }
@@ -134,6 +157,10 @@ export async function render(view) {
     dz.addEventListener("drop", (e) => upload([...e.dataTransfer.files]));
     const form = view.querySelector("#confirm-form");
     if (form) {
+      const token = selectedToken;
+      restoreDraft(form, token);
+      form.addEventListener("input", () => saveDraft(form, token));
+      form.addEventListener("change", () => saveDraft(form, token));
       let queueFlag = false;
       form.querySelectorAll("button[type=submit]").forEach((b) => b.addEventListener("click", () => { queueFlag = b.dataset.queue === "1"; }));
       form.addEventListener("submit", async (e) => {
@@ -142,13 +169,15 @@ export async function render(view) {
         if (!fd.get("title").trim()) { toast("Title is required", "error"); form.title.focus(); return; }
         const include = fd.getAll("include").map(Number);
         if (!include.length) { toast("Select at least one chapter to narrate.", "error"); return; }
+        if (!fd.get("voice_id")) { toast("Choose a narrator for this book.", "error"); form.voice_id.focus(); return; }
         const body = { title: fd.get("title"), author: fd.get("author"), narrator_credit: fd.get("narrator_credit"), publisher: fd.get("publisher"),
           year: fd.get("year"), genre: fd.get("genre") || "Audiobook", description: fd.get("description"), voice_id: Number(fd.get("voice_id")),
           instructions: fd.get("instructions"), include, queue: queueFlag };
         const btn = e.submitter || form.querySelector("button[type=submit]");
         const book = await busy(btn, () => post(`/api/imports/${selectedToken}/confirm`, body));
         const p = pending.find((x) => x.token === selectedToken); if (p) p.done = true;
-        toast(`'${book.title}' imported: ${book.segments} segments${queueFlag ? " – queued" : ""}`, "success");
+        delete drafts[token];
+        toast(`'${book.display_title}' imported: ${book.segments} segments${queueFlag ? " – queued" : ""}`, "success");
         books = (await get("/api/books")).books;
         selectedToken = (pending.find((x) => !x.done) || {}).token || null;
         paint();
@@ -171,8 +200,19 @@ export async function render(view) {
     }
   }
 
+  function onChange(e) {
+    const sel = e.target.closest("select[data-work]");
+    if (!sel || !view.contains(sel)) return;
+    chosen[sel.dataset.work] = Number(sel.value);
+    const wrap = view.querySelector("#lib-wrap");
+    if (wrap) setHTML(wrap, bookList(books));
+    const again = view.querySelector(`select[data-work="${sel.dataset.work}"]`);
+    if (again) again.focus();
+  }
+
   paint();
   view.addEventListener("click", onClick);
+  view.addEventListener("change", onChange);
   const off = onState(async () => {
     try {
       books = (await get("/api/books")).books;
@@ -180,5 +220,5 @@ export async function render(view) {
       if (wrap) setHTML(wrap, bookList(books)); // only the list: never disturb a form being filled in
     } catch (e) { /* transient; the next update retries */ }
   }, 4000);
-  return () => { off(); view.removeEventListener("click", onClick); };
+  return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); };
 }

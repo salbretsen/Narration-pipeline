@@ -5,14 +5,18 @@ Every state change goes through here, inside a transaction, with an audit trail.
 from __future__ import annotations
 
 import os
+import random
 import re
+import secrets
 import statistics
 import time
+import uuid
 from pathlib import Path
 
 from . import audio as A
 from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
+from .narrative import ab as N_ab
 from .narrative import cast as N_cast
 from .narrative import store as N_store
 from .context import resolve_actor
@@ -45,6 +49,7 @@ DEFAULT_PREVIEW_TEXT = (
     "were reflected in long, trembling lines on the black water."
 )
 DEFAULT_NARRATION_INSTRUCT = "Calm, clear, warm audiobook narration with natural pacing."
+SYNTHETIC_HOLDER = "Synthetic voice designed in this studio"
 
 
 # ======================================================================= voices
@@ -178,7 +183,8 @@ def create_clone_voice(ctx, name: str, filename: str, data: bytes, ref_text: str
     if info["duration_s"] and words / info["duration_s"] > 5.5:
         info["warnings"].append("The transcript looks long for this clip; it must match the audio exactly.")
     consent_rec = {"owner_attest": True, "rights_holder": rights_holder, "statement": str(consent.get("statement") or "")[:1000],
-                   "attested_at": now(), "original_filename": safe_filename(filename), "sha256": sha256_bytes(data)}
+                   "attested_at": now(), "original_filename": safe_filename(filename), "sha256": sha256_bytes(data),
+                   **{k: consent[k] for k in ("source_voice_id", "source_voice_name") if consent.get(k) is not None}}
     with ctx.db.tx() as conn:
         name = _check_name(conn, name)
         vid = conn.execute("INSERT INTO voices(uid, name, kind, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
@@ -243,17 +249,19 @@ def archive_voice(ctx, voice_id: int) -> None:
         ctx.audit(conn, "voice", voice_id, "archive")
 
 
-def enqueue_preview(ctx, voice_id: int, text: str, instruct: str | None = None, verify: bool = False, seed: int | None = None) -> dict:
+def enqueue_preview(ctx, voice_id: int, text: str, instruct: str | None = None, verify: bool = False, seed: int | None = None,
+                    extra: dict | None = None, allow_archived: bool = False) -> dict:
     text = " ".join((text or "").split())
     if not 3 <= len(text) <= 600:
         raise ServiceError("Preview text must be 3-600 characters.", 422)
     with ctx.db.tx() as conn:
-        v = row(conn, "SELECT * FROM voices WHERE id=? AND archived=0", (voice_id,))
+        v = row(conn, "SELECT * FROM voices WHERE id=?" + ("" if allow_archived else " AND archived=0"), (voice_id,))
         if not v:
             raise ServiceError("Voice not found", 404)
         jid = conn.execute("INSERT INTO jobs(kind, payload_json, status, position, created_at, updated_at) VALUES ('preview',?, 'queued', 0, ?, ?)",
                            (dumps({"voice_id": voice_id, "voice_version_id": v["current_version_id"], "text": text,
-                                   "instruct": (instruct or "").strip() or None, "verify": bool(verify), "seed": seed or 1234}), now(), now())).lastrowid
+                                   "instruct": (instruct or "").strip() or None, "verify": bool(verify), "seed": seed or 1234, **(extra or {})}),
+                            now(), now())).lastrowid
     return get_job(ctx, jid)
 
 
@@ -273,8 +281,9 @@ def promote_preview_to_clone(ctx, job_id: int, name: str) -> dict:
         raise ServiceError("The preview audio file no longer exists; generate it again.", 410)
     data = path.read_bytes()
     out = create_clone_voice(ctx, name, path.name, data, p["text"],
-                             {"owner_attest": True, "rights_holder": f"Synthetic voice designed in this studio ('{v['name']}')",
-                              "statement": f"Reference generated locally by Qwen3-TTS VoiceDesign (preview job {job_id}); no human voice involved."})
+                             {"owner_attest": True, "rights_holder": f"{SYNTHETIC_HOLDER} ('{v['name']}')",
+                              "statement": f"Reference generated locally by Qwen3-TTS VoiceDesign (preview job {job_id}); no human voice involved.",
+                              "source_voice_id": v["id"], "source_voice_name": v["name"]})
     return out
 
 
@@ -387,6 +396,15 @@ def update_recording_text(ctx, rid: str, ref_text: str) -> dict:
     if not 5 <= len(ref_text) <= 1000:
         raise ServiceError("The transcript must be 5-1000 characters.", 422)
     meta["ref_text"] = ref_text
+    meta.pop("asr_check", None)  # the check compared the old transcript
+    atomic_write_bytes(_rec_meta_path(ctx, rid), dumps(meta).encode())
+    return meta
+
+
+def update_recording_meta(ctx, rid: str, **fields) -> dict:
+    """Merge extra fields (Whisper check result, synthetic-candidate provenance, drift metrics) into a recording's meta.json."""
+    meta = get_recording(ctx, rid)
+    meta.update(fields)
     atomic_write_bytes(_rec_meta_path(ctx, rid), dumps(meta).encode())
     return meta
 
@@ -417,6 +435,195 @@ def create_voice_from_recording(ctx, rid: str, name: str, consent: dict) -> dict
     statement = (consent.get("statement") or "").strip()
     consent = {**consent, "statement": (statement + " " if statement else "") + f"Recorded in the studio reference lab ({meta['script_title']}, recording {rid})."}
     return create_clone_voice(ctx, name, meta["filename"], data, meta["ref_text"], consent)
+
+
+# ================================================ emotion reference bank (cloned voices)
+
+BANK_MAX_WER = 0.08
+
+
+def _clone_row(conn, voice_id: int) -> dict:
+    v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+    if not v:
+        raise ServiceError("Voice not found", 404)
+    if v["kind"] != "clone":
+        raise ServiceError("Only cloned voices have an emotion reference bank.", 422)
+    return v
+
+
+def _clone_consent(conn, v: dict) -> dict:
+    vv = row(conn, "SELECT consent_json FROM voice_versions WHERE id=?", (v["current_version_id"],)) or {}
+    return loads(vv.get("consent_json"), {})
+
+
+def _is_synthetic_consent(consent: dict) -> bool:
+    return str(consent.get("rights_holder") or "").startswith(SYNTHETIC_HOLDER)
+
+
+def clone_source_voice(conn, v: dict) -> dict | None:
+    """The designed voice a clone was promoted from (archived ones included), or None for human-recorded clones.
+    Clones promoted before v0.7.0 only name it inside ``rights_holder``."""
+    consent = _clone_consent(conn, v)
+    if not _is_synthetic_consent(consent):
+        return None
+    sv = None
+    if consent.get("source_voice_id"):
+        sv = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (consent["source_voice_id"],))
+    if not sv:
+        m = re.search(r"\('(.+)'\)\s*$", str(consent.get("rights_holder") or ""))
+        if m:
+            sv = row(conn, "SELECT * FROM voices WHERE name=? AND kind='design' ORDER BY archived, id DESC", (m.group(1),))
+    return sv
+
+
+def _ref_dict(r: dict) -> dict:
+    m = loads(r["metrics_json"], {})
+    return {"id": r["id"], "bucket": r["bucket"], "ref_text": r["ref_text"], "duration_s": r["ref_duration_s"], "source": r["source"],
+            "source_ref": r["source_ref"], "metrics": m, "created_at": r["created_at"], "mock": m.get("engine") == "mock"}
+
+
+def list_refs(ctx, voice_id: int) -> dict:
+    from .narrative import refbank as RB
+
+    with ctx.db.session() as conn:
+        v = _clone_row(conn, voice_id)
+        have = {r["bucket"]: r for r in rows(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (voice_id,))}
+        src = clone_source_voice(conn, v)
+        synthetic = _is_synthetic_consent(_clone_consent(conn, v))
+    return {"voice_id": voice_id, "synthetic": synthetic,
+            "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])} if src else None,
+            "buckets": [{"bucket": b, "label": info["label"], "emotion_text": info["emotion_text"], "script_id": info["script_id"],
+                         "ref": _ref_dict(have[b]) if b in have else None} for b, info in RB.BUCKET_INFO.items()]}
+
+
+def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: bool = False, statement: str = "") -> dict:
+    """Adopt a lab recording as the clone's reference clip for one emotion bucket (replacing any earlier clip there)."""
+    from .narrative import refbank as RB
+    from .narrative import voicecheck as VC
+
+    if bucket not in RB.BUCKETS:
+        raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
+    meta = get_recording(ctx, recording_id)
+    chk = meta.get("asr_check") or {}
+    if not chk:
+        raise ServiceError("Run the Whisper check on this recording first: an emotional clip is only adopted when its transcript matches.", 422)
+    if not chk.get("matches") or float(chk.get("wer", 1.0)) > BANK_MAX_WER:
+        raise ServiceError(f"The Whisper check does not match the transcript (word error rate {float(chk.get('wer', 1.0)) * 100:.1f}%, "
+                           f"at most {BANK_MAX_WER * 100:.0f}% allowed). Fix the transcript or re-record.", 422, {"asr_check": chk})
+    if meta.get("source") != "synthetic" and (meta.get("quality") or {}).get("verdict") == "poor":  # room-noise checks describe microphones, not synthesis
+        raise ServiceError("This take was rated poor quality; re-record it before adopting it.", 422, {"quality": meta.get("quality")})
+    s = ctx.settings()
+    with ctx.db.session() as conn:
+        v = _clone_row(conn, voice_id)
+        vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],))
+        consent_base = _clone_consent(conn, v)
+        src = clone_source_voice(conn, v)
+    synthetic_clone = _is_synthetic_consent(consent_base)
+    statement = " ".join((statement or "").split())
+    if synthetic_clone:
+        if meta.get("source") != "synthetic":
+            raise ServiceError("This clone was made from a designed (synthetic) voice, so its emotion clips must be generated by that voice "
+                               "('Generate candidates'); a human recording cannot be adopted into it.", 422)
+        if src is None or meta.get("source_voice_id") != src["id"]:
+            raise ServiceError("This candidate was not generated by the designed voice this clone came from.", 422)
+        consent = {"type": "synthetic", "source_voice_id": src["id"], "source_voice_name": src["name"],
+                   "note": "Generated locally by the designed voice; no human voice involved."}
+    else:
+        if meta.get("source") == "synthetic":
+            raise ServiceError("A synthetic candidate cannot be adopted into a clone of a human voice.", 422)
+        if not owner_attest:
+            raise ServiceError("Confirm that this recording is of the same speaker and that you own it or have their written permission.", 422)
+        if len(statement) < 10:
+            raise ServiceError("Add a short consent statement (at least 10 characters).", 422)
+        consent = {"type": "human", "owner_attest": True, "statement": statement[:1000], "attested_at": now(), "rights_holder": consent_base.get("rights_holder")}
+    rdir = recordings_dir(ctx) / recording_id
+    clip_src, orig_src = rdir / "reference-24k.wav", rdir / meta.get("filename", "original.wav")
+    if not clip_src.exists() or not orig_src.exists():
+        raise ServiceError("The recording's audio files are missing.", 410)
+    try:
+        clip, clip_sr = A.read_wav(clip_src)
+        base, base_sr = A.read_wav(Path(vv["ref_audio_path"]))
+    except Exception as exc:
+        raise ServiceError(f"Could not read the audio: {exc}", 422)
+    adj, gain_db = VC.match_level(clip, clip_sr, base, base_sr)
+    f0, f0_base = VC.f0_median(adj, clip_sr), VC.f0_median(base, base_sr)
+    cen, cen_base = VC.spectral_centroid(adj, clip_sr), VC.spectral_centroid(base, base_sr)
+    metrics = {"gain_db": round(gain_db, 2), "f0_hz": round(f0, 1) if f0 else None, "base_f0_hz": round(f0_base, 1) if f0_base else None,
+               "f0_delta_hz": round(f0 - f0_base, 1) if f0 and f0_base else None, "centroid_hz": round(cen, 1), "base_centroid_hz": round(cen_base, 1),
+               "centroid_delta_hz": round(cen - cen_base, 1), "wer": chk.get("wer"), "engine": meta.get("engine"), "script": meta.get("script_title")}
+    if meta.get("engine") == "mock":
+        metrics["note"] = "Mock engine: synthetic test tones, not speech."
+    ref_dir = ctx.category_dir("references", s) / v["uid"] / "refs"
+    try:
+        ref_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ServiceError(f"Reference storage is unavailable: {exc}", 503)
+    data = orig_src.read_bytes()
+    ext = orig_src.suffix.lower() or ".wav"
+    wav_dst, orig_dst = ref_dir / f"{bucket}.wav", ref_dir / f"{bucket}-original{ext}"
+    atomic_write_bytes(orig_dst, data)
+    A.write_wav(wav_dst, adj, clip_sr)
+    with ctx.db.tx() as conn:
+        old = row(conn, "SELECT * FROM voice_refs WHERE voice_id=? AND bucket=?", (voice_id, bucket))
+        # never reuse an id: attempts.ref_id_used must keep pointing at one specific clip even after it was replaced or removed
+        new_id = max(scalar(conn, "SELECT MAX(id) FROM voice_refs", (), 0) or 0, scalar(conn, "SELECT MAX(ref_id_used) FROM attempts", (), 0) or 0) + 1
+        if old:
+            conn.execute("DELETE FROM voice_refs WHERE id=?", (old["id"],))
+        conn.execute(
+            """INSERT INTO voice_refs(id, voice_id, bucket, ref_audio_path, ref_original_path, ref_text, ref_sha256, ref_duration_s, source, source_ref,
+                   consent_json, metrics_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (new_id, voice_id, bucket, str(wav_dst), str(orig_dst), meta["ref_text"], sha256_bytes(data), round(adj.size / clip_sr, 2),
+             "synthetic" if synthetic_clone else "recording", recording_id, dumps(consent), dumps(metrics), now()))
+        ctx.audit(conn, "voice", voice_id, "adopt_ref", {"bucket": bucket, "recording_id": recording_id, "replaced": bool(old), "consent": consent.get("type")})
+        ctx.event(conn, "voice", f"Reference clip '{bucket}' adopted for '{v['name']}'" + (" (mock engine: test tones)" if meta.get("engine") == "mock" else "") + ".")
+    return list_refs(ctx, voice_id)
+
+
+def remove_ref(ctx, voice_id: int, ref_id: int) -> dict:
+    with ctx.db.tx() as conn:
+        _clone_row(conn, voice_id)
+        r = row(conn, "SELECT * FROM voice_refs WHERE id=? AND voice_id=?", (ref_id, voice_id))
+        if not r:
+            raise ServiceError("Reference clip not found", 404)
+        conn.execute("DELETE FROM voice_refs WHERE id=?", (ref_id,))
+        ctx.audit(conn, "voice", voice_id, "remove_ref", {"bucket": r["bucket"], "ref_id": ref_id})
+    for p in (r["ref_audio_path"], r["ref_original_path"]):
+        if p:
+            Path(p).unlink(missing_ok=True)
+    return list_refs(ctx, voice_id)
+
+
+def generate_ref_candidates(ctx, voice_id: int, bucket: str, source_voice_id: int | None = None, n: int = 3) -> dict:
+    """Ask the designed voice a synthetic clone came from for ``n`` takes in one emotional register. Each finished job registers
+    a draft in the reference lab (with a Whisper check and its drift from the clone's base reference), ready to audition and adopt."""
+    from . import reference as R
+    from .narrative import refbank as RB
+
+    if bucket not in RB.BUCKETS:
+        raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
+    n = max(1, min(5, int(n or 3)))
+    with ctx.db.session() as conn:
+        v = _clone_row(conn, voice_id)
+        src = clone_source_voice(conn, v)
+        synthetic = _is_synthetic_consent(_clone_consent(conn, v))
+        if src is None and synthetic and source_voice_id:
+            src = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (source_voice_id,))
+            if not src:
+                raise ServiceError("source_voice_id is not a designed voice.", 422)
+    if not synthetic:
+        raise ServiceError("Candidates can only be generated for a clone made from a designed voice. For a human voice, record the clips in the "
+                           "Recording lab and adopt them here.", 422)
+    if src is None:
+        raise ServiceError("The designed voice this clone came from could not be found; pass source_voice_id.", 422)
+    info = RB.BUCKET_INFO[bucket]
+    script = R.script_by_id(info["script_id"])
+    jobs = []
+    for i in range(n):
+        jobs.append(enqueue_preview(
+            ctx, src["id"], script["text"], f"Deliver the whole passage in a {info['emotion_text']} manner.", verify=True,
+            seed=7001 + 101 * i + 13 * RB.BUCKETS.index(bucket), allow_archived=True,
+            extra={"to_lab": True, "bucket": bucket, "script_id": script["id"], "target_voice_id": voice_id, "source_voice_id": src["id"], "candidate": i + 1}))
+    return {"voice_id": voice_id, "bucket": bucket, "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])}, "jobs": jobs}
 
 
 # ====================================================================== imports
@@ -471,7 +678,8 @@ def create_import(ctx, filename: str, data: bytes) -> dict:
     with ctx.db.tx() as conn:
         dupe = row(conn, "SELECT b.id, b.title FROM manuscripts m JOIN books b ON b.id=m.book_id WHERE m.sha256=? AND b.archived=0", (digest,))
         if dupe:
-            preview["warnings"].insert(0, f"This exact file was already imported as '{dupe['title']}' (book #{dupe['id']}). Importing again creates a separate project.")
+            preview["warnings"].insert(0, f"This exact file was already imported as '{dupe['title']}' (book #{dupe['id']}). Importing again creates a separate project; "
+                                          "to hear it in another voice, open that book and use 'Narrate with another voice' instead.")
             preview["duplicate_of"] = dupe["id"]
         conn.execute("INSERT INTO imports(token, original_name, stored_path, sha256, format, preview_json, created_at) VALUES (?,?,?,?,?,?,?)",
                      (token, safe, str(tmp_dir / safe), digest, fmt, dumps(preview), now()))
@@ -604,6 +812,7 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
         conn.execute("INSERT INTO manuscripts(book_id, original_name, stored_path, sha256, size_bytes, format, parse_report_json, imported_at) VALUES (?,?,?,?,?,?,?,?)",
                      (bid, imp["original_name"], str(stored), imp["sha256"], len(data), res.format, dumps(manifest), now()))
         conn.execute("UPDATE imports SET consumed_book_id=? WHERE id=?", (bid, imp["id"]))
+        conn.execute("UPDATE books SET work_uid=uid WHERE id=?", (bid,))  # a fresh import starts its own work; further narrators join it (versions.py)
         ctx.audit(conn, "book", bid, "import", {"file": imp["original_name"], "sha256": imp["sha256"], "chapters": len(include), "segments": total_segments, "voice_version": vv["id"]})
         ctx.event(conn, "import", f"Imported '{title}': {len(include)} chapters, {total_segments} segments", bid)
     Path(imp["stored_path"]).unlink(missing_ok=True)
@@ -619,6 +828,23 @@ def confirm_import(ctx, token: str, meta: dict) -> dict:
 # ======================================================================== books
 
 
+# Narrator versions (v0.7.0): books narrated from one manuscript share work_uid. Titles in queues, review and the dashboard are "<Title> - <Narrator>".
+DISPLAY_TITLE_SQL = "b.title || COALESCE(' - ' || (SELECT v.name FROM voices v WHERE v.id=b.voice_id), '')"
+
+
+def work_key(b: dict) -> str:
+    return b.get("work_uid") or b["uid"]
+
+
+def siblings(conn, b: dict) -> list[dict]:
+    """Every version of this book's manuscript, oldest first (the book itself included; archived versions too)."""
+    return rows(conn, "SELECT * FROM books WHERE COALESCE(work_uid, uid)=? ORDER BY created_at, id", (work_key(b),))
+
+
+def display_title(title: str, narrator: str | None) -> str:
+    return f"{title} - {narrator}" if narrator else title
+
+
 def _book_stats(conn, book_ids: list[int] | None = None) -> dict[int, dict]:
     q = "SELECT book_id, status, COUNT(*) n FROM segments" + (f" WHERE book_id IN ({','.join('?' * len(book_ids))})" if book_ids else "") + " GROUP BY book_id, status"
     stats: dict[int, dict] = {}
@@ -629,6 +855,11 @@ def _book_stats(conn, book_ids: list[int] | None = None) -> dict[int, dict]:
     for d in durs:
         stats.setdefault(d["book_id"], {})["_audio_s"] = d["d"] or 0.0
     return stats
+
+
+def _progress(st: dict) -> float:
+    total = sum(v for k, v in st.items() if not k.startswith("_"))
+    return round((st.get("passed", 0) + st.get("flagged", 0) + st.get("approved", 0)) / total, 4) if total else 0.0
 
 
 def _book_summary(conn, b: dict, st: dict) -> dict:
@@ -642,8 +873,10 @@ def _book_summary(conn, b: dict, st: dict) -> dict:
     if job and job["current_segment_sid"]:
         cur_ch = row(conn, "SELECT c.idx, c.title FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.sid=?", (job["current_segment_sid"],))
     retries = scalar(conn, "SELECT COUNT(*) FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.attempt_no>1", (b["id"],), 0)
+    versions = scalar(conn, "SELECT COUNT(*) FROM books WHERE COALESCE(work_uid, uid)=? AND archived=0", (work_key(b),), 1)
     return {
         "id": b["id"], "uid": b["uid"], "title": b["title"], "author": b["author"], "state": b["state"], "last_error": b["last_error"],
+        "work_uid": work_key(b), "narrator": voice.get("name"), "display_title": display_title(b["title"], voice.get("name")), "version_count": versions,
         "created_at": b["created_at"], "voice": voice.get("name"), "voice_kind": voice.get("kind"), "source": m.get("original_name"), "format": m.get("format"),
         "segments": total, "produced": produced, "passed": st.get("passed", 0), "flagged": st.get("flagged", 0), "approved": st.get("approved", 0),
         "pending": st.get("pending", 0) + st.get("synthesizing", 0), "progress": round(produced / total, 4) if total else 0.0,
@@ -675,7 +908,12 @@ def get_book(ctx, book_id: int) -> dict:
                                "current_version_id": v.get("current_version_id"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                                "instruct": vv.get("instruct")}
         out["voice_outdated"] = bool(v and v.get("current_version_id") != b["voice_version_id"])
-        ready = chapter_readiness(conn, b)
+        sibs = siblings(conn, b)
+        sib_stats = _book_stats(conn, [x["id"] for x in sibs]) if len(sibs) > 1 else {}
+        out["versions"] = [{"id": x["id"], "narrator": (row(conn, "SELECT name FROM voices WHERE id=?", (x["voice_id"],)) or {}).get("name"), "state": x["state"],
+                            "archived": bool(x["archived"]), "current": x["id"] == book_id, "created_at": x["created_at"],
+                            "progress": _progress(sib_stats.get(x["id"], {}))} for x in sibs]
+        ready = chapter_readiness(conn, b, ctx)
         out["chapters"] = []
         for r in ready:
             ch = r["chapter"]
@@ -691,7 +929,7 @@ def get_book(ctx, book_id: int) -> dict:
                              "manifest": loads(m.get("parse_report_json"), {})}
         out["exports"] = rows(conn, "SELECT id, kind, label, draft, size_bytes, duration_s, created_at FROM exports WHERE book_id=? ORDER BY id DESC LIMIT 50", (book_id,))
         out["release"] = active_release(conn, book_id)
-        out["release_check"] = release_check_conn(conn, b)
+        out["release_check"] = release_check_conn(conn, b, ctx)
         out["logs"] = rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE book_id=? AND level<>'debug' ORDER BY id DESC LIMIT 40", (book_id,))
         out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export','analyze') ORDER BY id DESC LIMIT 10", (book_id,))
     out["narrative"] = N_store.narrative_status(ctx, book_id)
@@ -866,11 +1104,11 @@ def enqueue_book(ctx, book_id: int, front: bool = False) -> dict:
 
 def list_queue(ctx) -> dict:
     with ctx.db.session() as conn:
-        jobs = rows(conn, """SELECT j.*, b.title, b.uid FROM jobs j LEFT JOIN books b ON b.id=j.book_id
+        jobs = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title, b.uid FROM jobs j LEFT JOIN books b ON b.id=j.book_id
                              WHERE j.kind='book' AND (j.status IN ('queued','running','paused') OR j.updated_at > ?)
                              ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, j.position, j.id""",
                     (now() - 7 * 86400,))
-        utility = rows(conn, """SELECT j.id, j.kind, j.status, j.error, j.book_id, b.title, j.created_at, j.finished_at, j.payload_json
+        utility = rows(conn, f"""SELECT j.id, j.kind, j.status, j.error, j.book_id, {DISPLAY_TITLE_SQL} AS title, j.created_at, j.finished_at, j.payload_json
                                 FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview','analyze')
                                 ORDER BY j.id DESC LIMIT 15""")
         per_seg = _segment_seconds(conn)
@@ -1002,6 +1240,197 @@ def preview_segment(ctx, segment_id: int, seed: int | None = None) -> dict:
         jid = conn.execute("INSERT INTO jobs(kind, book_id, payload_json, status, position, created_at, updated_at) VALUES ('preview',?,?, 'queued', 0, ?, ?)",
                            (seg["book_id"], dumps({"segment_id": segment_id, "seed": seed if seed is not None else 1234}), now(), now())).lastrowid
     return get_job(ctx, jid)
+
+
+# ======================================================================== blind A/B listening
+
+
+def _ab_plans(conn, ctx, seg: dict, book: dict, comparison: str):
+    """The two plans of a comparison for one segment (read-only). Refuses (409) when the comparison does not apply to the
+    segment's voice kind or when both settings give the same audio, because such a pair would only ever tie."""
+    c = N_ab.AB_COMPARISONS[comparison]
+    try:
+        pa = N_store.plan_for_segment(conn, ctx, seg, book, ns_patch=c["a_patch"])
+        pb = N_store.plan_for_segment(conn, ctx, seg, book, ns_patch=c["b_patch"])
+    except ValueError as exc:
+        raise ServiceError(str(exc), 409)
+    if pa.voice_kind not in c["kinds"]:
+        raise ServiceError(f"\"{c['title']}\" applies to {c['applies']}; this segment is read by a {pa.voice_kind} voice. Try another segment.", 409)
+    if pa.gen_key == pb.gen_key or (pa.text, pa.instruct, pa.ref_id, round(pa.pace, 3)) == (pb.text, pb.instruct, pb.ref_id, round(pb.pace, 3)):
+        raise ServiceError("These two settings give the same audio for this segment; try another segment.", 409)
+    return pa, pb
+
+
+def _ab_comparison(name: str) -> dict:
+    c = N_ab.AB_COMPARISONS.get(name)
+    if not c:
+        raise ServiceError(f"Unknown comparison '{name}'. Choose one of: {', '.join(N_ab.AB_COMPARISONS)}.", 422)
+    return c
+
+
+def enqueue_ab(ctx, segment_id: int, comparison: str, actor: str = "operator", swap: bool | None = None) -> dict:
+    """Queue the two preview renders of a blind A/B round on one segment. Both use the same seed, so any difference comes from
+    the settings alone. Which setting sits behind clip X is random and stored only server side (``swap`` is for tests)."""
+    c = _ab_comparison(comparison)
+    with ctx.db.tx() as conn:
+        seg = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not seg:
+            raise ServiceError("Segment not found", 404)
+        book = row(conn, "SELECT * FROM books WHERE id=?", (seg["book_id"],))
+        pa, pb = _ab_plans(conn, ctx, seg, book, comparison)
+        round_id = uuid.uuid4().hex
+        seed = int(round_id[:7], 16)
+        swap = (secrets.randbelow(2) == 1) if swap is None else bool(swap)
+        side_of = {"x": "b" if swap else "a", "y": "a" if swap else "b"}
+        jobs = []
+        for slot in ("x", "y"):  # x is queued first, so the job order says nothing about which setting is which
+            side = side_of[slot]
+            payload = {"segment_id": segment_id, "seed": seed, "ns_patch": c[f"{side}_patch"],
+                       "ab": {"round_id": round_id, "slot": slot, "side": side, "comparison": comparison, "gen_key": (pa if side == "a" else pb).gen_key}}
+            jobs.append(conn.execute("INSERT INTO jobs(kind, book_id, payload_json, status, position, created_at, updated_at) VALUES ('preview',?,?, 'queued', 0, ?, ?)",
+                                     (seg["book_id"], dumps(payload), now(), now())).lastrowid)
+    return {"round_id": round_id, "jobs": jobs, "segment_id": segment_id, "book_id": seg["book_id"], "comparison": comparison}
+
+
+def _ab_round_jobs(conn, round_id: str) -> list[dict]:
+    if not re.fullmatch(r"[0-9a-f]{32}", round_id or ""):
+        raise ServiceError("A/B round not found", 404)
+    out = []
+    for j in rows(conn, "SELECT * FROM jobs WHERE kind='preview' AND payload_json LIKE ? ORDER BY id", (f'%"round_id":"{round_id}"%',)):
+        j["payload"] = loads(j["payload_json"], {})
+        j["result"] = loads(j["result_json"], None)
+        if (j["payload"].get("ab") or {}).get("round_id") == round_id:
+            out.append(j)
+    if len(out) != 2:
+        raise ServiceError("A/B round not found", 404)
+    return out
+
+
+def _ab_labels(comparison: str) -> tuple[str, str]:
+    c = N_ab.AB_COMPARISONS[comparison]
+    return c["a_label"], c["b_label"]
+
+
+def get_ab_round(ctx, round_id: str) -> dict:
+    """The round as the listener sees it: two anonymous clips (x, y). Which setting is behind each is withheld until a vote is cast."""
+    with ctx.db.session() as conn:
+        jobs = _ab_round_jobs(conn, round_id)
+        first = jobs[0]["payload"]["ab"]
+        comparison = first["comparison"]
+        voted = next((j["payload"]["ab"]["voted"] for j in jobs if j["payload"]["ab"].get("voted")), None)
+        tally = N_ab.tally(conn, jobs[0]["book_id"], comparison)[comparison] if voted else None
+    slots = {j["payload"]["ab"]["slot"]: j for j in jobs}
+    states = [j["status"] for j in jobs]
+    status = "failed" if any(s in ("failed", "cancelled") for s in states) else "ready" if all(s == "completed" for s in states) else "pending"
+    engines = {(j["result"] or {}).get("engine") for j in jobs if j["result"]}
+    out = {"round_id": round_id, "comparison": comparison, "title": N_ab.AB_COMPARISONS[comparison]["title"], "segment_id": jobs[0]["payload"].get("segment_id"),
+           "book_id": jobs[0]["book_id"], "status": status, "engine": next(iter(engines)) if len(engines) == 1 else None, "mock": "mock" in engines,
+           "sides": [{"side": s, "job_id": slots[s]["id"], "status": slots[s]["status"], "media_url": f"/media/preview/{slots[s]['id']}" if slots[s]["status"] == "completed" else None}
+                     for s in ("x", "y")],
+           "voted": bool(voted)}
+    if status == "failed":
+        out["error"] = next((j["error"] for j in jobs if j.get("error")), "A preview render failed.")
+    if voted:
+        a_label, b_label = _ab_labels(comparison)
+        label = {"a": a_label, "b": b_label}
+        out["revealed"] = {s: label[slots[s]["payload"]["ab"]["side"]] for s in ("x", "y")}
+        out["vote"] = {k: voted[k] for k in ("choice", "winner", "other_narrator")}
+        out["tally"] = tally
+    return out
+
+
+def vote_ab(ctx, round_id: str, choice: str, other_narrator: bool = False, actor: str = "operator") -> dict:
+    """Record the vote of a finished round (one per round) and reveal which setting was behind each clip."""
+    if choice not in ("x", "y", "same"):
+        raise ServiceError("choice must be x, y or same", 422)
+    with ctx.db.tx() as conn:
+        jobs = _ab_round_jobs(conn, round_id)
+        if any(j["payload"]["ab"].get("voted") for j in jobs):
+            raise ServiceError("This round already has a vote.", 409)
+        if any(j["status"] != "completed" for j in jobs):
+            raise ServiceError("Both clips must finish rendering before you can vote.", 409)
+        slots = {j["payload"]["ab"]["slot"]: j for j in jobs}
+        sides = {j["payload"]["ab"]["side"]: j for j in jobs}
+        ab = jobs[0]["payload"]["ab"]
+        comparison = ab["comparison"]
+        a_label, b_label = _ab_labels(comparison)
+        winner = "same" if choice == "same" else slots[choice]["payload"]["ab"]["side"]
+        voter = resolve_actor(actor)
+        vote_id = conn.execute("""INSERT INTO ab_votes(book_id, segment_id, comparison, a_label, b_label, a_gen_key, b_gen_key, winner, other_narrator, actor, created_at)
+                                  VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                               (jobs[0]["book_id"], jobs[0]["payload"]["segment_id"], comparison, a_label, b_label, sides["a"]["payload"]["ab"].get("gen_key"),
+                                sides["b"]["payload"]["ab"].get("gen_key"), winner, 1 if other_narrator else 0, voter, now())).lastrowid
+        marker = {"vote_id": vote_id, "choice": choice, "winner": winner, "other_narrator": bool(other_narrator)}
+        for j in jobs:
+            j["payload"]["ab"]["voted"] = marker
+            conn.execute("UPDATE jobs SET payload_json=? WHERE id=?", (dumps(j["payload"]), j["id"]))
+        tally = N_ab.tally(conn, jobs[0]["book_id"], comparison)[comparison]
+    label = {"a": a_label, "b": b_label}
+    return {"round_id": round_id, "voted": True, "winner": winner, "other_narrator": bool(other_narrator), "comparison": comparison,
+            "revealed": {s: label[slots[s]["payload"]["ab"]["side"]] for s in ("x", "y")}, "tally": tally}
+
+
+def ab_tally(ctx, book_id: int) -> dict:
+    with ctx.db.session() as conn:
+        if not row(conn, "SELECT 1 FROM books WHERE id=?", (book_id,)):
+            raise ServiceError("Book not found", 404)
+        return N_ab.tally(conn, book_id)
+
+
+def random_differing_segment(ctx, book_id: int, comparison: str, exclude: list[int] | None = None, limit: int = 200) -> dict:
+    """A segment of the book whose two plans differ for this comparison (pure plan computation, no synthesis). Looks at a random
+    sample of up to ``limit`` segments, preferring those that have a direction."""
+    _ab_comparison(comparison)
+    skip = set(exclude or [])
+    with ctx.db.session() as conn:
+        book = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not book:
+            raise ServiceError("Book not found", 404)
+        ids = [r["segment_id"] for r in rows(conn, "SELECT segment_id FROM directions WHERE book_id=?", (book_id,))]
+        if not ids:
+            ids = [r["id"] for r in rows(conn, "SELECT id FROM segments WHERE book_id=?", (book_id,))]
+        ids = [i for i in ids if i not in skip]
+        random.shuffle(ids)
+        for sid in ids[:limit]:
+            seg = row(conn, "SELECT s.*, c.idx AS chapter_idx FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE s.id=?", (sid,))
+            if not seg:
+                continue
+            try:
+                _ab_plans(conn, ctx, seg, book, comparison)
+            except ServiceError:
+                continue
+            text = N_store.spoken_text(seg)
+            return {"segment_id": sid, "sid": seg["sid"], "chapter_idx": seg["chapter_idx"], "excerpt": text[:160] + ("…" if len(text) > 160 else "")}
+    raise ServiceError("No segment differs for this comparison in this book (the two settings give the same audio everywhere that was checked).", 404)
+
+
+def apply_delivery_to_takes(ctx, book_id: int, confirm: bool = False, include_approved: bool = False, actor: str = "operator") -> dict:
+    """Bring already rendered takes in line with the delivery settings now in force: only segments whose selected take's
+    generation key differs from the current plan are reset (old takes stay as history) and queued at the front."""
+    with ctx.db.tx() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=? AND archived=0", (book_id,))
+        if not b:
+            raise ServiceError("Book not found", 404)
+        would = N_store.invalidate_changed(conn, ctx, book_id, include_approved=True, dry_run=True)
+        status = {r["id"]: (r["status"], r["chapter_id"]) for r in rows(conn, f"SELECT id, status, chapter_id FROM segments WHERE id IN ({','.join('?' * len(would))})", would)} if would else {}
+        approved = [i for i in would if status[i][0] == "approved"]
+        chosen = would if include_approved else [i for i in would if status[i][0] != "approved"]
+        chapters = len({status[i][1] for i in chosen})
+        details = {"segments": len(chosen), "approved": len(approved), "chapters": chapters, "approved_included": bool(include_approved)}
+        if not chosen:
+            return {**details, "reset": 0, "queued": False,
+                    "message": ("No rendered segment differs from the current delivery settings." if not approved else
+                                f"No unapproved segment differs; {len(approved)} approved segment(s) would change. Include approved segments to regenerate them.")}
+        if not confirm:
+            raise NeedsConfirmation(f"{len(chosen)} rendered segments ({len(approved) if include_approved else 0} approved) in {chapters} chapter(s) would be regenerated to match the "
+                                    "current delivery settings. Old takes are kept as history, never mixed into the book. "
+                                    + ("" if include_approved else f"{len(approved)} approved segment(s) that would also change are left alone."), details)
+        reset = N_store.invalidate_changed(conn, ctx, book_id, include_approved=include_approved)
+        ctx.audit(conn, "book", book_id, "apply_delivery", {"segments": len(reset), "chapters": chapters, "include_approved": bool(include_approved)}, actor)
+        ctx.event(conn, "narrator", f"Delivery settings applied to existing takes: {len(reset)} segment(s) marked for regeneration.", book_id, "warning")
+        refresh_book_state(conn, book_id)
+    job = enqueue_book(ctx, book_id, front=True) if reset else None
+    return {**details, "segments": len(reset), "reset": len(reset), "queued": bool(job), "job_id": job["id"] if job else None}
 
 
 def enqueue_utility(ctx, book_id: int, kind: str, payload: dict | None = None) -> dict:
@@ -1192,7 +1621,7 @@ def set_note(ctx, segment_id: int, note: str | None) -> dict:
 # ====================================================================== release
 
 
-def release_check_conn(conn, b: dict) -> dict:
+def release_check_conn(conn, b: dict, ctx=None) -> dict:
     counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (b["id"],))}
     blockers = []
     pend = counts.get("pending", 0) + counts.get("synthesizing", 0)
@@ -1200,7 +1629,7 @@ def release_check_conn(conn, b: dict) -> dict:
         blockers.append(f"{pend} segment(s) have no audio yet.")
     if counts.get("flagged", 0):
         blockers.append(f"{counts['flagged']} segment(s) are flagged by automatic QA - approve, fix or regenerate them.")
-    ready = chapter_readiness(conn, b)
+    ready = chapter_readiness(conn, b, ctx)
     missing = sum(len(r["problems"]) for r in ready)
     if missing and not pend:
         blockers.append(f"{missing} segment(s) have missing or mismatched take files.")
@@ -1224,7 +1653,7 @@ def approve_release(ctx, book_id: int, approved_by: str, listen_scope: str, atte
             raise ServiceError("Book not found", 404)
         if active_release(conn, book_id):
             raise ServiceError("This book is already approved.", 409)
-        chk = release_check_conn(conn, b)
+        chk = release_check_conn(conn, b, ctx)
         if not chk["ready"]:
             raise ServiceError("Release is blocked: " + " ".join(chk["blockers"]), 409, chk)
         statement = ("I have reviewed this audiobook, confirm the rights to the manuscript and narrator voice, and approve these files as "
@@ -1260,12 +1689,12 @@ def overview(ctx) -> dict:
                                   WHERE cr.kind='wav' AND b.archived=0""", (), 0.0)
         draft_s = scalar(conn, """SELECT SUM(a.duration_s) FROM segments s JOIN attempts a ON a.id=s.selected_attempt_id JOIN books b ON b.id=s.book_id WHERE b.archived=0""", (), 0.0)
         approved = sum(1 for b in books if b["state"] == "approved")
-        flags = rows(conn, """SELECT s.id, s.sid, s.flag_reason, s.book_id, b.title, c.idx AS chapter_idx FROM segments s JOIN books b ON b.id=s.book_id
+        flags = rows(conn, f"""SELECT s.id, s.sid, s.flag_reason, s.book_id, {DISPLAY_TITLE_SQL} AS title, c.idx AS chapter_idx FROM segments s JOIN books b ON b.id=s.book_id
                               JOIN chapters c ON c.id=s.chapter_id WHERE s.status='flagged' AND b.archived=0 ORDER BY s.updated_at DESC LIMIT 25""")
         events = rows(conn, "SELECT id, kind, book_id, message, level, created_at FROM events ORDER BY id DESC LIMIT 25")
         recent = [_book_summary(conn, b, stats.get(b["id"], {})) for b in books[:12]]
         worker = row(conn, "SELECT * FROM worker_state WHERE id=1")
-        failed_jobs = rows(conn, "SELECT j.id, j.book_id, j.error, b.title FROM jobs j JOIN books b ON b.id=j.book_id WHERE j.status='failed' AND j.kind='book' ORDER BY j.id DESC LIMIT 10")
+        failed_jobs = rows(conn, f"SELECT j.id, j.book_id, j.error, {DISPLAY_TITLE_SQL} AS title FROM jobs j JOIN books b ON b.id=j.book_id WHERE j.status='failed' AND j.kind='book' ORDER BY j.id DESC LIMIT 10")
     total = sum(seg_counts.values())
     produced = total - seg_counts.get("pending", 0) - seg_counts.get("synthesizing", 0)
     return {
@@ -1297,7 +1726,7 @@ def state_digest(ctx) -> dict:
         job = scalar(conn, "SELECT MAX(updated_at) FROM jobs", (), 0)
         att = scalar(conn, "SELECT MAX(id) FROM attempts", (), 0)
         w = row(conn, "SELECT * FROM worker_state WHERE id=1")
-        active = rows(conn, """SELECT j.id, j.book_id, j.status, j.current_segment_sid, b.title FROM jobs j LEFT JOIN books b ON b.id=j.book_id
+        active = rows(conn, f"""SELECT j.id, j.book_id, j.status, j.current_segment_sid, {DISPLAY_TITLE_SQL} AS title FROM jobs j LEFT JOIN books b ON b.id=j.book_id
                                WHERE j.status IN ('running') ORDER BY j.id""")
         progress = {}
         for a in active:
@@ -1322,7 +1751,7 @@ def get_settings(ctx) -> dict:
             "secrets": ctx.secrets.status()}
 
 
-def test_llm(ctx, base_url: str, model: str, transport=None) -> dict:
+def test_llm(ctx, base_url: str, model: str, transport=None, chapter_model: str = "", scene_model: str = "", translator_model: str = "") -> dict:
     """Try the endpoint and model currently typed in Settings (saved or not); uses the saved key slot and key-env setting."""
     from pydantic import ValidationError
 
@@ -1331,7 +1760,8 @@ def test_llm(ctx, base_url: str, model: str, transport=None) -> dict:
 
     saved = ctx.settings().narrative.llm
     try:
-        cfg = LLMSettings(provider="openai_compatible", base_url=base_url, model=model, api_key_env=saved.api_key_env, timeout_s=30.0)
+        cfg = LLMSettings(provider="openai_compatible", base_url=base_url, model=model, api_key_env=saved.api_key_env, timeout_s=30.0,
+                          chapter_model=chapter_model, scene_model=scene_model, translator_model=translator_model)
     except ValidationError as exc:
         raise ServiceError("; ".join(e["msg"].removeprefix("Value error, ") for e in exc.errors()), 422)
     return LLMClient(cfg, transport=transport, secrets=ctx.secrets).test_connection()

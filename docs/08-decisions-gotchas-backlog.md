@@ -28,12 +28,43 @@
 | `api_key_env` limited to `STUDIO_LLM_*` | Otherwise a settings admin could send any environment secret to the configured URL |
 | Segments are synthesised model-first, assembled by index | Avoids a 30 s model reload per voice switch with three model families and two warm slots |
 
+**v0.7.0 decisions**
+
+| Decision | Reason |
+|---|---|
+| Clone voices get an **emotion reference bank** instead of an instruction | The Base model has no instruction input (the cloning path requires `instruct is None`), so the Director never reached clones: all 370 takes of the owner's clone narrator had `delivery_applied = 0`. The one lever the model has is its reference clip (the reference-emotion experiment, doc 7), so the Director now picks among a few clips of the same voice. Off by default, adopted clips only |
+| Bank clips: Whisper WER <= 8%, level-matched, drift shown but not thresholded, consent per source | A clip that does not say the words poisons every take that uses it; there is no honest threshold for "still the same voice" without listening, so the numbers are advice; a synthetic clone may only receive clips from its own designed voice, a human clone only attested human recordings |
+| **Scene-batched** Director (up to 16 segments per request) | One request per segment sent the same context again and again and made a 370-segment book a 370-request job. A window shares the scene summary, beats and surrounding text, results are validated item by item, and only failing items are asked again. Cache keys exclude the previous delivery so one edit does not invalidate the book |
+| Chapter **beat sheet** before the scene pass, with thinking on and no JSON mode | A single reasoning pass over a whole chapter gives the emotional arc that per-segment prompts cannot see. Thinking plus JSON-constrained decoding degenerated on the owner's server, so this pass asks for JSON in plain text and tolerates failure (no plan = scene pass without it) |
+| Beat sheets key on **paragraph numbers**, not offsets | Paragraphs survive re-segmentation, voice assignment and boundary edits; offsets do not. The cache key uses the chapter text hash, cast and facts |
+| The LLM **translator is off by default** (`delivery.translator = template`) | It adds a second model, cost and a failure mode, and it is unproven that its wording sounds better than the template. The A/B tool (`llm_vs_template_translator`) exists to decide that. It runs ahead of time and `plan_for_segment` only reads the cache, so turning it on never makes planning slower or impure |
+| Pace and pause hints default **off** (`pace_from_direction`, `pauses_from_direction`) | Existing takes must never change silently; they are in the generation key and digests, and *Apply new delivery settings to existing takes* is the explicit way to re-render |
+| Pace factors are small (0.92 to 1.08) | The stretch is a pitch-preserving WSOLA that is only transparent for modest factors; larger factors would turn pacing into artefacts |
+| **Escalation to a stronger model is deferred** | `would_escalate` is only counted. Without a real model and listening there is no evidence about which segments benefit, and a second model doubles the memory and failure surface on the Mac |
+| Blind A/B instead of automatic scoring | Whisper and acoustic metrics say nothing about emotion; the only judge is a person who does not know which clip is which. Rounds use the same seed and explicit settings patches, so only the setting differs. The adoption guidance (60% of non-tie votes, other-narrator flags <= 10%) is advice shown to the owner, not enforced |
+| Optional per-pass models (`chapter_model`, `scene_model`, `translator_model`), blank = main model | Lets the owner try a stronger model for the one slow pass and a small one for the many fast ones without a new provider concept. Whether a smaller scene model is good enough is unmeasured |
+
 ## Gotchas already hit (do not rediscover them)
 
 - (v0.3) Patch scripts with backslashes passed through a shell heredoc corrupted regexes (`\b` became a backspace character). Use the Edit tool, a script file, or `chr(92)`.
 - (v0.3) `promote` only accepts previews of **designed** voices; archive needs a JSON body (`{"archived": true}`); a book cannot be archived while any job (including `analyze`) is active.
 - (v0.3) Mock fault keys match the spoken (normalised) text ("Mrs." is spoken "Missus").
 - (v0.3) The first real-hardware run found that `redirect` set `stale` but the job never consumed it. `narrative_real.py` exists to catch what unit tests miss.
+
+**LLM and Director (v0.6.3, v0.6.4, v0.7.0)**
+- **Never hold the database write lock across an LLM request.** The Director once kept one transaction open for minutes; the worker heartbeat then hit `database is locked`, the lease went stale after 60 s,
+  the web server killed and restarted the worker, and the same job repeated forever ("GPU worker offline"). Read in short sessions, call the model with no connection open, then write in one short transaction.
+  The cache accessors are their own transactions for this reason. There is a regression test that fails if a lock is held during a request; keep new passes (chapter, scene, translator) under it.
+- **Thinking + JSON mode degenerates on oMLX with Gemma-4-class models.** With `response_format: json_object` the model emitted `{"segment_` and ran to `max_tokens`; with it off it reasoned into
+  `reasoning_content` until the budget was gone and `content` was empty. Ordinary requests therefore send `enable_thinking: false` with JSON mode; only the chapter pass thinks, and without JSON mode. A server that
+  answers 400 to an optional field has it dropped and remembered; empty/cut-off/reasoning-only replies produce explicit errors, and Test connection fails for a model that only thinks.
+- **`plan_for_segment` must stay pure and cheap.** It runs inside write transactions, web requests (inspector, A/B, apply-delivery dry run) and `invalidate_changed` over every rendered segment. It reads the translator
+  cache with a plain SELECT, never calls an LLM, never writes, and never bumps a cache hit counter. Anything slow belongs in analysis ahead of time.
+- A/B previews must use the same plan code as production (`plan_for_segment(..., ns_patch=...)` and the same time stretch), otherwise the clips would not represent real takes. `ns_patch` is whitelisted to
+  `director_enabled` and the delivery keys.
+- Bank row ids are never reused (`adopt_ref` takes max of `voice_refs.id` and `attempts.ref_id_used`, plus one), so `ref_id_used` always names one clip even after replacement or removal.
+- `calibrated_wpm` reads stored durations that are already time-stretched; divide by `pace_used` (fixed in v0.7.0, it used to count the stretch twice).
+- Scene cache keys must not include the previous delivery (it chains every scene to the one before); beat plans are cached only when valid, and a failure marker stops the same chapter being retried for each window.
 
 **Environment and tooling**
 - The Bash tool mangles inline heredocs with quotes/backslashes/backticks and corrupted files twice. Write patch scripts to files, or use Edit.
@@ -93,9 +124,19 @@
 - Summaries are extractive; an optional LLM summary stays unconfirmed. A downstream cascade never resets approved segments.
 - `lan_e2e.py` and `lab_local.py` were not re-run for v0.3.0 (the smoke test and `narrative_real.py` were).
 
+## v0.7.0 known limitations
+
+- Everything new is tested with the mock engine and stub LLM servers only. Whether the reference bank, pace, pause hints, beat sheets, scene batching or the LLM translator improve narration is unmeasured (doc 7, "Verification status of v0.7.0").
+- A clone without bank clips, a clone of a human voice (no way to generate candidates), and any segment below `bank_min_intensity` still use the single base reference and receive no emotion control.
+- A clone's pace changes are the only direction effect that reaches it besides the bank; timbre can drift with a bad clip (use the A/B "another narrator" flag).
+- Chapter beat sheets cost one long thinking request per chapter; time and token budget on a real model are unknown. A chapter with a single paragraph gets no plan.
+- Escalation (asking a stronger model about low-confidence segments) is counted as `would_escalate` and not implemented.
+- A/B votes are per book and per comparison, a small sample by nature; they are guidance for the owner, not a statistical test, and votes cast on mock tones are meaningless.
+- Pause hints only lengthen gaps after sentence/paragraph segments; they never shorten configured pauses.
+
 ## Backlog / ideas (none are commitments)
 
-0. Run a real local LLM (for example `mlx_lm.server`) through `narrative_real.py` and measure attribution and direction quality; a listening study of directed versus undirected output; single-quote dialogue; a CLI `analyze` command; ship the narrative metadata inside exports.
+0. (v0.7.0 follow-ups are in doc 11 section C.) Run a real local LLM (for example `mlx_lm.server`) through `narrative_real.py` and measure attribution and direction quality; a listening study of directed versus undirected output; single-quote dialogue; a CLI `analyze` command; ship the narrative metadata inside exports.
 
 1. Attribute every audit/review action to the signed-in user.
 2. Pronunciation dictionary (global and per book) feeding `override_text`; per-voice pace control.

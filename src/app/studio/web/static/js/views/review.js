@@ -85,9 +85,9 @@ async function bookPicker(view) {
   const { books } = await get("/api/books");
   setHTML(view, html`<div class="page-head"><h1>Review &amp; QA</h1></div>
     <section class="card"><h2>Choose a book to review</h2>
-    ${books.length ? html`<ul class="book-pick">${books.map((b) => html`<li><a href="#/review/${b.id}?filter=${b.flagged ? "flagged" : "all"}"><strong>${b.title}</strong></a>
+    ${books.length ? html`<ul class="book-pick">${books.map((b) => html`<li><a href="#/review/${b.id}?filter=${b.flagged ? "flagged" : "all"}"><strong>${b.display_title}</strong></a>
       ${badge(b.state)} <span class="small muted">${b.produced}/${b.segments} rendered · ${b.flagged} flagged · ${b.approved} approved</span>
-      ${progressBar(b.progress, b.title)}</li>`)}</ul>` : html`<p class="muted">No books yet. <a href="#/library">Import a manuscript</a>.</p>`}</section>`);
+      ${progressBar(b.progress, b.display_title)}</li>`)}</ul>` : html`<p class="muted">No books yet. <a href="#/library">Import a manuscript</a>.</p>`}</section>`);
 }
 
 export async function render(view, parts, query) {
@@ -118,8 +118,11 @@ export async function render(view, parts, query) {
       <span class="seg-snip">${s.original_text.slice(0, 110)}${s.original_text.length > 110 ? "…" : ""}</span></button></li>`)}`;
   }
 
+  const moreButton = () => (st.next ? html`<button class="btn small" data-act="more">Load more</button>` : "");
+
   function paint() {
-    setHTML(view, html`<div class="page-head"><h1>Review: ${book.title}</h1>
+    const keepScroll = (view.querySelector("#seg-list") || {}).scrollTop || 0; // a full repaint recreates the list; do not send the reader back to the top
+    setHTML(view, html`<div class="page-head"><h1>Review: ${book.display_title || book.title}</h1>
       <div class="head-actions"><a class="btn" href="#/book/${bookId}">Book, exports &amp; release</a>
         <button class="btn ghost" type="button" data-act="help" aria-expanded="false">Keyboard shortcuts</button></div></div>
       <div class="kbd-help card" id="kbd-help" hidden><strong>Shortcuts:</strong> <kbd>J</kbd>/<kbd>K</kbd> next/previous · <kbd>A</kbd> approve · <kbd>R</kbd> regenerate ·
@@ -132,21 +135,36 @@ export async function render(view, parts, query) {
           <label>Search text or ID <input id="f-q" type="search" value="${st.q}" placeholder="word or sid"></label>
           <p class="small muted" aria-live="polite">${st.total.toLocaleString()} segment(s)</p>
           <ul class="seg-list" id="seg-list">${listItems()}</ul>
-          ${st.next ? html`<button class="btn small" data-act="more">Load more</button>` : ""}
+          <div id="seg-more">${moreButton()}</div>
         </aside>
         <section class="card review-main" aria-live="polite" aria-label="Segment detail">${st.detail ? detailPanel(st.detail) : html`<p class="muted">Select a segment to review it.</p>`}</section>
       </div>`);
+    const list = view.querySelector("#seg-list");
+    if (list) list.scrollTop = keepScroll;
     const sel = view.querySelector(".seg-item.sel");
-    if (sel) sel.scrollIntoView({ block: "nearest" });
+    if (sel) sel.scrollIntoView({ block: "nearest" }); // moves only when the selected segment is out of view
     view.querySelector("#f-chapter").addEventListener("change", async (e) => { st.chapter = e.target.value; await loadList(); paint(); });
     view.querySelector("#f-filter").addEventListener("change", async (e) => { st.filter = e.target.value; await loadList(); paint(); });
     view.querySelector("#f-q").addEventListener("input", debounce(async (e) => { st.q = e.target.value.trim(); await loadList(); repaintList(); }, 350));
   }
   function repaintList() {
     const ul = view.querySelector("#seg-list");
-    if (ul) setHTML(ul, listItems());
+    const top = ul ? ul.scrollTop : 0;
+    if (ul) { setHTML(ul, listItems()); ul.scrollTop = top; }
     const cnt = view.querySelector(".review-side p[aria-live]");
     if (cnt) cnt.textContent = `${st.total.toLocaleString()} segment(s)`;
+    const more = view.querySelector("#seg-more");
+    if (more) setHTML(more, moreButton());
+  }
+  function repaintDetail() {
+    const main = view.querySelector(".review-main");
+    if (main) setHTML(main, st.detail ? detailPanel(st.detail) : html`<p class="muted">Select a segment to review it.</p>`);
+  }
+  /** Re-fetch as many pages as the reader has already loaded, so "Load more" pages and the scroll position survive a refresh. */
+  async function reloadList() {
+    const want = st.items.length;
+    await loadList();
+    while (st.next && st.items.length < want) await loadList(true);
   }
 
   async function select(id) { await loadDetail(id); paint(); const h = view.querySelector(".seg-title"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
@@ -157,10 +175,13 @@ export async function render(view, parts, query) {
     if (!target && st.detail) { const id = dir > 0 ? st.detail.next_id : st.detail.prev_id; if (id) return select(id); }
     if (target) await select(target.id);
   }
+  /** Refresh in place (also used by the live progress updates while a job runs): never rebuilds the page, so scrolling is undisturbed. */
   async function refreshAll() {
-    await loadList();
+    await reloadList();
+    const before = JSON.stringify(st.detail);
     if (st.selected) st.detail = await get(`/api/segments/${st.selected}`);
-    paint();
+    repaintList();
+    if (JSON.stringify(st.detail) !== before) repaintDetail();
   }
 
   async function act(name, btn) {

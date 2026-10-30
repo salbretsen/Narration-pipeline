@@ -47,6 +47,10 @@ def register(app, ctx) -> None:
     def api_disk_delete_book(book_id: int, req: ConfirmReq, request: Request):
         return D.delete_book(ctx, book_id, req.confirm, actor(request))
 
+    @app.post("/api/disk/books/{book_id}/delete-all-versions")
+    def api_disk_delete_work(book_id: int, req: ConfirmReq, request: Request):
+        return D.delete_work(ctx, book_id, req.confirm, actor(request))
+
     @app.post("/api/disk/books/{book_id}/purge")
     def api_disk_purge(book_id: int, req: PurgeReq, request: Request):
         return D.purge(ctx, book_id, req.scope, req.confirm, actor(request))

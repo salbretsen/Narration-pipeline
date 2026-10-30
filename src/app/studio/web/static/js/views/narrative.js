@@ -1,5 +1,5 @@
 // Narrative page for one book: analysis stages, project-level overrides, character directory, story notes.
-import { get, post, put, patch, api, html, setHTML, badge, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, ApiError } from "../ui.js";
+import { get, post, put, patch, api, html, setHTML, badge, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, ApiError, qs, navigate } from "../ui.js";
 import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
 
 const STAGES = [
@@ -42,7 +42,7 @@ export async function render(view, parts) {
 
   setHTML(view, html`<div class="page-head"><h1>Narrative: ${book.title}</h1>
     <div class="head-actions"><a class="btn" href="#/book/${id}">Book page</a><a class="btn" href="#/review/${id}">Review audio</a></div></div>
-    <div id="nar-status"></div><div id="nar-over"></div><div id="nar-chars"></div><div id="nar-notes"></div>`);
+    <div id="nar-status"></div><div id="nar-ab"></div><div id="nar-over"></div><div id="nar-chars"></div><div id="nar-notes"></div>`);
   const $ = (sel) => view.querySelector(sel);
 
   // ------------------------------------------------------------------ status
@@ -76,10 +76,57 @@ export async function render(view, parts) {
         <button class="btn" data-act="rebuild" ${active || !s.semantic ? html`disabled` : ""} title="Parse the stored manuscript again; characters, locked speakers and manual edits are kept">Re-run structure analysis…</button>
         <button class="btn" data-act="recompute" ${s.directed ? "" : html`disabled`} title="Re-run smoothing from stored directions; no LLM calls">Recompute continuity</button>
         <button class="btn" data-act="reseg" ${s.semantic ? "" : html`disabled`} title="Pass 2 again; unchanged segments keep their audio">Re-segment</button>
+        <button class="btn" data-act="apply-delivery" ${s.segments ? "" : html`disabled`} title="Regenerate only the rendered segments whose sound would change under the delivery settings now in force">Apply new delivery settings to existing takes…</button>
         <a class="btn ghost" href="/api/books/${id}/narrative/metadata" target="_blank" rel="noopener">Segment metadata (JSON)</a>
       </div>
       <p class="small muted">Run analysis prepares speaker resolution, summaries, segments and directions. It runs on the GPU worker as a queued job and never changes the manuscript.</p>
     </section>`);
+  }
+
+  // ------------------------------------------------------------- A/B results
+  function paintAB() {
+    const ab = status.ab || {};
+    setHTML($("#nar-ab"), html`<section class="card" aria-labelledby="abr-h"><h2 id="abr-h">Blind A/B listening results</h2>
+      <p class="small muted">Compare two delivery settings on the same segment without knowing which clip is which (open any segment in the inspector, or start a round below).
+        Votes are kept per book.</p>
+      <div class="callout info small"><strong>Rule of thumb:</strong> adopt a feature if it wins at least 60% of non-tie votes and “another narrator” flags stay at or below 10%.</div>
+      <div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Comparison</th><th scope="col">Votes</th><th scope="col">First setting, share of non-tie votes</th>
+        <th scope="col">“Another narrator” flags</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>
+        ${Object.entries(ab).map(([k, t]) => html`<tr><th scope="row">${t.title}<div class="small muted">First: ${t.a_label}<br>Second: ${t.b_label}</div></th>
+          <td>${t.votes}<div class="small muted">${t.a_wins} first · ${t.b_wins} second · ${t.same} no difference</div></td>
+          <td>${t.a_share === null ? html`<span class="muted">no non-tie votes yet</span>` : html`<strong>${Math.round(t.a_share * 100)}%</strong> of ${t.non_tie}
+            <span class="badge tone-${t.a_share >= 0.6 ? "good" : "neutral"}">${t.a_share >= 0.6 ? "at or above 60%" : "below 60%"}</span>`}</td>
+          <td>${t.other_narrator_flags}${t.other_narrator_share === null ? "" : html` (${Math.round(t.other_narrator_share * 100)}%)
+            <span class="badge tone-${t.other_narrator_share <= 0.1 ? "good" : "warn"}">${t.other_narrator_share <= 0.1 ? "at or below 10%" : "above 10%"}</span>`}</td>
+          <td><button class="btn small" data-act="ab-round" data-cmp="${k}">Start a round on a random differing segment</button></td></tr>`)}
+      </tbody></table></div></section>`);
+  }
+
+  async function abRound(cmp, btn) {
+    const seg = await busy(btn, () => get(`/api/books/${id}/ab/random` + qs({ comparison: cmp })));
+    const round = await busy(btn, () => post(`/api/segments/${seg.segment_id}/ab`, { comparison: cmp }));
+    toast(`Segment ${seg.sid} chosen. Rendering the two clips; listen in the inspector.`, "info");
+    navigate(`#/inspect/${seg.segment_id}?ab=${round.round_id}`);
+  }
+
+  async function applyDelivery(btn) {
+    let first = null;
+    try {
+      first = await post(`/api/books/${id}/narrative/apply-delivery`, {});
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 409 && e.details && e.details.segments !== undefined)) { toastError(e); return; }
+      const d = e.details;
+      const res = await dialog({ title: "Apply new delivery settings?", form: true, buttons: [{ label: "Regenerate", value: "go", kind: "primary" }], body: html`
+        <p>${e.message}</p>
+        <p class="small">Segments whose sound does not change keep their audio. Any release approval is revoked, and the regenerated segments are queued first.</p>
+        ${d.approved ? html`<label class="check"><input type="checkbox" name="include_approved"> Also regenerate approved segments (${d.approved} would change)</label>` : ""}` });
+      if (!res) return;
+      const r = await busy(btn, () => post(`/api/books/${id}/narrative/apply-delivery`, { confirm: true, include_approved: res.data.include_approved === "on" }));
+      toast(`${r.reset} segment(s) marked for regeneration and queued first.`, "success", 8000);
+      status = await get(`/api/books/${id}/narrative`); paintStatus(); paintAB();
+      return;
+    }
+    toast(first.message || "Nothing to apply.", "info", 8000);
   }
 
   // --------------------------------------------------------------- overrides
@@ -225,6 +272,8 @@ export async function render(view, parts) {
       else if (a === "rebuild") { if (await confirmDialog("Re-run structure analysis?", "The stored manuscript is parsed again. Characters, speakers you confirmed and boundary edits are kept; segments whose text range is unchanged keep their audio.", "Re-run")) await runAnalysis({ rebuild: true }, t, "Analysis queued"); }
       else if (a === "recompute") { const r = await busy(t, () => post(`/api/books/${id}/continuity/recompute`)); toast(`Recomputed ${r.recomputed} direction(s); ${r.changed.length} changed, ${r.audio_reset.length} segment(s) queued for regeneration.`, "success", 8000); status = await get(`/api/books/${id}/narrative`); paintStatus(); }
       else if (a === "reseg") { const r = await busy(t, () => post(`/api/books/${id}/resegment`)); toast(`Re-segmented: ${r.kept} unchanged, ${r.created} new, ${r.retired} retired; ${r.audio_reset} regenerating.`, "success", 8000); status = await get(`/api/books/${id}/narrative`); paintStatus(); }
+      else if (a === "apply-delivery") await applyDelivery(t);
+      else if (a === "ab-round") await abRound(t.dataset.cmp, t);
       else if (a === "char-edit") await editChar(Number(t.dataset.id));
       else if (a === "char-merge") await mergeChar(Number(t.dataset.id));
       else if (a === "note-del") { await busy(t, () => api("DELETE", `/api/notes/${t.dataset.id}`), "Note deleted"); notes = (await get(`/api/books/${id}/notes`)).notes; paintNotes(); }
@@ -256,12 +305,12 @@ export async function render(view, parts) {
     } catch { /* toast shown */ }
   }
 
-  paintStatus(); paintOverrides(); paintChars(); paintNotes();
+  paintStatus(); paintAB(); paintOverrides(); paintChars(); paintNotes();
   view.addEventListener("click", onClick);
   view.addEventListener("change", onChange);
   view.addEventListener("submit", onSubmit);
   const off = onState(async () => {
-    try { status = await get(`/api/books/${id}/narrative`); paintStatus(); } catch { /* transient */ }
+    try { status = await get(`/api/books/${id}/narrative`); paintStatus(); paintAB(); } catch { /* transient */ }
   }, 3000);
   return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
 }

@@ -29,7 +29,7 @@ def build_report(ctx, book_id: int) -> dict:
         voice = row(conn, "SELECT * FROM voices WHERE id=?", (book["voice_id"],)) or {}
         vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (book["voice_version_id"],)) or {}
         manuscript = row(conn, "SELECT original_name, sha256, size_bytes, format FROM manuscripts WHERE book_id=? ORDER BY id DESC LIMIT 1", (book_id,)) or {}
-        readiness = {r["chapter"]["id"]: r for r in chapter_readiness(conn, book)}
+        readiness = {r["chapter"]["id"]: r for r in chapter_readiness(conn, book, ctx)}
         chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))
         counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (book_id,))}
         release = active_release(conn, book_id)

@@ -90,11 +90,21 @@ def apply(raw: dict, state: dict, *, speaker: str, scene: int, chapter: int, str
     return out, st, note, kind
 
 
+PAUSES = ("none", "beat", "long")
+
+
+def clean_pause(v) -> str:
+    """Optional pause hint after a segment: none | beat | long. Anything else is 'none'."""
+    v = str(v or "none").strip().lower()
+    return v if v in PAUSES else "none"
+
+
 def final_of(raw: dict, smoothed: dict, user: dict) -> dict:
     """Effective direction: user override > smoothed > raw. Free-text delivery comes from the user or the raw reply."""
     f = {k: smoothed.get(k, raw.get(k)) for k in FIELDS}
     f["delivery"] = raw.get("delivery", "")
+    f["pause"] = clean_pause(raw.get("pause"))
     for k, v in (user or {}).items():
         if v not in (None, ""):
-            f[k] = v
+            f[k] = clean_pause(v) if k == "pause" else v
     return f

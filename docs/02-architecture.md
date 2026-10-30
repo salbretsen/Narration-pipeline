@@ -57,6 +57,7 @@ Per-book data lives under the book's own recorded directories (the **per-project
 |---|---|
 | `__init__.py` | Version (single source of truth), app name, developer, company, copyright |
 | `config.py` | Pydantic `Settings` (storage, chunking, qa, pauses, models, export, server, worker), `book_snapshot`, `synth_fingerprint`, atomic load/save, loopback check |
+| `versions.py` | Narrator versions: `add_version` clones a book's manuscript-side rows (no audio) for another narrator; versions share `books.work_uid` |
 | `pronunciation.py` | Pronunciation dictionary (apply/CRUD/preview) and per-voice pace; reconciles stale segments through `narrative.store.invalidate_changed` |
 | `context.py` | `Context`: home dirs, settings cache (by mtime), `Database`, `event()/audit()/job_log()` helpers, logging setup |
 | `db.py` | SQLite connection (WAL, FK, busy timeout), `tx()` (BEGIN IMMEDIATE), ordered migrations tracked by `PRAGMA user_version` with a pre-migration backup. Schema v1 (see below) |
@@ -83,11 +84,21 @@ Per-book data lives under the book's own recorded directories (the **per-project
 | `web/media.py` | RFC 7233 range responder, MIME map, path containment `ensure_inside` |
 | `web/narrative_api.py` | endpoints for the narrative layer (characters, inspector, boundary edits, analysis, project overrides, metadata) |
 | `narrative/` | **v0.3**, see doc 9: `structure` (Pass 1), `segmenter` (Pass 2), `windows`, `llm`, `director`, `continuity`, `delivery`, `cast`, `store` (persistence, reconciliation, plan/gen key, inspector), `analysis` (stages + `analyze` job), `voicecheck`, `vocab` |
+| `narrative/beats.py` | **v0.7.0** chapter beat sheet: paragraph numbering (`[Pn]`), the thinking-mode prompt, `validate_beats` (covers every paragraph once), `ensure_chapter_plan` (cache `beats:<hash>`, failure marker `beats-fail:`), `beat_for` |
+| `narrative/refbank.py` | **v0.7.0** pure emotion-to-bucket mapping and `select`/`choose` of a bank clip for a cloned voice (no DB, engine or network); storage and adoption are in `services.py` (`list_refs`, `adopt_ref`, `remove_ref`, `generate_ref_candidates`) |
+| `narrative/ab.py` | **v0.7.0** the four named A/B comparisons (settings patches, labels), the catalogue and the vote tally; pure data and SQL. The round lifecycle is in `services.py` (`enqueue_ab`, `get_ab_round`, `vote_ab`, `random_differing_segment`) |
+| `narrative/delivery.py`, `director.py`, `analysis.py`, `llm.py` | grew in v0.7.0: pace/pause (`effective_pace`), the LLM translator (`translate_llm`, `stored_translation`), `direct_scene`, `direct_scope`/`director_batch` windows, `LLMClient.derive`/`resolve_models`/thinking mode (doc 9) |
 
 **Rule:** business logic belongs in `services.py` (or the domain modules it calls), raising `ServiceError(message, status, details)`.
 Endpoints stay thin. The CLI and smoke test call the same functions.
 
-## Data model (SQLite schema v1 + v2 + v3, `db.py`)
+## Data model (SQLite schema v1 + v2 + v3 + v4 + v5, `db.py`)
+
+**Narrator versions (v4, `versions.py`).** One manuscript can be narrated by several narrators. Each narration is a complete `books` row (own segments, takes, chapter
+masters, exports, review and release state), so nothing in the pipeline had to learn about versions; the rows of one manuscript share `books.work_uid`
+(every book is its own work until a narrator is added: `COALESCE(work_uid, uid)`). `versions.add_version` clones the per-book rows with new ids (manuscript, chapters,
+characters, spans, notes, Director guidance, text edits, pronunciations; modelled on `diskmgmt._restore_rows`) and deliberately leaves the audio tables behind. The display name
+`Title - Narrator` is computed (`services.DISPLAY_TITLE_SQL`, `display_title`), never stored. Deleting one version is `diskmgmt.delete_book`; removing the book is `diskmgmt.delete_work`.
 
 `voices`, `voice_versions` (immutable versions: model_id, speaker, language, instruct, reference paths/sha, consent JSON);
 `books` (metadata, `settings_json` snapshot, `synth_fingerprint`, `storage_json`, derived `state`); `manuscripts` (original file
@@ -96,6 +107,12 @@ path + SHA-256 + parse manifest); `chapters`; `segments` (`sid` stable id `bk_xx
 model, seed, temperature, spoken text, ASR text/JSON, WER, issues, acoustics, score, passed, RTF, peak memory, fingerprint,
 versions); `jobs`; `job_logs`; `events`; `review_actions`; `audit_log`; `worker_state` (single row lease); `chapter_renders`;
 `exports`; `releases`; `imports` (uploaded manuscripts awaiting confirmation).
+
+**Schema v5 (v0.7.0)** adds `voice_refs` (the emotion reference bank of a cloned voice: one row per `voice_id` and `bucket` in `tense|tender|sorrow|bright`, with the converted clip, the untouched original, the
+transcript, SHA-256, `source` recording|synthetic, `consent_json` and `metrics_json` such as level gain and pitch/brightness drift; row ids are never reused so history stays unambiguous), `ab_votes` (one row per
+finished blind A/B round: book, segment, comparison, both generation keys, winner a|b|same, "another narrator" flag, actor) and `attempts.pace_used` / `attempts.ref_id_used` (the time-stretch factor and bank clip a take
+was made with). Everything else about A/B rounds lives in `jobs.payload_json` (two `preview` jobs with an `ab` block; the X/Y mapping is only there, so the listener cannot see it). Bank clip files sit in the `references`
+category next to the voice's own reference; bank rows count toward disk usage, `ab_votes` are removed on book delete, and narrator versions (`versions.NOT_COPIED`) do not copy votes. The migration was tested on mock databases only.
 
 **Schema v3 (C2)** adds `pronunciations` (`book_id` NULL = global; `written`, `spoken`, `case_sensitive`, `whole_word`, `enabled`, `note`) and `voices.pace` (REAL, default 1.0).
 Pronunciation entries are applied in `narrative.store.plan_for_segment` (the text handed to the TTS is the dictionary-rewritten `override_text`/`narration_text`/`original_text`; the stored
