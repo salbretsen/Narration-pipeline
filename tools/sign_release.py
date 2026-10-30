@@ -7,10 +7,12 @@ there is no "unsigned" production output. (For local development a clearly label
 studio must be run with the development channel enabled.)
 
     python tools/sign_release.py --channel stable --base-url https://github.com/OWNER/REPO/releases/download \
-        --release build.json [--release build2.json] [--merge-from previous-index.json] [--notes-file NOTES.md] [--out dist]
+        --release build.json [--release build2.json] [--merge-from previous-index.json] [--notes-from-changelog | --notes-file NOTES.md] [--out dist]
 
 ``--release`` takes the JSON line printed by tools/build_release.py. ``--merge-from`` keeps releases from the previous index (verified with
-the same key first) so older versions stay installable as stepping stones; the sequence number always increases.
+the same key first) so older versions stay installable as stepping stones; the sequence number always increases. ``--notes-from-changelog``
+(re)writes the notes of every release in the index from CHANGELOG.md: each release lists everything since the release before it in the
+index, so versions that were never published separately are still described.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src" / "app"))
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
-from studio.update.manifest import Index, ManifestError  # noqa: E402
+from studio.update.manifest import MAX_NOTES, Index, ManifestError  # noqa: E402
 from studio.update.trust import TrustError, TrustStore, key_id, sign_payload  # noqa: E402
 
 KEEP_RELEASES = 8
@@ -48,6 +50,22 @@ def load_key(key_file: str | None) -> Ed25519PrivateKey | None:
         sys.exit("The signing key is not a base64-encoded 32-byte Ed25519 seed. (The key value is not shown.)")
 
 
+def fill_notes(ordered: list[dict]) -> None:
+    """Notes for every release (newest first) from CHANGELOG.md, covering everything since the previous release in the index on the
+    same channel (a stable release follows stable releases; a beta follows betas and stable releases). A release without a changelog
+    section keeps the notes it had."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    import release_notes as RN
+
+    text = RN.CHANGELOG.read_text("utf-8")
+    for i, r in enumerate(ordered):
+        beta = "-" in r["version"]
+        prev = next((o["version"] for o in ordered[i + 1:] if beta or "-" not in o["version"]), None)
+        body = RN.notes(text, r["version"], prev)
+        if body:
+            r["notes"] = body[:MAX_NOTES]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", choices=["stable", "beta"], default="stable")
@@ -55,6 +73,7 @@ def main() -> int:
     ap.add_argument("--release", action="append", required=True, help="JSON line from build_release.py (path to a file or the JSON itself)")
     ap.add_argument("--merge-from")
     ap.add_argument("--notes-file")
+    ap.add_argument("--notes-from-changelog", action="store_true")
     ap.add_argument("--min-compatible", default="0.0.0")
     ap.add_argument("--min-os", default="14.0")
     ap.add_argument("--key-file")
@@ -70,7 +89,7 @@ def main() -> int:
     if key is None and not a.dev_unsigned:
         sys.exit("No signing key configured (set RELEASE_SIGNING_KEY or --key-file). Refusing to produce a release index: "
                  "nothing is published as signed unless a key is present.")
-    notes = Path(a.notes_file).read_text("utf-8")[:7000] if a.notes_file else ""
+    notes = Path(a.notes_file).read_text("utf-8")[:MAX_NOTES] if a.notes_file else ""
     now = datetime.now(timezone.utc)
     new = []
     for spec in a.release:
@@ -101,7 +120,9 @@ def main() -> int:
         revoked_k |= set(prev.raw.get("revoked_keyids", []))
     from studio.update.manifest import parse_version
 
-    ordered = sorted(releases.values(), key=lambda r: parse_version(r["version"]), reverse=True)[:KEEP_RELEASES]
+    ordered = [dict(r) for r in sorted(releases.values(), key=lambda r: parse_version(r["version"]), reverse=True)[:KEEP_RELEASES]]
+    if a.notes_from_changelog:
+        fill_notes(ordered)
     signed = {"schema": 1, "channel": a.channel, "sequence": sequence, "generated": now.isoformat(),
               "expires": (now + timedelta(days=a.expires_days)).isoformat(), "revoked_versions": sorted(revoked_v),
               "revoked_keyids": sorted(revoked_k), "releases": ordered}

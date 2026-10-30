@@ -6,7 +6,7 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"

@@ -3,6 +3,22 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.8.2
+Patch: release notes reach GitHub and the Update Center. Tested with pytest only (no browser run and nothing run on the Mac); the release workflow
+change is verified by the release of this version itself.
+- **The Update Center showed "No notes were published for this release"** for every release. The Release workflow signed the index without
+  `--notes-file`, so every index entry had empty notes. `tools/sign_release.py --notes-from-changelog` now writes CHANGELOG.md notes into every
+  entry it signs, including entries kept from the previous index (the whole index is re-signed; archive digests are not touched), so the
+  v0.8.1 entry gets its notes too.
+- **Versions that were never published lost their notes.** v0.6.3 to v0.8.0 were never released on GitHub (v0.6.3/v0.6.4 were folded into
+  v0.7.0; v0.7.0 and v0.8.0 were never tagged), and the v0.8.1 release described only the license change. A release's notes now contain its own
+  section plus every changelog section since the previous *published* release (`tools/release_notes.py vX --since vY`, with
+  `--previous` to find vY from `gh release list`); the workflow's backfill step applies the same rule to earlier releases, so the v0.8.1
+  GitHub release now lists v0.8.1, v0.8.0 and v0.7.0. Unsigned builds keep their "unsigned" warning instead of being overwritten.
+- **The Update Center lists the notes of every version between the installed one and the offered one** (`notes_since_installed` in
+  `/api/update/status`, one block per version), and says the notes are on the release page when an index carries none. The notes limit
+  is 60000 characters (was 8000 in the client, 7000 in the signer); older studios truncate long notes, they do not reject the index.
+
 ## v0.8.1
 - **License changed from MIT to proprietary (all rights reserved).** The root `LICENSE` now reads: "Audiobook Studio, Copyright (c) 2026 Scott Albretsen, TSAL Solutions LLC. All rights reserved. This software is
   proprietary and may not be copied, modified, redistributed, sublicensed, or commercially exploited except as permitted by an applicable license agreement. Third-party components are governed by their respective licenses."

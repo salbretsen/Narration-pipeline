@@ -119,9 +119,10 @@ jobs:
           # keep earlier releases in the index as stepping stones; the old index is verified with the same key before it is merged
           gh release download "index-${CHANNEL}" --pattern "release-index-${CHANNEL}.json" --dir prev 2>/dev/null || true
           merge=""; [ -f "prev/release-index-${CHANNEL}.json" ] && merge="--merge-from prev/release-index-${CHANNEL}.json"
+          # every release in the index carries its CHANGELOG.md notes (since the release before it), shown in the studio's Update Center
           python tools/sign_release.py --channel "$CHANNEL" \
             --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download" \
-            --release dist/build.json $merge --out dist
+            --release dist/build.json $merge --notes-from-changelog --out dist
       - name: The signed index must verify against the PINNED public key and match the archive
         if: steps.key.outputs.present == 'true'
         env:
@@ -134,8 +135,11 @@ jobs:
           CHANNEL: ${{ needs.build.outputs.channel }}
         run: |
           pre=""; [ "$CHANNEL" = beta ] && pre="--prerelease"
-          # the release notes are this version's section of src/app/CHANGELOG.md (the step fails if there is none)
-          python tools/release_notes.py "${GITHUB_REF_NAME}" > dist/notes.md
+          # the release notes come from src/app/CHANGELOG.md: this version's section plus every version since the previous published
+          # release (versions that were never published separately); the step fails if this version has no section
+          gh release list --limit 100 --json tagName,isPrerelease > dist/releases.json
+          prev="$(python tools/release_notes.py --previous "${GITHUB_REF_NAME}" --releases dist/releases.json)"
+          python tools/release_notes.py "${GITHUB_REF_NAME}" ${prev:+--since "$prev"} > dist/notes.md
           gh release create "${GITHUB_REF_NAME}" dist/audiobook-studio-*.tar.gz dist/SHA256SUMS dist/install_audiobook_studio_mac.sh $pre \
             --title "${GITHUB_REF_NAME}" --notes-file dist/notes.md
           # the index lives on a rolling release per channel; it is replaced only after the archive above is public
@@ -147,8 +151,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for tag in $(gh release list --limit 100 --json tagName --jq '.[].tagName' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+'); do
-            if python tools/release_notes.py "$tag" > "notes-$tag.md" 2>/dev/null; then
+          # each release lists everything since the published release before it; unsigned builds (a stable version published as a
+          # prerelease) keep their "unsigned" warning
+          gh release list --limit 100 --json tagName,isPrerelease > releases.json
+          unsigned="$(python -c "import json; print(' '.join(r['tagName'] for r in json.load(open('releases.json')) if r['isPrerelease'] and '-' not in r['tagName']))")"
+          for tag in $(python -c "import json; print(' '.join(r['tagName'] for r in json.load(open('releases.json'))))" | tr ' ' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+'); do
+            case " $unsigned " in *" $tag "*) echo "unsigned build $tag; left as is"; continue ;; esac
+            prev="$(python tools/release_notes.py --previous "$tag" --releases releases.json)"
+            if python tools/release_notes.py "$tag" ${prev:+--since "$prev"} > "notes-$tag.md" 2>/dev/null; then
               gh release edit "$tag" --notes-file "notes-$tag.md" && echo "notes updated: $tag"
             else
               echo "no changelog section for $tag; left as is"

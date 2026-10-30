@@ -24,7 +24,7 @@ from typing import Any
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 CHANNELS = ("stable", "beta", "dev")
-MAX_NOTES = 8000
+MAX_NOTES = 60000
 
 
 class ManifestError(Exception):
@@ -140,6 +140,16 @@ class Selection:
 
 def _os_tuple(v: str) -> tuple:
     return tuple(int(p) for p in re.findall(r"\d+", v)[:3]) or (0,)
+
+
+def notes_between(index: Index, installed: str, target: Release) -> list[dict]:
+    """Release notes for every indexed release after ``installed`` up to and including ``target`` (newest first), so an update that
+    skips versions still shows what changed in each. Each release's notes already cover the unpublished versions before it."""
+    lo, hi = parse_version(installed), parse_version(target.version)
+    out = [r for r in index.releases if r.platform == target.platform and r.arch == target.arch and lo < parse_version(r.version) <= hi
+           and r.version not in index.revoked_versions and ("-" in target.version or "-" not in r.version)]
+    out.sort(key=lambda r: parse_version(r.version), reverse=True)
+    return [{"version": r.version, "notes": r.notes, "notes_url": r.notes_url} for r in out]
 
 
 def select_update(index: Index, installed: str, channel: str, platform: str, arch: str, os_version: str, db_schema: int) -> Selection:

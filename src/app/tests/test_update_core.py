@@ -121,6 +121,25 @@ def test_stepping_stone_is_offered_when_newest_needs_intermediate():
     assert s.state == "available" and s.release.version == "0.5.5" and s.newer_exists
 
 
+def test_notes_between_lists_every_release_after_the_installed_one():
+    from studio.update.manifest import notes_between
+
+    idx = _index([_rel("0.5.0", notes="five-oh"), _rel("0.5.1", notes="five-one"), _rel("0.6.0", notes="six"),
+                  _rel("0.7.0-beta.1", channel="beta", notes="beta")])
+    target = next(r for r in idx.releases if r.version == "0.6.0")
+    got = notes_between(idx, "0.5.0", target)
+    assert [g["version"] for g in got] == ["0.6.0", "0.5.1"] and got[0]["notes"] == "six"   # newest first, installed and betas excluded
+    assert notes_between(idx, "0.6.0", target) == []
+
+
+def test_long_release_notes_survive_parsing():
+    from studio.update.manifest import MAX_NOTES
+
+    long = "x" * 30000
+    assert _index([_rel("0.5.1", notes=long)]).releases[0].notes == long
+    assert len(_index([_rel("0.5.1", notes="y" * (MAX_NOTES + 5))]).releases[0].notes) == MAX_NOTES
+
+
 def test_revoked_versions_and_channels():
     idx = _index([_rel("0.5.1")], revoked_versions=["0.5.1"])
     assert sel(idx).state == "none_for_platform"

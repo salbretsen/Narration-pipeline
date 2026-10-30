@@ -41,6 +41,15 @@ function guidance(s) {
   return "";
 }
 
+// One block per release between the installed version and the offered one (each release's notes already cover versions that were
+// never published separately). Older indexes carry no list: fall back to the offered release's own notes.
+function releaseNotes(latest) {
+  const list = (latest.notes_since_installed || []).filter((r) => r.notes && r.notes.trim());
+  if (!list.length && latest.notes && latest.notes.trim()) list.push({ version: latest.version, notes: latest.notes });
+  if (!list.length) return html`<p class="small muted">The notes for this release are not in the update index. Use the link below to read them on the release page.</p>`;
+  return list.map((r) => html`<h3 class="notes-ver">Version ${r.version}</h3><pre class="notes">${r.notes}</pre>`);
+}
+
 function draw(view, s, hist, isAdmin) {
   const [tone, label] = STATE[s.state] || ["neutral", s.state];
   const busyNow = BUSY.has(s.state) || !!s.busy;
@@ -66,7 +75,7 @@ function draw(view, s, hist, isAdmin) {
   ${latest ? html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Version ${latest.version}</h2>
     <p class="small muted">Published ${fmtDate(Date.parse(latest.published) / 1000)} · ${fmtBytes(latest.size)} download · needs macOS ${latest.min_os}+ ·
       ${latest.signed ? "release index signature verified" : "NOT signature-verified (development channel)"}</p>
-    <details open><summary>Release notes</summary><pre class="notes">${latest.notes || "No notes were published for this release."}</pre>
+    <details open><summary>What's new since ${s.installed_version}</summary>${releaseNotes(latest)}
       ${latest.notes_url ? html`<p class="small"><a href="${latest.notes_url}" target="_blank" rel="noopener noreferrer">View the full release notes on the release page</a></p>` : ""}</details>
     <div class="row-actions">
       <button class="btn ${staged ? "" : "primary"}" data-act="download" ${canAct && !staged && s.state !== "incompatible" ? "" : "disabled"}>Download &amp; verify</button>

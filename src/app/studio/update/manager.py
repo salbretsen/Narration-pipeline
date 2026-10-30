@@ -17,7 +17,7 @@ from ..interfaces import PlatformService, ReleaseRepository, UpdateManager
 from ..util import atomic_write_text, now
 from .archive import ArchiveError, safe_extract, verify_tree_manifest
 from .layout import Layout
-from .manifest import Index, ManifestError, Release, parse_version, select_update
+from .manifest import Index, ManifestError, Release, notes_between, parse_version, select_update
 from .net import NetError, validate_repository
 from .repository import make_repository
 from .runtime import RuntimeError_, ensure_runtime
@@ -113,6 +113,7 @@ class ReleaseUpdateManager(UpdateManager):
             "queue_hold": hold, "updated_at": d.get("updated_at"),
             "platform": f"{self.plat}/{self.arch}",
             "notes": (d.get("latest") or {}).get("notes", ""),
+            "notes_since_installed": (d.get("latest") or {}).get("notes_since_installed") or [],
             "not_managed_reason": None if managed else "This copy was not installed by the managed installer, so it cannot update itself. "
                                                       "Run install_audiobook_studio_mac.sh once to migrate (your books and settings are kept).",
         }
@@ -174,14 +175,17 @@ class ReleaseUpdateManager(UpdateManager):
         base = dict(last_check=t, last_success_check=t, error=None, error_kind=None)
         self._set(selection={"state": sel.state, "reason": sel.reason, "newer_exists": sel.newer_exists}, **base)
         if sel.state == "available":
-            self._set(state="available", latest={**sel.release.public(), "signed": self.trust.configured}, message=f"Version {sel.release.version} is available.")
+            self._set(state="available", latest=self._latest(index, sel.release), message=f"Version {sel.release.version} is available.")
             if self.status_file.read().get("staged_version") not in (None, sel.release.version):
                 self._set(staged_version=None)
         elif sel.state == "incompatible":
-            self._set(state="incompatible", latest={**sel.release.public(), "signed": self.trust.configured}, message=sel.reason)
+            self._set(state="incompatible", latest=self._latest(index, sel.release), message=sel.reason)
         else:
             self._set(state="up_to_date", latest=None, staged_version=None, message=sel.reason)
         return self.status()
+
+    def _latest(self, index: Index, release: Release) -> dict:
+        return {**release.public(), "signed": self.trust.configured, "notes_since_installed": notes_between(index, self.installed, release)}
 
     def auto_check_due(self) -> bool:
         s = self.settings()

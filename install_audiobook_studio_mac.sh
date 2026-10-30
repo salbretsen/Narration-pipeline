@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.8.1 (build 20261029194813-96e6f2a2)
+#  Version v0.8.2 (build 20261029213603-12b25fb0)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.8.1"
+STUDIO_VERSION="v0.8.2"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261029194813-96e6f2a2"
+BUILD_ID="20261029213603-12b25fb0"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,27 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_d38988cd7e32__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_ce1eca550f59__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.8.2
+Patch: release notes reach GitHub and the Update Center. Tested with pytest only (no browser run and nothing run on the Mac); the release workflow
+change is verified by the release of this version itself.
+- **The Update Center showed "No notes were published for this release"** for every release. The Release workflow signed the index without
+  `--notes-file`, so every index entry had empty notes. `tools/sign_release.py --notes-from-changelog` now writes CHANGELOG.md notes into every
+  entry it signs, including entries kept from the previous index (the whole index is re-signed; archive digests are not touched), so the
+  v0.8.1 entry gets its notes too.
+- **Versions that were never published lost their notes.** v0.6.3 to v0.8.0 were never released on GitHub (v0.6.3/v0.6.4 were folded into
+  v0.7.0; v0.7.0 and v0.8.0 were never tagged), and the v0.8.1 release described only the license change. A release's notes now contain its own
+  section plus every changelog section since the previous *published* release (`tools/release_notes.py vX --since vY`, with
+  `--previous` to find vY from `gh release list`); the workflow's backfill step applies the same rule to earlier releases, so the v0.8.1
+  GitHub release now lists v0.8.1, v0.8.0 and v0.7.0. Unsigned builds keep their "unsigned" warning instead of being overwritten.
+- **The Update Center lists the notes of every version between the installed one and the offered one** (`notes_since_installed` in
+  `/api/update/status`, one block per version), and says the notes are on the release page when an index carries none. The notes limit
+  is 60000 characters (was 8000 in the client, 7000 in the signer); older studios truncate long notes, they do not reject the index.
 
 ## v0.8.1
 - **License changed from MIT to proprietary (all rights reserved).** The root `LICENSE` now reads: "Audiobook Studio, Copyright (c) 2026 Scott Albretsen, TSAL Solutions LLC. All rights reserved. This software is
@@ -849,7 +865,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_d38988cd7e32__
+__STUDIO_EOF_ce1eca550f59__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -3013,7 +3029,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_d854bd3afdfb__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_0eee46beefec__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -3022,13 +3038,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_d854bd3afdfb__
+__STUDIO_EOF_0eee46beefec__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -19381,7 +19397,7 @@ class Layout:
         except (OSError, ValueError):
             return {}
 __STUDIO_EOF_f8cdc1305a61__
-cat > "$DEST/studio/update/manager.py" <<'__STUDIO_EOF_ac7714bff567__'
+cat > "$DEST/studio/update/manager.py" <<'__STUDIO_EOF_f35f5a7e80dc__'
 """ReleaseUpdateManager: check, download, verify and stage a release. Runs in the web process (or the CLI) and only ever
 *adds* a new directory under ``releases/``; it never touches the running release. Switching and restarting is the helper's job."""
 from __future__ import annotations
@@ -19401,7 +19417,7 @@ from ..interfaces import PlatformService, ReleaseRepository, UpdateManager
 from ..util import atomic_write_text, now
 from .archive import ArchiveError, safe_extract, verify_tree_manifest
 from .layout import Layout
-from .manifest import Index, ManifestError, Release, parse_version, select_update
+from .manifest import Index, ManifestError, Release, notes_between, parse_version, select_update
 from .net import NetError, validate_repository
 from .repository import make_repository
 from .runtime import RuntimeError_, ensure_runtime
@@ -19497,6 +19513,7 @@ class ReleaseUpdateManager(UpdateManager):
             "queue_hold": hold, "updated_at": d.get("updated_at"),
             "platform": f"{self.plat}/{self.arch}",
             "notes": (d.get("latest") or {}).get("notes", ""),
+            "notes_since_installed": (d.get("latest") or {}).get("notes_since_installed") or [],
             "not_managed_reason": None if managed else "This copy was not installed by the managed installer, so it cannot update itself. "
                                                       "Run install_audiobook_studio_mac.sh once to migrate (your books and settings are kept).",
         }
@@ -19558,14 +19575,17 @@ class ReleaseUpdateManager(UpdateManager):
         base = dict(last_check=t, last_success_check=t, error=None, error_kind=None)
         self._set(selection={"state": sel.state, "reason": sel.reason, "newer_exists": sel.newer_exists}, **base)
         if sel.state == "available":
-            self._set(state="available", latest={**sel.release.public(), "signed": self.trust.configured}, message=f"Version {sel.release.version} is available.")
+            self._set(state="available", latest=self._latest(index, sel.release), message=f"Version {sel.release.version} is available.")
             if self.status_file.read().get("staged_version") not in (None, sel.release.version):
                 self._set(staged_version=None)
         elif sel.state == "incompatible":
-            self._set(state="incompatible", latest={**sel.release.public(), "signed": self.trust.configured}, message=sel.reason)
+            self._set(state="incompatible", latest=self._latest(index, sel.release), message=sel.reason)
         else:
             self._set(state="up_to_date", latest=None, staged_version=None, message=sel.reason)
         return self.status()
+
+    def _latest(self, index: Index, release: Release) -> dict:
+        return {**release.public(), "signed": self.trust.configured, "notes_since_installed": notes_between(index, self.installed, release)}
 
     def auto_check_due(self) -> bool:
         s = self.settings()
@@ -19776,8 +19796,8 @@ class ReleaseUpdateManager(UpdateManager):
                 self._set(state="failed", message=f"Could not start the updater: {exc}", error=str(exc), error_kind="failed")
                 raise UpdateError(f"Could not start the updater process: {exc}") from exc
         return self.status()
-__STUDIO_EOF_ac7714bff567__
-cat > "$DEST/studio/update/manifest.py" <<'__STUDIO_EOF_493d0f087608__'
+__STUDIO_EOF_f35f5a7e80dc__
+cat > "$DEST/studio/update/manifest.py" <<'__STUDIO_EOF_7330ede928f6__'
 """The signed release-index contract and update selection.
 
 Envelope (see trust.py)  ->  ``signed`` payload:
@@ -19804,7 +19824,7 @@ from typing import Any
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 CHANNELS = ("stable", "beta", "dev")
-MAX_NOTES = 8000
+MAX_NOTES = 60000
 
 
 class ManifestError(Exception):
@@ -19922,6 +19942,16 @@ def _os_tuple(v: str) -> tuple:
     return tuple(int(p) for p in re.findall(r"\d+", v)[:3]) or (0,)
 
 
+def notes_between(index: Index, installed: str, target: Release) -> list[dict]:
+    """Release notes for every indexed release after ``installed`` up to and including ``target`` (newest first), so an update that
+    skips versions still shows what changed in each. Each release's notes already cover the unpublished versions before it."""
+    lo, hi = parse_version(installed), parse_version(target.version)
+    out = [r for r in index.releases if r.platform == target.platform and r.arch == target.arch and lo < parse_version(r.version) <= hi
+           and r.version not in index.revoked_versions and ("-" in target.version or "-" not in r.version)]
+    out.sort(key=lambda r: parse_version(r.version), reverse=True)
+    return [{"version": r.version, "notes": r.notes, "notes_url": r.notes_url} for r in out]
+
+
 def select_update(index: Index, installed: str, channel: str, platform: str, arch: str, os_version: str, db_schema: int) -> Selection:
     """Pick the best release for this machine. A release is a candidate when it matches platform/arch/channel, is newer,
     is not revoked, runs on this macOS, and the installed version is at or above its ``min_compatible_version``.
@@ -19949,7 +19979,7 @@ def select_update(index: Index, installed: str, channel: str, platform: str, arc
         return Selection("available", r, newer_exists=r.version != top.version,
                          reason="" if r.version == top.version else f"{top.version} becomes available after this step.")
     return Selection("incompatible", top, reason="; ".join(blocked) or "No compatible release.")
-__STUDIO_EOF_493d0f087608__
+__STUDIO_EOF_7330ede928f6__
 cat > "$DEST/studio/update/net.py" <<'__STUDIO_EOF_b7ae6a706482__'
 """HTTPS-only fetching for the updater. The web process never fetches a URL it was handed by a client:
 the repository comes from trusted configuration and artifact URLs come from a *signature-verified* index.
@@ -22746,7 +22776,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_5cd414f9fcb1__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_d6cda8e2636b__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_2958c3f33d55__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -23165,6 +23195,7 @@ body.signed-out .shell { grid-template-columns: 1fr; }
 .phase-good .progress-fill { background: var(--good); }
 .phase-bad .progress-fill { background: var(--bad); }
 pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; max-height: 16rem; overflow: auto; font: inherit; font-size: .88rem; }
+.notes-ver { font-size: .95rem; margin: .8rem 0 .3rem; }
 .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
 .nav-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); margin-left: .25rem; vertical-align: middle; }
 .nav-dot[hidden] { display: none; }
@@ -23283,7 +23314,7 @@ details.earlier summary { cursor: pointer; font-size: .82rem; color: var(--muted
 .regen-explain ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
 .regen-explain .instruct-text { font-style: italic; }
 @media (max-width: 900px) { .regen-wrap { grid-template-columns: 1fr; } }
-__STUDIO_EOF_d6cda8e2636b__
+__STUDIO_EOF_2958c3f33d55__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 <!doctype html>
 <html lang="en">
@@ -27664,7 +27695,7 @@ export async function render(view, parts, query, nav) {
   };
 }
 __STUDIO_EOF_cfa28686e972__
-cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_bbe31ec54fc1__'
+cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_6c3b9a5b5df7__'
 // Update Center: check / download / verify / stage / install (after the current job or at the next segment boundary) / restart, with history.
 // Everything the user sees is plain text (auto-escaped); release notes are never interpreted as HTML.
 import { get, post, put, html, setHTML, busy, confirmDialog, toast, toastError, fmtAgo, fmtDate, fmtBytes } from "../ui.js";
@@ -27708,6 +27739,15 @@ function guidance(s) {
   return "";
 }
 
+// One block per release between the installed version and the offered one (each release's notes already cover versions that were
+// never published separately). Older indexes carry no list: fall back to the offered release's own notes.
+function releaseNotes(latest) {
+  const list = (latest.notes_since_installed || []).filter((r) => r.notes && r.notes.trim());
+  if (!list.length && latest.notes && latest.notes.trim()) list.push({ version: latest.version, notes: latest.notes });
+  if (!list.length) return html`<p class="small muted">The notes for this release are not in the update index. Use the link below to read them on the release page.</p>`;
+  return list.map((r) => html`<h3 class="notes-ver">Version ${r.version}</h3><pre class="notes">${r.notes}</pre>`);
+}
+
 function draw(view, s, hist, isAdmin) {
   const [tone, label] = STATE[s.state] || ["neutral", s.state];
   const busyNow = BUSY.has(s.state) || !!s.busy;
@@ -27733,7 +27773,7 @@ function draw(view, s, hist, isAdmin) {
   ${latest ? html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Version ${latest.version}</h2>
     <p class="small muted">Published ${fmtDate(Date.parse(latest.published) / 1000)} · ${fmtBytes(latest.size)} download · needs macOS ${latest.min_os}+ ·
       ${latest.signed ? "release index signature verified" : "NOT signature-verified (development channel)"}</p>
-    <details open><summary>Release notes</summary><pre class="notes">${latest.notes || "No notes were published for this release."}</pre>
+    <details open><summary>What's new since ${s.installed_version}</summary>${releaseNotes(latest)}
       ${latest.notes_url ? html`<p class="small"><a href="${latest.notes_url}" target="_blank" rel="noopener noreferrer">View the full release notes on the release page</a></p>` : ""}</details>
     <div class="row-actions">
       <button class="btn ${staged ? "" : "primary"}" data-act="download" ${canAct && !staged && s.state !== "incompatible" ? "" : "disabled"}>Download &amp; verify</button>
@@ -27836,7 +27876,7 @@ export async function render(view) {
   timer = setInterval(() => refresh(false), 1500);
   return () => { clearInterval(timer); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); view.removeEventListener("focusin", onFocus); };
 }
-__STUDIO_EOF_bbe31ec54fc1__
+__STUDIO_EOF_6c3b9a5b5df7__
 cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_8d720d0b065e__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
@@ -33148,7 +33188,7 @@ def test_disk_routes_are_admin_only(ctx):
         assert c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"}).status_code == 200
         assert c.get("/api/disk/usage").status_code == 200
 __STUDIO_EOF_f0e734ac28d0__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_fa8fab5584fb__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_507d582deda5__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -33533,13 +33573,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.8.1" and st["version_label"] == "v0.8.1"
+    assert st["version"] == "0.8.2" and st["version_label"] == "v0.8.2"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.8.1" and "stage" not in a
+    assert a["version_label"] == "v0.8.2" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_fa8fab5584fb__
+__STUDIO_EOF_507d582deda5__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -36236,12 +36276,14 @@ def test_segment_detail_timing_comes_from_the_chapter_map(client, ctx):
     other = next(s for s in all_segments(ctx, bid) if s["ch_idx"] == 2)
     assert SV.segment_detail(ctx, other["id"])["chapter_timing"] is None
 __STUDIO_EOF_0843a886b192__
-cat > "$DEST/tests/test_release_notes.py" <<'__STUDIO_EOF_941bec614861__'
+cat > "$DEST/tests/test_release_notes.py" <<'__STUDIO_EOF_da1f20542ebb__'
 """Release notes come from CHANGELOG.md (tools/release_notes.py), and every release must have an entry."""
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 from studio import __version__
 
@@ -36266,7 +36308,50 @@ def test_every_changelog_version_has_notes_and_current_version_is_covered():
     import re
     for v in re.findall(r"^## (v\d+\.\d+\.\d+)\s*$", text, re.M):
         assert rn.section(text, v), f"empty CHANGELOG section for {v}"
-__STUDIO_EOF_941bec614861__
+
+
+GAP = ("# Changelog\n\n## v0.8.2\n- notes fix\n\n## v0.8.1\n- license\n\n## v0.8.0\n- polish\n\n## v0.7.0\n- versions\n\n"
+       "## v0.6.2\n- notes from changelog\n")
+
+
+def test_since_includes_every_unpublished_version_newest_first():
+    out = rn.notes(GAP, "v0.8.1", "v0.6.2")
+    assert out.startswith("This release also contains v0.8.0 and v0.7.0, which were not published separately")
+    assert out.index("## v0.8.1\n- license") < out.index("## v0.8.0\n- polish") < out.index("## v0.7.0\n- versions")
+    assert "notes from changelog" not in out and "notes fix" not in out
+    assert rn.notes(GAP, "v0.8.2", "v0.8.1") == "- notes fix\n"            # nothing skipped: same text as before
+    assert rn.notes(GAP, "v0.8.2") == "- notes fix\n"
+    assert "contains v0.8.1, which was" in rn.notes(GAP, "v0.8.2", "v0.8.0")
+    assert rn.notes(GAP, "v9.9.9", "v0.6.2") is None
+
+
+def test_previous_published_release_follows_the_channel():
+    rels = [{"tagName": "v0.8.1", "isPrerelease": False}, {"tagName": "v0.6.2", "isPrerelease": False},
+            {"tagName": "v0.8.0", "isPrerelease": True},                   # an unsigned build: not a published stable release
+            {"tagName": "v0.9.0-beta.1", "isPrerelease": True}, {"tagName": "index-stable", "isPrerelease": True}]
+    assert rn.previous_published("v0.8.2", rels) == "v0.8.1"
+    assert rn.previous_published("v0.8.1", rels) == "v0.6.2"
+    assert rn.previous_published("v0.6.2", rels) is None
+    assert rn.previous_published("v0.9.0-beta.2", rels) == "v0.9.0-beta.1"
+    assert rn.previous_published("v0.9.0", rels) == "v0.8.1"
+
+
+def test_signed_index_notes_are_filled_from_the_changelog(monkeypatch, tmp_path):
+    pytest.importorskip("cryptography")
+    spec = importlib.util.spec_from_file_location("sign_release", Path(__file__).resolve().parents[3] / "tools" / "sign_release.py")
+    sr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sr)
+    (tmp_path / "CHANGELOG.md").write_text(GAP, "utf-8")
+    monkeypatch.setattr(rn, "CHANGELOG", tmp_path / "CHANGELOG.md")
+    import sys
+    monkeypatch.setitem(sys.modules, "release_notes", rn)
+    ordered = [{"version": "0.8.2", "notes": ""}, {"version": "0.8.1", "notes": ""}, {"version": "0.6.2", "notes": "kept?"},
+               {"version": "0.5.0", "notes": "no section: kept"}]
+    sr.fill_notes(ordered)
+    assert ordered[0]["notes"] == "- notes fix\n"
+    assert "v0.8.0 and v0.7.0" in ordered[1]["notes"] and "## v0.7.0" in ordered[1]["notes"]
+    assert ordered[2]["notes"] == "- notes from changelog\n" and ordered[3]["notes"] == "no section: kept"
+__STUDIO_EOF_da1f20542ebb__
 cat > "$DEST/tests/test_runtime.py" <<'__STUDIO_EOF_a063bb59fbd7__'
 """Processing-time estimates (studio/runtime.py) and the grouped, paginated Queue API. MOCK engine and synthetic rows only."""
 from __future__ import annotations
@@ -37501,7 +37586,7 @@ def test_end_to_end_against_a_stub_http_endpoint(client, ctx):
     finally:
         srv.shutdown()
 __STUDIO_EOF_6fbd27e147d7__
-cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_8809f0a6a6de__'
+cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_979af4709f02__'
 """Update building blocks: signatures, release selection, hardened network and archive handling, release store, runtime provisioning,
 platform services, provider/storage interfaces. All local; no network, no macOS."""
 from __future__ import annotations
@@ -37623,6 +37708,25 @@ def test_stepping_stone_is_offered_when_newest_needs_intermediate():
     idx = _index([_rel("0.6.0", min_compatible_version="0.5.5"), _rel("0.5.5", min_compatible_version="0.4.0")])
     s = sel(idx, "0.4.0")
     assert s.state == "available" and s.release.version == "0.5.5" and s.newer_exists
+
+
+def test_notes_between_lists_every_release_after_the_installed_one():
+    from studio.update.manifest import notes_between
+
+    idx = _index([_rel("0.5.0", notes="five-oh"), _rel("0.5.1", notes="five-one"), _rel("0.6.0", notes="six"),
+                  _rel("0.7.0-beta.1", channel="beta", notes="beta")])
+    target = next(r for r in idx.releases if r.version == "0.6.0")
+    got = notes_between(idx, "0.5.0", target)
+    assert [g["version"] for g in got] == ["0.6.0", "0.5.1"] and got[0]["notes"] == "six"   # newest first, installed and betas excluded
+    assert notes_between(idx, "0.6.0", target) == []
+
+
+def test_long_release_notes_survive_parsing():
+    from studio.update.manifest import MAX_NOTES
+
+    long = "x" * 30000
+    assert _index([_rel("0.5.1", notes=long)]).releases[0].notes == long
+    assert len(_index([_rel("0.5.1", notes="y" * (MAX_NOTES + 5))]).releases[0].notes) == MAX_NOTES
 
 
 def test_revoked_versions_and_channels():
@@ -37992,8 +38096,8 @@ def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monke
     monkeypatch.delenv("AUDIOBOOK_STUDIO_ROOT", raising=False)
     create_app(ctx, start_worker=False)
     assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
-__STUDIO_EOF_8809f0a6a6de__
-cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_6f4637cc8b0e__'
+__STUDIO_EOF_979af4709f02__
+cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_33292f3453a6__'
 """Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
 queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
 from __future__ import annotations
@@ -38125,6 +38229,7 @@ def test_check_states(env):
     st = env.mgr.check()
     assert st["state"] == "available" and st["latest"]["version"] == "0.5.1" and "fixed things" in st["notes"]
     assert st["last_success_check"] and "sha256" in st["latest"] and "url" not in st["latest"]
+    assert [n["version"] for n in st["notes_since_installed"]] == ["0.5.1"] and "fixed things" in st["notes_since_installed"][0]["notes"]
     env.site.offline = True
     st = env.mgr.check()
     assert st["state"] == "offline" and st["error_kind"] == "offline" and st["last_success_check"]   # last good check is kept
@@ -38710,7 +38815,7 @@ def test_supervised_worker_exits_when_its_server_disappears(ctx, monkeypatch):
     assert w.parent_gone() is True
     monkeypatch.delenv("STUDIO_SUPERVISED_WORKER")
     assert Worker(ctx, tts=MockEngine({}), asr=MockASR()).parent_gone() is False     # foreground `studio worker` is never auto-stopped
-__STUDIO_EOF_6f4637cc8b0e__
+__STUDIO_EOF_33292f3453a6__
 cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_e0a39c35e7b1__'
 """Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
 or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
@@ -39765,20 +39870,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_6fb4ce9de12c__'
-20261029194813-96e6f2a2
-__STUDIO_EOF_6fb4ce9de12c__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_ea6240889701__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_0ee8953f607f__'
+20261029213603-12b25fb0
+__STUDIO_EOF_0ee8953f607f__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_4058f3c61c28__'
 {
-  "version": "0.8.1",
+  "version": "0.8.2",
   "schema_version": 6,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029194813-96e6f2a2",
+  "build": "20261029213603-12b25fb0",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_ea6240889701__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_2eaaf5c52909__'
+__STUDIO_EOF_4058f3c61c28__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_f7d58280a412__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -39787,13 +39892,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-d38988cd7e329f7caa7ba68383723b6f8b4c4d105473157553bff2df9d33f6b5  CHANGELOG.md
+ce1eca550f59cf214403fd03221755d2c7c882014ed8d4f4652cd42d0d8ca381  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
 c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-d854bd3afdfbe5b973a541a30a1d4ee060e1a68ab82f4111ffb64f2daab333cb  studio/__init__.py
+0eee46beefec4b195d717a42ea694823dc7c4ca437598797ce3cb22a82795661  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 299f26b31f565f52ff70bd75c1ebdf74384f06c52eb261edab89e03fb2789463  studio/assembly.py
@@ -39847,8 +39952,8 @@ dcfb737a627a1aa43c08139b151af4e00e522fb52985a99b700ccb06f0d5fe71  studio/update/
 8b9d8389d83698045c25dd0d595ccda0fb62d9bd85272a4133fc0ecdbf42313e  studio/update/housekeeping.py
 59a27258dea965288af548a2882a96cd8c2dcbc9caff0bb186eced316265dd75  studio/update/launch.py
 f8cdc1305a61326cb3b7680912fb1dc1a6d1a06d337fcf6be319728a71713690  studio/update/layout.py
-ac7714bff567c7f901c3223c86467f72ad191ba0f0e297b1dce5d280cd068e7e  studio/update/manager.py
-493d0f087608ebc59c2264634d116fd83bfe4ce20c80c0c7e8705ffb6e07de0f  studio/update/manifest.py
+f35f5a7e80dcc88f93aa6bf5dd1535f8a6a4c66c3d24fd1120f3a3c83d65d960  studio/update/manager.py
+7330ede928f6fe1cfe549e414a1859016aed72b8e64d3a18eca91dddb3e23343  studio/update/manifest.py
 b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/net.py
 2b281c91ae2318c517adecc77e15a2984e452a4b614672460f79d6afed0bbccb  studio/update/pinned_keys.json
 9aac2ab730c9b792a5fdf13f1598dd1a7f44714ee8b13a0ff5a4d24e1359163c  studio/update/repository.py
@@ -39866,7 +39971,7 @@ b57b21a1c5f74de22c1b95e64673fa5815a4ab5658bd315b9145847a2dc19bd2  studio/web/dis
 f7c4345f4ed1d327bf15739f5ff493beb219985118566069585717ef312c184d  studio/web/narrative_api.py
 ecfd1a5469712d833cc0a847438aab7dced29c7548a1b164d68f9c3eee127fc7  studio/web/pronunciation_api.py
 5cd414f9fcb139e0fb321d20da123d12a21413a2ea97ac516355282309b3af53  studio/web/security.py
-d6cda8e2636be0b6b59429687ce9ac951edba2b45b52517134da01ea3d2d5095  studio/web/static/app.css
+2958c3f33d55bb146e8488d7c78f9ed2c56e721132492ede67af131a93da3e76  studio/web/static/app.css
 31fd707206f2d4d289afc1f44ee88b1e0a67c5d23ff8fe767e71f6eb7d3f59c2  studio/web/static/index.html
 e343455cc84d96771acf625a4ac26cea0a665dbcd36d07d8e1ca80b9d2e94542  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
@@ -39886,7 +39991,7 @@ f6fd8b4c43b806272652e1ec0734d9edea2269c76f1dec69e369060f4cf9966a  studio/web/sta
 413afc59d42d98da5c90716abf1eda080c27da228b0965a629935c04ae2570f9  studio/web/static/js/views/review.js
 7a7b7b9d201b1dfc3ec9b1754bda84658e9287c2d80b525402c1c071602ce38a  studio/web/static/js/views/settings-model.js
 cfa28686e9726031ad5cec6505c085ffe8c6939717eb690a60813eefe8304878  studio/web/static/js/views/settings.js
-bbe31ec54fc18e2ad5f36ae38b887a0c1f0c4267e363e0ea60bc6de3cb6b21e5  studio/web/static/js/views/updates.js
+6c3b9a5b5df79ceb1ff60b14e91c0c1db229f22cd339b3d62329070c2423ff39  studio/web/static/js/views/updates.js
 8d720d0b065e549aa5a20b6a15e15b88b8f3480e52789788dd9771a14c3f5703  studio/web/static/js/views/voicelab.js
 53fefa529ac61867ad682e50ebe7bc2173a91924d6bd3e340c47754559dfec6c  studio/web/static/js/views/voices.js
 ddf237e18d6974e7d46409fa759f8b74184a0831782c5b96fe62a84c6649909a  studio/web/update_api.py
@@ -39907,7 +40012,7 @@ c946f5c7d8645c72518bb50a170ef5cf3124a9bdea814f79f55e183995a44455  tests/test_boo
 9d70d6a6f3b95b4b3434e534cf8caab7d1b74112a8cd6c1c288e0e78b6df0ee0  tests/test_director_v2.py
 efe8a88feba27ce3f303dd292d210481ec12c61be030c1dab44e71b3158174e3  tests/test_disk_cache.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
-fa8fab5584fb07ce1841f173d2b354913131ba587ec9ba3027922b56dec828b6  tests/test_integration.py
+507d582deda5337c9b5b6f2eff3c1b802cbd8b51c01d5428e51d9c73636f928a  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
 53f9aa6c2b4761245977f33bf2122be88d24e6c3596402ed6406e49a397dd8f5  tests/test_live_foundation.py
@@ -39919,21 +40024,21 @@ fdc9fd72ee280fccec193686bbffc97bfcbd9cb8659ca8220e4903344335d48b  tests/test_ove
 f0a48a3252bc31fe005eaa918869f11a9440d0da69a0a6f93a8172cbeed97aa4  tests/test_plumbing_v5.py
 abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pronunciation.py
 0843a886b1920b7ad042811941eab41699cd9c437dfbf6abf07c5243bb750aa1  tests/test_regen_direction.py
-941bec614861c4c3fe8f12141069bce971704d787260ba8f14250304f600e306  tests/test_release_notes.py
+da1f20542ebbc368b461fa2350611d942b9aee185fe3d924e0315d79ff76a5e3  tests/test_release_notes.py
 a063bb59fbd7a52469a99b42c915b282f444d27cd79adcdb821f3814d421cd91  tests/test_runtime.py
 27eceefd664d0a111abd03d3de7c88d560efc9342696fc614943aefb76db8675  tests/test_scrub_check.py
 e04250ee81e8837f2a8cfec6a027db380408d9192fcdbe4a34bdb9e6ed140a60  tests/test_settings_ui.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 6fbd27e147d787b2c120410b522e472ac6007c39a032549fe504f032e483ad4d  tests/test_translator.py
-8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
-6f4637cc8b0ea04090a737c11dfbdcc16b716b9cf8573f63bbea7b3d4b781613  tests/test_update_flow.py
+979af4709f02bedbf538248cc0706afb7f75e1fde7157def5095f7570addde5a  tests/test_update_core.py
+33292f3453a6479888a9163546ab9ceb2a03292c85697f393976477fa6bf97c5  tests/test_update_flow.py
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
 40a1a402b9a485f9a072a397f0388a826b14de7f29b0a475f6200f325e37e192  tests/test_voice_retune.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-6fb4ce9de12c8a4141433774115e4faa94dd4a5d0bcd7a92ee023c0aa3b6d38e  BUILD
-ea6240889701b7fd090c7631a6477de9497e15c2cedcbae66a0b5af0764ac54b  release.json
-__STUDIO_EOF_2eaaf5c52909__
+0ee8953f607f0a047c2f8b88f90a550e4d39dbb966d170ea40948f883d0236c7  BUILD
+4058f3c61c281ad3c8a6b8f42e7421e126c2d0dbcda0322022d1f2ac289ba9d3  release.json
+__STUDIO_EOF_f7d58280a412__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.

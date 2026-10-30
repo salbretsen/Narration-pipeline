@@ -416,6 +416,7 @@ body.signed-out .shell { grid-template-columns: 1fr; }
 .phase-good .progress-fill { background: var(--good); }
 .phase-bad .progress-fill { background: var(--bad); }
 pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; max-height: 16rem; overflow: auto; font: inherit; font-size: .88rem; }
+.notes-ver { font-size: .95rem; margin: .8rem 0 .3rem; }
 .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
 .nav-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); margin-left: .25rem; vertical-align: middle; }
 .nav-dot[hidden] { display: none; }

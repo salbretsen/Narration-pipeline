@@ -129,6 +129,7 @@ def test_check_states(env):
     st = env.mgr.check()
     assert st["state"] == "available" and st["latest"]["version"] == "0.5.1" and "fixed things" in st["notes"]
     assert st["last_success_check"] and "sha256" in st["latest"] and "url" not in st["latest"]
+    assert [n["version"] for n in st["notes_since_installed"]] == ["0.5.1"] and "fixed things" in st["notes_since_installed"][0]["notes"]
     env.site.offline = True
     st = env.mgr.check()
     assert st["state"] == "offline" and st["error_kind"] == "offline" and st["last_success_check"]   # last good check is kept

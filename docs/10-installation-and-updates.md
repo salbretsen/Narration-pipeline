@@ -137,7 +137,7 @@ archive is authenticated *through* the signed index (which carries its size and 
   "releases": [ { "version": "0.5.1", "channel": "stable", "platform": "macos", "arch": "arm64",
                   "url": "https://github.com/OWNER/REPO/releases/download/v0.5.1/audiobook-studio-0.5.1-macos-arm64.tar.gz",
                   "size": 422406, "sha256": "<64 hex>", "published": "2026-10-29T00:00:00Z",
-                  "notes_url": "https://github.com/OWNER/REPO/releases/tag/v0.5.1", "notes": "plain text, max 8000 chars",
+                  "notes_url": "https://github.com/OWNER/REPO/releases/tag/v0.5.1", "notes": "plain text from CHANGELOG.md, max 60000 chars",
                   "min_compatible_version": "0.4.0", "min_os": "14.0", "schema_version": 2, "runtime_id": "<16 hex>" } ] }
 ```
 
@@ -180,7 +180,9 @@ installer out of band. Never reuse a leaked key.
 
 Sidebar **Updates** (plus a dot on the nav item and a notice on the Overview when something needs attention; Settings also offers the model cache
 folder). The page shows installed version/build, channel, latest compatible version, last check and last *successful* check, status and error, release
-notes (plain text, never HTML; the link is only shown for `https://`), eight labelled progress bars (check, download, verify, stage, drain,
+notes for every version between the installed one and the offered one (plain text, never HTML; the link is only shown for `https://`;
+since v0.8.2 the Release workflow signs CHANGELOG.md notes into every index entry with `sign_release.py --notes-from-changelog`, each entry
+covering everything since the release before it, so versions never published separately are still described), eight labelled progress bars (check, download, verify, stage, drain,
 install, restart, health) with `aria-live`, **Check for updates**, **Download & verify**, **Install now**, **Install after current book**,
 **Cancel installation**, **Restart service**, **Roll back to previous version** (confirmation dialog; disabled when no previous release is kept; POST `/api/update/rollback`, admin-only; the same updater drains the queue, backs up the database, switches, health-checks and reverts automatically on failure; refused if the previous release cannot open the current database schema), automatic-check preferences (default daily; checks only, never downloads or installs by itself), and the
 history table. States: up to date, available, downloading, verifying, staging, staged, waiting, draining, installing, restarting, health check,
