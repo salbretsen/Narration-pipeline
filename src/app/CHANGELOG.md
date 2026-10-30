@@ -3,6 +3,12 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.8.1
+- **License changed from MIT to proprietary (all rights reserved).** The root `LICENSE` now reads: "Audiobook Studio, Copyright (c) 2026 Scott Albretsen, TSAL Solutions LLC. All rights reserved. This software is
+  proprietary and may not be copied, modified, redistributed, sublicensed, or commercially exploited except as permitted by an applicable license agreement. Third-party components are governed by their respective licenses."
+  This applies to this version onward. Versions already published under MIT (v0.5.7 to v0.6.2) remain available to anyone who has them under those terms. No code changed; no end-user license agreement exists yet,
+  so nobody but the copyright holder has permission to use, copy or distribute this software. Third-party components (FFmpeg, uv, Python packages, models) keep their own licenses (see `MODEL_LICENSES.md` and System & Licenses).
+
 ## v0.8.0
 Feature release (polish batch). **Tested only with the mock engine, HTTP stub servers, 531 pytest tests and headless Edge scripts on Windows (`tools/e2e/foundation_ui.py`, `polish_*.py`). Nothing in
 this release has been run on the Mac, with the real engine, or in real Safari; processing-time estimates were never compared with real timings.** See *Not verified* at the end.

@@ -52,7 +52,7 @@ Nothing else is required of the owner; pushing is done only when asked.
 ### B. Repository and release hygiene
 | # | Item | Size | Pri | Notes |
 |---|---|---|---|---|
-| B1 | ~~Add a `LICENSE`~~ | S | done v0.5.7 | MIT (use allowed with the copyright notice kept) |
+| B1 | ~~Add a `LICENSE`~~ | S | done v0.5.7; changed v0.8.1 | MIT at v0.5.7; **proprietary, all rights reserved from v0.8.1** (earlier releases published under MIT stay MIT for those who already hold them) |
 | B2 | Ask GitHub Support to purge the old unreachable commits (`98117b6`, `64c1b8d`) | S | P1 | only Support can; hashes are in the sweep notes |
 | B3 | ~~Branch and tag protection~~ dropped by the owner (too much setup for a simple tool). Optional later: pin Actions to commit SHAs | S | P3 | no owner work |
 | B4 | Key hygiene: offline backup of the signing key, rotation rehearsal (add a second key, sign with it, drop the first) | M | P2 | procedure is in doc 10; never rehearsed |
@@ -97,7 +97,7 @@ Nothing else is required of the owner; pushing is done only when asked.
 
 ### E. Questions only the owner can answer
 1. ~~Adopt the branch/channel model in section 1?~~ Adopted.
-2. ~~Which licence (B1)?~~ MIT.
+2. ~~Which licence (B1)?~~ MIT at v0.5.7, changed to proprietary (all rights reserved) in v0.8.1. Open: whether to write an end-user license agreement before the software is given to anyone else.
 3. When is v1.0.0, and what are the acceptance criteria? (I will not bump MAJOR myself.)
 4. Should operator accounts be allowed to edit voices, or only use them?
 5. ~~LAN serving?~~ Yes, default for new installs (v0.5.7); `--local-only` opts out.
