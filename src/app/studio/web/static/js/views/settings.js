@@ -175,15 +175,16 @@ function qualityPanel(s) {
 function modelsPanel(s) {
   const n = s.settings.narrative;
   return html`${card("models", "Models", html`Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.`,
-      grid(sf(s, "models", ["custom_voice_model", "base_model", "voice_design_model", "asr_model", "language"])))}
+      grid(sf(s, "models", ["custom_voice_model", "base_model", "voice_design_model", "asr_model", "language", "directable_clones"])))}
     ${card("sampling", "Sampling", "Blank values use each model's own default.", grid(sf(s, "models", ["temperature", "top_p", "repetition_penalty", "retry_temperatures"])))}
     <details id="set-models-adv" class="card set-card set-details"><summary>Memory and downloads</summary>
       <p class="small muted set-intro">Where the models are cached and how many stay in memory.</p>
       ${grid(sf(s, "models", ["max_warm_models", "cache_dir", "allow_downloads"]))}</details>
     ${card("delivery", "Delivery instructions per model", html`How the Director's emotion and style directions reach each Qwen3-TTS model.
-        Base (voice cloning) takes <strong>no instruction input</strong>: it is conditioned only by the reference clip, so emotion is applied through reference clips instead.
+        Base (voice cloning) takes <strong>no instruction input</strong>: it is conditioned only by the reference clip, so emotion reaches a clone through its emotion
+        reference clips, or (directable, experimental) through its own speaker vector in the CustomVoice model, which does follow instructions.
         The 0.6B CustomVoice model ignores instructions as well.`,
-      grid(nfs(n, ["delivery.custom_voice", "delivery.voice_design", "delivery.max_instruct_chars", "delivery.clone", "delivery.bank_min_intensity", "delivery.pace_from_direction", "delivery.pauses_from_direction", "delivery.translator"])))}`;
+      grid(nfs(n, ["delivery.custom_voice", "delivery.voice_design", "delivery.max_instruct_chars", "delivery.clone", "delivery.bank_min_intensity", "delivery.bank_min_similarity", "delivery.pace_from_direction", "delivery.pauses_from_direction", "delivery.translator"])))}`;
 }
 
 function narrativePanel(s) {

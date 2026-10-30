@@ -269,20 +269,28 @@ def test_every_emotion_maps_to_a_bucket_or_the_base_reference():
     for e in V.EMOTIONS:
         assert RB.bucket_for(e) in (None, *RB.BUCKETS), e
     assert RB.bucket_for("neutral") is None and RB.bucket_for("calm") is None
-    assert RB.bucket_for("fear") == "tense" == RB.bucket_for("anger") == RB.bucket_for("anxiety")
-    assert RB.bucket_for("sadness") == "sorrow" == RB.bucket_for("grief")
-    assert RB.bucket_for("tenderness") == "tender" and RB.bucket_for("joy") == "tender"
-    assert RB.bucket_for("excitement") == "bright"
+    # one clip per emotion the Review page and the Director can ask for (everything but neutral / calm)
+    assert set(RB.BUCKETS) == set(V.EMOTIONS) - {"neutral", "calm"} and len(RB.BUCKETS) == 13
+    assert all(RB.bucket_for(e) == e for e in RB.BUCKETS) and RB.bucket_for("ANGER") == "anger"
     assert RB.bucket_for("unheard-of") is None and RB.bucket_for(None) is None
-    assert set(RB.BUCKETS) == {"tense", "tender", "sorrow", "bright"}
+    for b, nb in RB.NEIGHBOURS.items():                                                      # neighbours are real emotions
+        assert b in RB.BUCKETS and set(nb) <= set(RB.BUCKETS) and b not in nb
+    from studio import reference as R
+    assert all(R.script_by_id(RB.BUCKET_INFO[b]["script_id"]) for b in RB.BUCKETS)        # every emotion has a script
+    assert set(RB.LEGACY_BUCKETS.values()) <= set(RB.BUCKETS)
 
 
 def test_choose_rules():
     on = NarrativeSettings(delivery={"clone": "reference_bank", "bank_min_intensity": 3})
     off = NarrativeSettings()
-    refs = {"tense": {"id": 7, "bucket": "tense"}}
+    refs = {"fear": {"id": 7, "bucket": "fear"}}
     fear4 = {"emotion": "fear", "intensity": 4}
     assert RB.choose(on, fear4, "clone", refs)["id"] == 7
+    assert "'fear' → 'fear'" in RB.select(on, fear4, "clone", refs)[1]
+    # an emotion without its own clip borrows a related one, and says so
+    got, why = RB.select(on, {"emotion": "anxiety", "intensity": 4}, "clone", refs)
+    assert got["id"] == 7 and "related 'fear'" in why
+    assert RB.choose(on, {"emotion": "anger", "intensity": 4}, "clone", refs) is None             # fear is not related to anger
     assert RB.choose(on, {"emotion": "fear", "intensity": 3}, "clone", refs)["id"] == 7        # threshold is inclusive
     assert RB.choose(on, {"emotion": "fear", "intensity": 2}, "clone", refs) is None             # below the threshold
     assert RB.choose(off, fear4, "clone", refs) is None                                          # setting off
@@ -308,13 +316,13 @@ def test_plan_swaps_the_reference_only_when_a_clip_is_chosen(client, ctx):
     assert no_clip.gen_key == base.gen_key and no_clip.ref_id is None                          # bank on, nothing adopted: identical key
     assert no_clip.delivery_applied is False and "no adopted reference clip" in no_clip.delivery_reason
     rid = lab_recording(client, ctx, w)
-    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True, "statement": "Recorded by the speaker for this project."})
+    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid, "owner_attest": True, "statement": "Recorded by the speaker for this project."})
     assert r.status_code == 200, r.text
     with ctx.db.session() as conn:
         ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (clone["id"],))
     p = plan_of(ctx, seg["id"])
-    assert p.ref_id == ref["id"] and p.ref_bucket == "tense" and p.voice.ref_audio_path == ref["ref_audio_path"] and p.voice.ref_text == ref["ref_text"]
-    assert p.delivery_applied is True and "'fear' → 'tense'" in p.delivery_reason
+    assert p.ref_id == ref["id"] and p.ref_bucket == "fear" and p.voice.ref_audio_path == ref["ref_audio_path"] and p.voice.ref_text == ref["ref_text"]
+    assert p.delivery_applied is True and "'fear' → 'fear'" in p.delivery_reason
     assert p.gen_key != base.gen_key
     delivery(client, clone="off")
     assert plan_of(ctx, seg["id"]).gen_key == base.gen_key and plan_of(ctx, seg["id"]).voice.ref_audio_path != ref["ref_audio_path"]
@@ -326,7 +334,7 @@ def test_plan_swaps_the_reference_only_when_a_clip_is_chosen(client, ctx):
     assert insp["ref_id"] is None and "pace" in insp
     direct(client, seg["id"], emotion="fear", intensity=4)
     insp = client.get(f"/api/segments/{seg['id']}/inspect").json()["delivery"]
-    assert insp["ref_id"] == ref["id"] and insp["ref_bucket"] == "tense" and insp["applied"] is True
+    assert insp["ref_id"] == ref["id"] and insp["ref_bucket"] == "fear" and insp["applied"] is True
 
 
 @needs_ffmpeg
@@ -334,7 +342,7 @@ def test_clone_narrator_end_to_end_uses_the_bank_clip(client, ctx):
     bid, clone, toms, eng, w = clone_book(client, ctx, delivery={"clone": "reference_bank"})
     seg = toms[0]
     rid = lab_recording(client, ctx, w)
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True,
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid, "owner_attest": True,
                                                                      "statement": "Recorded by the speaker for this project."}).status_code == 200
     direct(client, seg["id"], emotion="fear", intensity=4)
     eng.log.clear()
@@ -360,7 +368,7 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     clone = make_clone(client)
     cid = clone["id"]
     good = {"owner_attest": True, "statement": "Recorded by the speaker for this project."}
-    adopt = lambda rid, bucket="tense", **kw: client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": bucket, "recording_id": rid, **kw})  # noqa: E731
+    adopt = lambda rid, bucket="fear", **kw: client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": bucket, "recording_id": rid, **kw})  # noqa: E731
     # never checked
     r = client.post("/api/recordings", data={"script_id": "range-tense", "ref_text": TEXT}, files={"file": ("rec.wav", make_speechlike_wav(10.0), "audio/wav")})
     unchecked = r.json()["id"]
@@ -378,14 +386,14 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     first = adopt(ok, **good)
     assert first.status_code == 200, first.text
     b = {x["bucket"]: x for x in first.json()["buckets"]}
-    assert b["tense"]["ref"]["source"] == "recording" and b["tense"]["ref"]["duration_s"] > 3
-    assert {"f0_delta_hz", "centroid_delta_hz", "gain_db", "wer"} <= set(b["tense"]["ref"]["metrics"]) and b["sorrow"]["ref"] is None
+    assert len(b) == 13 and b["fear"]["ref"]["source"] == "recording" and b["fear"]["ref"]["duration_s"] > 3
+    assert {"f0_delta_hz", "centroid_delta_hz", "gain_db", "wer"} <= set(b["fear"]["ref"]["metrics"]) and b["sadness"]["ref"] is None
     with ctx.db.session() as conn:
         ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (cid,))
         consent = json.loads(ref["consent_json"])
         base_path = row(conn, "SELECT ref_audio_path FROM voice_versions WHERE voice_id=?", (cid,))["ref_audio_path"]
     assert consent["owner_attest"] is True and "project" in consent["statement"]
-    assert ref["ref_audio_path"].replace("\\", "/").endswith("/refs/tense.wav") and base_path != ref["ref_audio_path"]
+    assert ref["ref_audio_path"].replace("\\", "/").endswith("/refs/fear.wav") and base_path != ref["ref_audio_path"]
     assert client.get(f"/media/voice/{cid}/ref/{ref['id']}").status_code == 200
     assert client.get(f"/media/voice/{cid}/ref/9999").status_code == 404
     # replacing a bucket keeps exactly one row and gives the new clip its own id
@@ -398,9 +406,10 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     # presets have no bank
     preset = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
     assert client.get(f"/api/voices/{preset['id']}/refs").status_code == 422
-    assert client.post(f"/api/voices/{preset['id']}/refs/candidates", json={"bucket": "tense"}).status_code == 422
-    # candidates need a designed source voice: a human clone has none
-    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "tense"}).status_code == 422
+    assert client.post(f"/api/voices/{preset['id']}/refs/candidates", json={"bucket": "fear"}).status_code == 422
+    # design takes need a designed source voice: a human clone has none (it can make takes itself: see the clone-take test)
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "fear", "source": "design"}).status_code == 422
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "fear", "source": "bogus"}).status_code == 422
     # removal deletes the row and the files
     rm = client.delete(f"/api/voices/{cid}/refs/{refs[0]['id']}")
     assert rm.status_code == 200 and all(x["ref"] is None for x in rm.json()["buckets"])
@@ -423,35 +432,42 @@ def test_synthetic_clone_candidates_become_labelled_lab_recordings_and_can_be_ad
     assert info["synthetic"] is True and info["source_voice"]["id"] == d["id"]
     # a designed source may even be archived by now
     client.post(f"/api/voices/{d['id']}/archive")
-    out = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "tense", "n": 3})
+    out = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "fear", "source": "design"})
     assert out.status_code == 200, out.text
-    jobs = out.json()["jobs"]
-    assert len(jobs) == 3 and len({j["payload"]["seed"] for j in jobs}) == 3
-    assert all(j["payload"]["to_lab"] and j["payload"]["voice_id"] == d["id"] and "tense, urgent, strained" in j["payload"]["instruct"] for j in jobs)
+    jobs = [out.json()["job"]]                                                                  # one take at a time
+    j0 = jobs[0]["payload"]
+    assert j0["to_lab"] and j0["voice_id"] == d["id"] and "fearfully" in j0["instruct"] and j0["source"] == "design"
+    assert j0["seed"] == pj["payload"]["seed"]                                                  # the seed that made the clone's base clip
+    again = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "fear", "source": "design"})
+    assert again.status_code == 409                                                             # one take per emotion in flight
+    pending = {x["bucket"]: x for x in client.get(f"/api/voices/{clone['id']}/refs").json()["buckets"]}["fear"]["pending"]
+    assert pending and pending["job_id"] == jobs[0]["id"] and pending["source"] == "design"
     w.run_until_idle()
     results = [client.get(f"/api/jobs/{j['id']}").json() for j in jobs]
     assert all(r["status"] == "completed" and r["result"]["recording_id"] for r in results), [r.get("error") for r in results]
     rid = results[0]["result"]["recording_id"]
     meta = client.get("/api/recordings").json()["recordings"]
     rec = next(m for m in meta if m["id"] == rid)
-    assert rec["source"] == "synthetic" and rec["source_voice_id"] == d["id"] and rec["bucket"] == "tense"
+    assert rec["source"] == "synthetic" and rec["source_voice_id"] == d["id"] and rec["bucket"] == "fear" and rec["target_voice_id"] == clone["id"]
     assert rec["engine"] == "mock" and "not speech" in rec["note"] and "[mock]" in rec["label"]       # honestly labelled
     assert rec["asr_check"]["matches"] is True and "f0_delta_hz" in rec["drift"] and "centroid_delta_hz" in rec["drift"]
     assert results[0]["result"]["note"].startswith("Mock engine")
     # adopting needs no human consent for a synthetic clone, but only for candidates this clone's own source voice made
-    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid})
+    cands = {x["bucket"]: x for x in client.get(f"/api/voices/{clone['id']}/refs").json()["buckets"]}["fear"]["candidates"]
+    assert [c["id"] for c in cands] == [rid] and cands[0]["source"] == "design" and cands[0]["mock"] is True
+    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid})
     assert r.status_code == 200, r.text
-    ref = next(x for x in r.json()["buckets"] if x["bucket"] == "tense")["ref"]
+    ref = next(x for x in r.json()["buckets"] if x["bucket"] == "fear")["ref"]
     assert ref["source"] == "synthetic" and ref["mock"] is True
     human = lab_recording(client, ctx, w)
-    refused = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tender", "recording_id": human, "owner_attest": True, "statement": "Recorded by the speaker."})
+    refused = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tenderness", "recording_id": human, "owner_attest": True, "statement": "Recorded by the speaker."})
     assert refused.status_code == 422 and "synthetic" in refused.json()["error"]
     # another designed voice's candidate is refused too
     d2 = client.post("/api/voices/design", json={"name": "Soft nurse", "description": "A soft younger female voice, gentle and warm."}).json()
-    other = SV.enqueue_preview(ctx, d2["id"], "x " * 20, "gentle", True, 5, {"to_lab": True, "bucket": "tender", "script_id": "range-warm", "target_voice_id": clone["id"]})
+    other = SV.enqueue_preview(ctx, d2["id"], "x " * 20, "gentle", True, 5, {"to_lab": True, "bucket": "tenderness", "script_id": "emotion-tenderness", "target_voice_id": clone["id"]})
     w.run_until_idle()
     orid = client.get(f"/api/jobs/{other['id']}").json()["result"]["recording_id"]
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tender", "recording_id": orid}).status_code == 422
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tenderness", "recording_id": orid}).status_code == 422
     # a clone promoted before v0.7.1 only names its source in rights_holder: still found
     with ctx.db.tx() as conn:
         vv = row(conn, "SELECT id, consent_json FROM voice_versions WHERE id=?", (clone["version"]["id"],))

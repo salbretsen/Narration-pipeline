@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import platform
@@ -340,8 +341,15 @@ class Worker:
             raise ValueError("voice not found for preview")
         self._set(state="previewing", job=job["id"], sid=None, message=f"Preview: {v['name']}")
         spec = VoiceSpec.from_rows(v, vv)
+        if p.get("ref_override"):  # an emotion take made from one of the clone's adopted clips ("intensify")
+            with self.ctx.db.session() as conn:
+                ref = row(conn, "SELECT * FROM voice_refs WHERE id=? AND voice_id=?", (p["ref_override"], v["id"]))
+            if not ref:
+                raise ValueError("the reference clip to intensify was removed")
+            spec = dataclasses.replace(spec, ref_audio_path=ref["ref_audio_path"], ref_text=ref["ref_text"])
         text = p["text"]
-        params = SynthParams(seed=int(p.get("seed", 1234)), temperature=p.get("temperature"), max_tokens=max_tokens_for(text), instruct=p.get("instruct"))
+        params = SynthParams(seed=int(p.get("seed", 1234)), temperature=p.get("temperature"), max_tokens=max_tokens_for(text), instruct=p.get("instruct"),
+                             directable_model=self.ctx.settings().models.custom_voice_model if p.get("directable") and v["kind"] == "clone" else None)
         res = self.tts.synthesize(spec, text, params)
         out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
         A.write_wav(out, res.audio, res.sample_rate)
@@ -356,6 +364,16 @@ class Worker:
             result["note"] = "Mock engine: synthetic test tones, not speech."
         if p.get("to_lab"):
             result.update(self._candidate_to_lab(job, p, v, out, res, text))
+        if p.get("tile"):  # the narrator's kept sample: one per voice version, outside the pruned previews folder
+            from . import services as SV
+
+            dst = SV.sample_path(self.ctx, v["uid"], vv["id"])
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            A.write_wav(dst, res.audio, res.sample_rate)
+            for old in dst.parent.glob("sample-v*.wav"):
+                if old != dst:
+                    old.unlink(missing_ok=True)
+            result["sample_path"] = str(dst)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
         self._cleanup_previews()
@@ -368,13 +386,15 @@ class Worker:
         from .narrative import voicecheck as VC
 
         mock = res.engine == "mock"
-        label = f"{p.get('bucket', 'emotion')} candidate {p.get('candidate', '')} from {voice['name']}".strip()[:70] + (" [mock]" if mock else "")
+        how = {"clone": "read by", "intensify": "intensified by", "directable": "directed take of", "design": "from"}.get(p.get("source") or "design", "from")
+        label = f"{p.get('bucket', 'emotion')} take {p.get('candidate', '')} {how} {voice['name']}".strip()[:70] + (" [mock]" if mock else "")
         meta = SV.create_recording(self.ctx, "candidate.wav", wav.read_bytes(), p.get("script_id") or "", text, label)
         rid = meta["id"]
         rdir = self.ctx.data_dir / "recordings" / rid
         # provenance next to the converted clip (the mock ASR reads its transcript from here; real Whisper ignores it)
         atomic_write_text(str(rdir / "reference-24k.wav.json"), dumps({"engine": res.engine, "model_id": res.model_id, "meta": res.meta}))
         extra = {"source": "synthetic", "source_voice_id": voice["id"], "source_voice_name": voice["name"], "bucket": p.get("bucket"),
+                 "target_voice_id": p.get("target_voice_id"), "candidate_source": p.get("source") or "design", "ref_override": p.get("ref_override"),
                  "engine": res.engine, "model_id": res.model_id, "seed": p.get("seed"), "emotion_instruct": p.get("instruct")}
         if mock:
             extra["note"] = "Mock engine: synthetic test tones, not speech."
@@ -383,9 +403,11 @@ class Worker:
             ev = evaluate(text, tr["text"], tr.get("words"), meta.get("duration_s"), 1, 1)
             errors = [i for i in ev["issues"] if i["severity"] == "error"]
             extra["asr_check"] = {"matches": ev["wer"] <= 0.08 and not errors, "wer": ev["wer"], "asr_text": tr["text"], "engine": tr.get("engine"), "checked_at": now()}
+        vv = None
         try:  # drift vs the clone this candidate is meant for
             with self.ctx.db.session() as conn:
-                vv = row(conn, "SELECT vv.ref_audio_path FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id WHERE v.id=?", (p.get("target_voice_id"),))
+                vv = row(conn, "SELECT vv.ref_audio_path, vv.model_id FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id WHERE v.id=?",
+                         (p.get("target_voice_id"),))
             if vv and vv["ref_audio_path"]:
                 base, bsr = A.read_wav(Path(vv["ref_audio_path"]))
                 cand, csr = A.read_wav(rdir / "reference-24k.wav")
@@ -396,8 +418,17 @@ class Worker:
                                   "centroid_delta_hz": round(cen - cenb, 1)}
         except Exception as exc:  # advisory only
             extra["drift"] = {"error": str(exc)[:200]}
+        try:  # does it still sound like the narrator? (the Base model's speaker encoder; the mock engine only imitates it)
+            sim_fn = getattr(self.tts, "speaker_similarity", None)
+            if sim_fn and vv and vv["ref_audio_path"]:
+                sim = sim_fn(rdir / "reference-24k.wav", Path(vv["ref_audio_path"]), vv["model_id"])
+                extra["similarity"] = round(sim, 4) if sim is not None else None
+        except Exception as exc:  # advisory: adoption then shows "not measured"
+            log.warning("speaker similarity failed for %s: %s", rid, exc)
+            extra["similarity_error"] = str(exc)[:200]
         SV.update_recording_meta(self.ctx, rid, **extra)
-        return {"recording_id": rid, "to_lab": True, "bucket": p.get("bucket"), "asr_check": extra.get("asr_check"), "drift": extra.get("drift")}
+        return {"recording_id": rid, "to_lab": True, "bucket": p.get("bucket"), "asr_check": extra.get("asr_check"), "drift": extra.get("drift"),
+                "similarity": extra.get("similarity")}
 
     def _run_segment_preview(self, job: dict, p: dict) -> None:
         """Preview one segment exactly as production would render it: its character voice, its delivery
@@ -411,7 +442,7 @@ class Worker:
             raise ValueError("segment not found for preview")
         self._set(state="previewing", job=job["id"], sid=seg["sid"], message=f"Preview of {seg['sid']}")
         text = plan.text
-        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct)
+        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct, directable_model=plan.directable_model)
         res = self.tts.synthesize(plan.voice, text, params, sid=None)
         audio = A.to_mono_float(res.audio)
         if abs(plan.pace - 1.0) > 1e-6:  # the same pitch-preserving stretch production applies, so A/B previews match real takes

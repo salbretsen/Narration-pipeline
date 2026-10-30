@@ -3,6 +3,58 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.9.0
+Feature release: emotion clips that keep the narrator's voice, directable cloned narrators, and a new Narrator Studio. **What ran where:** the clone-instruction
+experiment ran on the Mac with the real Qwen3-TTS 1.7B models and Whisper (`docs/clone_instruct_experiment.json`). This version was then installed on the Mac
+(installer re-run; schema 6 → 7) and `tools/e2e/emotion_takes_real.py` drove the running studio's API with the real engine for the narrator "Dalinar (stable)":
+the narrator sample (generated in 9 s, served as audio/wav, a second press just plays) and one take per source, each refused a second concurrent take (409),
+all Whisper-clean (WER 0%), speaker similarity: clone takes anger 0.993 and joy 0.995, directable sadness 0.989 and fear 0.977, design tenderness 0.968
+(different people measured 0.934-0.965); all takes were discarded afterwards. Everything else ran only with the mock engine: 547 pytest tests and headless Edge
+(`tools/e2e/polish_voices.py`, `delivery_ui.py`). **Not run on the Mac:** the new pages in a browser (Safari or otherwise), adopting a take, directable
+narration of a book; nobody has listened to a directable take blind.
+
+**Emotion clips that sound like the narrator**
+- **Why the old candidates sounded like someone else:** they were made by the designed source voice (VoiceDesign), which builds a new voice from its description
+  on every call, with a different seed and instruction from the clone's base clip. The clone then copied that other voice.
+- **Takes are now made by the clone itself** by default: the narrator reads an emotionally written script (13 new `emotion-*` scripts) with its own reference, so
+  its identity is kept by construction. The Mac run measured speaker similarity 0.989-0.995 for these takes (different people: 0.934-0.965) and clear delivery
+  changes (median pitch anger 130 Hz, joy 137, tenderness 149 against 98 neutral). This works for clones of human voices too (consent type `self`).
+- **Intensify**: a take made from an emotion's adopted clip instead of the base reference.
+- **Directable takes and directable narration (experimental, opt-in)**: the clone's own speaker vector (the Base model's speaker encoder) is written into a spare
+  speaker row of the CustomVoice model in memory, which then follows a written instruction in the narrator's voice. Measured similarity 0.972-0.993. Used for
+  `directable` takes, and for narration when *Settings → Delivery → Cloned voices* is `directable` (segments directed at or above the intensity threshold; other
+  segments narrate as before). *Settings → Models → Directable cloned narrators* switches the route off.
+- **Speaker similarity** on every take (cosine of speaker-encoder vectors against the base reference), shown as "sounds like the narrator / close / likely a
+  different voice"; *Lowest take similarity* (`delivery.bank_min_similarity`, default unset) refuses adoption below a limit. Mock-engine values are labelled and
+  never enforced.
+- **Design takes** (the old route) now start from the seed and instruction that made the clone's base clip; promotion records them.
+
+**One clip per emotion; one take at a time; reject and discard**
+- The bank has one clip per emotion offered in Review & QA and by the Director (13: joy, excitement, tenderness, sadness, grief, fear, anxiety, anger, surprise,
+  disgust, determination, humor, resignation; neutral and calm use the base clip). Anger and fear are separate. A missing clip falls back to a related emotion's
+  clip (e.g. anxiety → fear, grief → sadness → resignation), then to the base clip; the reason says which. Schema 7 renames existing clips: tense → fear, tender →
+  tenderness, sorrow → sadness, bright → joy.
+- *Generate a take* queues exactly one take (`409` while one is in flight for that emotion), was three.
+- Takes are listed under their emotion (they survive leaving the page) with **Discard** and **Discard all takes** (also withdraws a queued take). Replacing a clip
+  also deletes the old clip's files (an original with another extension used to be left behind).
+
+**Narrator Studio and the narrator page**
+- Narrator Studio shows **tiles**: name, description and a play button. The first press generates a short sample on the GPU and keeps it (one per voice
+  version, outside the pruned previews folder); later presses just play it. *Add a narrator* is a collapsible section below the tiles.
+- The name or description opens the narrator's own page (`#/narrator/ID`) with tabs: **Overview** (details and version history), **Emotion references**
+  (clones), **Preview**, **Record & upload** (the lab, now with the emotion scripts) and **Tools** (Edit, Duplicate & retune, Retune from source, Archive).
+- New endpoints: `GET/POST /api/voices/{id}/sample`, `/media/voice/{id}/sample`, `DELETE /api/voices/{id}/refs/candidates/{rid}` and `?bucket=`;
+  `POST .../refs/candidates` takes `source` instead of `n`. Doc 3, 4, 9 and the roadmap (C17) are updated.
+
+**Fixes**
+- **An in-app update could roll back for no reason ("did not become healthy within 120 s").** Found on the Mac updating 0.8.1 → 0.8.2: `launchctl bootout`
+  returned while the old service was still shutting down, so the following start saw it as loaded, only kickstarted a job that was going away, and nothing ran
+  until the rollback. Stopping now waits until launchd has really unloaded the service, and starting loads it again if it vanished before the kickstart.
+  The fix takes effect for updates made *from* this version on; an update from 0.8.1 or 0.8.2 may still roll back once (harmlessly) and succeed on a retry.
+
+**Not verified:** a blind listen of directable takes and of directable narration across a chapter; similarity bands on more than one narrator; Safari's
+autoplay rule for the tile button (the tile falls back to "Ready: press to play").
+
 ## v0.8.2
 Patch: release notes reach GitHub and the Update Center. Tested with pytest only (no browser run and nothing run on the Mac); the release workflow
 change is verified by the release of this version itself.

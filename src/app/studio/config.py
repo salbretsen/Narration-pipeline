@@ -149,6 +149,10 @@ class ModelSettings(_M):
     retry_temperatures: list[float] = Field(default_factory=lambda: [0.7, 0.55])
     max_warm_models: int = Field(2, ge=1, le=4)
     allow_downloads: bool = True
+    # A cloned narrator can be rendered by the CustomVoice model with its own speaker vector (taken from its reference clip by the
+    # Base model's speaker encoder), which lets written emotion instructions reach a clone. Used for emotion takes and the
+    # "directable" clone delivery; measured on the Mac in docs/clone_instruct_experiment.json.
+    directable_clones: bool = True
     cache_dir: str = Field("", description="Hugging Face model cache; empty -> the installation default. Kept outside every release.")
 
     @field_validator("cache_dir")
@@ -285,12 +289,17 @@ class DeliverySettings(_M):
     voice_design: Literal["append", "off"] = "append"
     max_instruct_chars: int = Field(160, ge=40, le=400)
     # Cloned (Base) voices: pick an emotion reference clip from the voice's reference bank. Off keeps today's single reference.
-    clone: Literal["reference_bank", "off"] = "off"
+    # "directable": a strongly directed segment is read by the clone's own speaker vector in the CustomVoice model, which follows the
+    # written instruction (an emotion reaches the clone without a clip); other segments narrate as usual.
+    clone: Literal["reference_bank", "directable", "off"] = "off"
     # Per-segment pace from the Director. auto = only when no instruct reaches the model. Default off so existing takes never change silently.
     pace_from_direction: Literal["auto", "always", "off"] = "off"
     pauses_from_direction: bool = False
     translator: Literal["template", "llm"] = "template"
     bank_min_intensity: int = Field(3, ge=1, le=5)
+    # Lowest speaker similarity (cosine of Base speaker-encoder vectors, vs the clone's base reference) an emotion take may have to be
+    # adopted. None = shown but not enforced.
+    bank_min_similarity: Optional[float] = Field(None, ge=0.5, le=1.0)
 
 
 class NarrativeSettings(_M):

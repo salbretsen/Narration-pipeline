@@ -337,13 +337,14 @@ export function createLab({ onVoiceCreated }) {
   function recordPanel() {
     const s = script(), own = L.scriptId === "own";
     const text = own ? "" : s ? s.text : "";
-    const core = L.scripts.filter((x) => x.tier === "core"), range = L.scripts.filter((x) => x.tier === "range");
+    const core = L.scripts.filter((x) => x.tier === "core"), range = L.scripts.filter((x) => x.tier === "range"), emo = L.scripts.filter((x) => x.tier === "emotion");
     const rs = L.recState;
     return html`<div class="lab-panel"><h3>Record a take</h3>
       ${micOn() ? "" : html`<div class="callout warn small">Turn on the microphone in step 1 first.</div>`}
       <label>Script <select id="lab-script" ${rs === "idle" ? "" : html`disabled`}>
         <optgroup label="Recommended - neutral narration (record these first)">${core.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
         <optgroup label="Optional emotional range (separate variants only - read the note in step 4)">${range.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
+        <optgroup label="Emotion reference clips (one per emotion, adopted on the narrator's page)">${emo.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
         <optgroup label="Your own text"><option value="own" ${own ? html`selected` : ""}>Read a page from my own book (best match)</option></optgroup></select></label>
       ${s ? html`<p class="small muted"><strong>${s.category}.</strong> ${s.purpose}</p>` : html`<p class="small muted">Read 40-60 words from the book you will narrate, in the voice you want. Type exactly what you read below after recording.</p>`}
       <div class="prompter ${rs === "recording" ? "live" : ""}" aria-live="off">${rs === "countdown" ? html`<div class="count">${L.countdown}</div>` : ""}

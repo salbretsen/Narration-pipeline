@@ -251,8 +251,8 @@ class FromRecordingReq(_Req):
 
 class RefCandidatesReq(_Req):
     bucket: str = Field(max_length=20)
+    source: str = Field("clone", max_length=20)   # clone | intensify | directable | design (services.generate_ref_candidates)
     source_voice_id: Optional[int] = None
-    n: int = Field(3, ge=1, le=5)
 
 
 class RefAdoptReq(_Req):
@@ -750,7 +750,16 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     @app.post("/api/voices/{voice_id}/refs/candidates")
     def api_voice_ref_candidates(voice_id: int, req: RefCandidatesReq):
-        return S.generate_ref_candidates(ctx, voice_id, req.bucket, req.source_voice_id, req.n)
+        return S.generate_ref_candidates(ctx, voice_id, req.bucket, req.source, req.source_voice_id)
+
+    # before /refs/{ref_id}: "candidates" is not a clip id
+    @app.delete("/api/voices/{voice_id}/refs/candidates/{rid}")
+    def api_voice_ref_candidate_discard(voice_id: int, rid: str):
+        return S.discard_candidate(ctx, voice_id, rid)
+
+    @app.delete("/api/voices/{voice_id}/refs/candidates")
+    def api_voice_ref_candidates_discard(voice_id: int, bucket: str):
+        return S.discard_candidates(ctx, voice_id, bucket)
 
     @app.post("/api/voices/{voice_id}/refs/adopt")
     def api_voice_ref_adopt(voice_id: int, req: RefAdoptReq):
@@ -759,6 +768,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     @app.delete("/api/voices/{voice_id}/refs/{ref_id}")
     def api_voice_ref_delete(voice_id: int, ref_id: int):
         return S.remove_ref(ctx, voice_id, ref_id)
+
+    @app.get("/api/voices/{voice_id}/sample")
+    def api_voice_sample(voice_id: int):
+        return S.voice_sample(ctx, voice_id)
+
+    @app.post("/api/voices/{voice_id}/sample")
+    def api_voice_sample_request(voice_id: int):
+        return S.request_sample(ctx, voice_id)
 
     @app.post("/api/voices/{voice_id}/preview")
     def api_voice_preview(voice_id: int, req: PreviewReq):
@@ -937,6 +954,15 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         if not vv or not vv["ref_audio_path"]:
             raise S.ServiceError("No reference audio", 404)
         p = Path(vv["ref_audio_path"])
+        return _serve(p, [p.parent], request, None)
+
+    @app.api_route("/media/voice/{voice_id}/sample", methods=["GET", "HEAD"])
+    def media_voice_sample(voice_id: int, request: Request):
+        with ctx.db.session() as conn:
+            v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not v:
+            raise S.ServiceError("Voice not found", 404)
+        p = S.sample_path(ctx, v["uid"], v["current_version_id"])
         return _serve(p, [p.parent], request, None)
 
     @app.api_route("/media/voice/{voice_id}/ref/{ref_id}", methods=["GET", "HEAD"])

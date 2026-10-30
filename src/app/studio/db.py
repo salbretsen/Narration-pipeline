@@ -523,6 +523,15 @@ CREATE INDEX IF NOT EXISTS ix_jobs_book ON jobs(book_id);
 ALTER TABLE jobs ADD COLUMN active_seconds REAL NOT NULL DEFAULT 0;
 """
 
+# v0.9.0: the emotion reference bank has one clip per emotion (narrative/refbank.py) instead of four family buckets; each old clip
+# moves to the emotion its script was written for (refbank.LEGACY_BUCKETS). File paths are absolute, so no file moves.
+SCHEMA_V7 = """
+UPDATE voice_refs SET bucket = 'fear' WHERE bucket = 'tense';
+UPDATE voice_refs SET bucket = 'tenderness' WHERE bucket = 'tender';
+UPDATE voice_refs SET bucket = 'sadness' WHERE bucket = 'sorrow';
+UPDATE voice_refs SET bucket = 'joy' WHERE bucket = 'bright';
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
@@ -531,6 +540,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (4, SCHEMA_V4),
     (5, SCHEMA_V5),
     (6, SCHEMA_V6),
+    (7, SCHEMA_V7),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

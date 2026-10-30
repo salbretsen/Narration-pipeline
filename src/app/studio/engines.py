@@ -63,6 +63,8 @@ class SynthParams:
     repetition_penalty: float | None = None
     max_tokens: int | None = None
     instruct: str | None = None  # per-book delivery instruction
+    # A clone rendered by this CustomVoice model with its own speaker vector, so ``instruct`` reaches it ("directable" clone)
+    directable_model: str | None = None
 
 
 @dataclass
@@ -100,6 +102,21 @@ def hf_revision(model_id: str) -> str | None:
     return None
 
 
+def cosine(a, b) -> float | None:
+    if a is None or b is None:
+        return None
+    a, b = np.asarray(a, dtype=np.float64).reshape(-1), np.asarray(b, dtype=np.float64).reshape(-1)
+    if a.size != b.size or not a.size:
+        return None
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+
+# The spare CustomVoice speaker row a directable clone's speaker vector is written into (in memory only). Qwen's own single-speaker
+# fine-tuning recipe uses the same row; the 1.7B CustomVoice presets occupy 2861-3066 but not 3000 (checked before every use).
+DIRECTABLE_ROW = 3000
+DIRECTABLE_SPEAKER = "studio_narrator"
+
+
 def max_tokens_for(text: str, wpm: float = 155.0) -> int:
     # Qwen3-TTS-12Hz emits ~12.5 codec frames per second; cap generation at 2.5x the
     # expected duration to stop runaway babble without truncating slow delivery.
@@ -119,6 +136,7 @@ class MlxQwenEngine:
         self.allow_downloads = allow_downloads
         self._models: "OrderedDict[str, object]" = OrderedDict()
         self._lock = threading.Lock()
+        self._vectors: "OrderedDict[tuple, np.ndarray]" = OrderedDict()  # (wav path, size, mtime, model) -> speaker vector
 
     def versions(self) -> dict:
         return {
@@ -177,6 +195,52 @@ class MlxQwenEngine:
             self._models.clear()
             gc.collect()
 
+    def speaker_embedding(self, wav_path: str | Path, model_id: str) -> np.ndarray | None:
+        """The speaker vector the Base model's speaker encoder computes for a 24 kHz clip (what cloning conditions on). Cached per file."""
+        p = Path(wav_path)
+        st = p.stat()
+        key = (str(p), st.st_size, st.st_mtime_ns, model_id)
+        if key in self._vectors:
+            self._vectors.move_to_end(key)
+            return self._vectors[key]
+        mx = self._mx()
+        model = self._model(model_id)
+        if getattr(model, "speaker_encoder", None) is None or not hasattr(model, "extract_speaker_embedding"):
+            return None
+        from mlx_audio.utils import load_audio  # type: ignore
+
+        audio = load_audio(str(p), sample_rate=24000)
+        vec = np.array(model.extract_speaker_embedding(audio, sr=24000).astype(mx.float32), dtype=np.float32).reshape(-1)
+        self._vectors[key] = vec
+        while len(self._vectors) > 64:
+            self._vectors.popitem(last=False)
+        return vec
+
+    def speaker_similarity(self, a: str | Path, b: str | Path, model_id: str) -> float | None:
+        return cosine(self.speaker_embedding(a, model_id), self.speaker_embedding(b, model_id))
+
+    def _install_speaker(self, cv, vec: np.ndarray) -> None:
+        """Write a clone's speaker vector into the CustomVoice model's spare speaker row (in memory; the files are untouched)."""
+        mx = self._mx()
+        tc = cv.config.talker_config
+        spk = tc.spk_id if tc.spk_id is not None else {}
+        if any(v == DIRECTABLE_ROW and k != DIRECTABLE_SPEAKER for k, v in spk.items()):
+            raise EngineUnavailable(f"This CustomVoice model already uses speaker row {DIRECTABLE_ROW}; directable clones are not available with it.")
+        emb = cv.talker.get_input_embeddings()
+        w = emb.weight
+        if w.shape[-1] != vec.size or w.shape[0] <= DIRECTABLE_ROW:
+            raise EngineUnavailable(f"The speaker vector ({vec.size}) does not fit this CustomVoice model ({tuple(w.shape)}); use matching 1.7B Base and CustomVoice models.")
+        key = hashlib.sha1(vec.tobytes()).hexdigest()
+        if getattr(cv, "_studio_speaker_key", None) == key:
+            return
+        w[DIRECTABLE_ROW] = mx.array(vec).astype(w.dtype)
+        emb.weight = w
+        spk[DIRECTABLE_SPEAKER] = DIRECTABLE_ROW
+        tc.spk_id = spk
+        if DIRECTABLE_SPEAKER not in cv.supported_speakers:
+            cv.supported_speakers.append(DIRECTABLE_SPEAKER)
+        cv._studio_speaker_key = key
+
     @staticmethod
     def _filter_kwargs(fn, kwargs: dict) -> dict:
         try:
@@ -188,7 +252,17 @@ class MlxQwenEngine:
 
     def synthesize(self, voice: VoiceSpec, text: str, params: SynthParams, sid: str | None = None) -> SynthResult:
         mx = self._mx()
-        model = self._model(voice.model_id)
+        directable = voice.kind == "clone" and bool(params.directable_model)
+        if directable:
+            if not voice.ref_audio_path:
+                raise ValueError("cloned voice requires reference audio")
+            vec = self.speaker_embedding(voice.ref_audio_path, voice.model_id)  # Base model: computed before the CustomVoice model loads
+            if vec is None:
+                raise EngineUnavailable(f"{voice.model_id} has no speaker encoder; a directable clone needs the Base model.")
+            model = self._model(params.directable_model)
+            self._install_speaker(model, vec)
+        else:
+            model = self._model(voice.model_id)
         text = " ".join(text.split())  # no newlines: generate() splits on them
         mx.random.seed(int(params.seed) % (2**32))
         common = {
@@ -201,7 +275,10 @@ class MlxQwenEngine:
         instruct = " ".join(x for x in (voice.instruct, params.instruct) if x and x.strip()) or None
         t0 = time.time()
         try:
-            if voice.kind == "preset":
+            if directable:
+                fn = model.generate_custom_voice
+                gen = fn(text=text, speaker=DIRECTABLE_SPEAKER, language=voice.language, instruct=instruct, **self._filter_kwargs(fn, common))
+            elif voice.kind == "preset":
                 if not voice.speaker:
                     raise ValueError("preset voice has no speaker")
                 fn = model.generate_custom_voice
@@ -246,10 +323,11 @@ class MlxQwenEngine:
                 peak_gb = float(mx.metal.get_peak_memory()) / 1e9
             except Exception:
                 peak_gb = float(peak) if peak else None
+        used = params.directable_model if directable else voice.model_id
         return SynthResult(
-            audio=audio, sample_rate=sr, engine=self.name, model_id=voice.model_id, seconds=elapsed,
+            audio=audio, sample_rate=sr, engine=self.name, model_id=used, seconds=elapsed,
             rtf=(elapsed / dur) if dur else None, peak_mem_gb=peak_gb,
-            meta={"library_rtf": rtf, "model_revision": hf_revision(voice.model_id)},
+            meta={"library_rtf": rtf, "model_revision": hf_revision(used), **({"directable": True, "speaker_model": voice.model_id} if directable else {})},
         )
 
 
@@ -352,9 +430,28 @@ class MockEngine:
             audio = np.clip(audio * 12.0, -1.0, 1.0)
         elif fault == "quiet":
             audio = audio * 0.002
-        return SynthResult(audio=audio, sample_rate=sr, engine=self.name, model_id=f"mock:{voice.model_id}",
+        directable = voice.kind == "clone" and bool(params.directable_model)
+        return SynthResult(audio=audio, sample_rate=sr, engine=self.name, model_id=f"mock:{params.directable_model if directable else voice.model_id}",
                            seconds=0.0, rtf=None, peak_mem_gb=None,
-                           meta={"mock_transcript": " ".join(spoken), "mock_fault": fault, "label": "synthetic test tones - not speech"})
+                           meta={"mock_transcript": " ".join(spoken), "mock_fault": fault, "label": "synthetic test tones - not speech",
+                                 **({"directable": True} if directable else {})})
+
+    def speaker_embedding(self, wav_path: str | Path, model_id: str) -> np.ndarray | None:
+        """A stand-in speaker vector (the clip's average log spectrum). It is NOT a speaker model: similarities from the mock engine
+        are labelled and never gate anything."""
+        from . import audio as A
+
+        audio, sr = A.read_wav(Path(wav_path))
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)[: sr * 20]
+        n = 1024
+        if audio.size < n:
+            return None
+        frames = audio[: (audio.size // n) * n].reshape(-1, n)
+        spec = np.log1p(np.abs(np.fft.rfft(frames * np.hanning(n), axis=1)).mean(axis=0))
+        return spec[:256].astype(np.float32)
+
+    def speaker_similarity(self, a: str | Path, b: str | Path, model_id: str) -> float | None:
+        return cosine(self.speaker_embedding(a, model_id), self.speaker_embedding(b, model_id))
 
 
 class MockASR:

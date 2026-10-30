@@ -91,17 +91,27 @@ class MacPlatformService(PlatformService):
         except FileNotFoundError:
             pass
 
+    def _bootstrap(self, label: str) -> None:
+        r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(self.plist_path(label))])
+        if r.returncode != 0:
+            raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
+
     def start(self, label: str) -> None:
         if not self._loaded(label):
-            r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(self.plist_path(label))])
-            if r.returncode != 0:
-                raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
-        self.run(["/bin/launchctl", "kickstart", f"{self._domain()}/{label}"])
+            self._bootstrap(label)
+        r = self.run(["/bin/launchctl", "kickstart", f"{self._domain()}/{label}"])
+        if r.returncode != 0 and not self._loaded(label):  # the job went away between the check and the kickstart: load it again
+            self._bootstrap(label)
 
-    def stop(self, label: str) -> None:
-        # bootout stops the process and keeps KeepAlive from restarting it until start()
+    def stop(self, label: str, timeout: float = 60.0, poll: float = 0.25) -> None:
+        # bootout stops the process and keeps KeepAlive from restarting it until start(). It can return while the job is still being torn
+        # down (the server finishing a segment); a start() in that window saw it "loaded", only kickstarted a job that was going away, and
+        # nothing ran until the update rolled back (the 0.8.1 -> 0.8.2 update on the Mac, 2026-10-29). So wait until it is really gone.
         if self._loaded(label):
             self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{label}"])
+            deadline = time.monotonic() + timeout
+            while self._loaded(label) and time.monotonic() < deadline:
+                time.sleep(poll)
 
     def restart(self, label: str) -> None:
         if self._loaded(label):

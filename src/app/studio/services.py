@@ -100,13 +100,69 @@ def _voice_dict(conn, v: dict, vv: dict | None = None, used: int | None = None, 
 
 
 def list_voices(ctx, include_archived: bool = False) -> list[dict]:
-    """A constant number of queries however many voices exist (versions, book counts and clone sources are batched)."""
+    """A constant number of queries however many voices exist (versions, book counts, clone sources and samples are batched)."""
     with ctx.db.session() as conn:
         vs = rows(conn, "SELECT * FROM voices " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY builtin DESC, name")
         vvs = {r["id"]: r for r in rows(conn, "SELECT * FROM voice_versions WHERE id IN (SELECT current_version_id FROM voices)")}
         used = {r["voice_id"]: r["n"] for r in rows(conn, "SELECT voice_id, COUNT(*) AS n FROM books WHERE archived=0 GROUP BY voice_id")}
         designs = rows(conn, "SELECT id, name, archived FROM voices WHERE kind='design' ORDER BY archived, id DESC")
-        return [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
+        pending = _pending_samples(conn)
+        out = [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
+    for d in out:
+        d["sample"] = _sample_state(ctx, d, pending)
+    return out
+
+
+# ------------------------------------------------------------ narrator samples (the play button on a narrator tile)
+
+SAMPLE_TEXT = ("Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, "
+               "trembling lines on the black water.")
+
+
+def sample_path(ctx, uid: str, version_id: int) -> Path:
+    """Kept beside the voice's references, outside the previews folder (whose old files are pruned), one per voice version."""
+    return ctx.category_dir("references", ctx.settings()) / uid / f"sample-v{int(version_id)}.wav"
+
+
+def _pending_samples(conn) -> dict[int, dict]:
+    out = {}
+    for j in rows(conn, "SELECT id, status, payload_json FROM jobs WHERE kind='preview' AND status IN ('queued','running') AND payload_json LIKE '%\"tile\":true%'"):
+        p = loads(j["payload_json"], {})
+        out[p.get("voice_version_id")] = {"job_id": j["id"], "status": j["status"]}
+    return out
+
+
+def _sample_state(ctx, v: dict, pending: dict) -> dict:
+    vid = (v.get("version") or {}).get("id")
+    if not vid:
+        return {"status": "none"}
+    try:
+        ready = sample_path(ctx, v["uid"], vid).exists()
+    except OSError:
+        ready = False
+    if ready:
+        return {"status": "ready", "url": f"/media/voice/{v['id']}/sample?v={vid}"}
+    if vid in pending:
+        return pending[vid]
+    return {"status": "none"}
+
+
+def voice_sample(ctx, voice_id: int) -> dict:
+    with ctx.db.session() as conn:
+        v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not v:
+            raise ServiceError("Voice not found", 404)
+        pending = _pending_samples(conn)
+    return _sample_state(ctx, {"id": v["id"], "uid": v["uid"], "version": {"id": v["current_version_id"]}}, pending)
+
+
+def request_sample(ctx, voice_id: int) -> dict:
+    """Generate the narrator's sample once (it is then kept until the voice changes): a queued preview job, deduplicated."""
+    st = voice_sample(ctx, voice_id)
+    if st["status"] != "none":
+        return st
+    enqueue_preview(ctx, voice_id, SAMPLE_TEXT, None, verify=False, seed=1234, allow_archived=True, extra={"tile": True})
+    return voice_sample(ctx, voice_id)
 
 
 def get_voice(ctx, voice_id: int) -> dict:
@@ -204,7 +260,7 @@ def create_clone_voice(ctx, name: str, filename: str, data: bytes, ref_text: str
         info["warnings"].append("The transcript looks long for this clip; it must match the audio exactly.")
     consent_rec = {"owner_attest": True, "rights_holder": rights_holder, "statement": str(consent.get("statement") or "")[:1000],
                    "attested_at": now(), "original_filename": safe_filename(filename), "sha256": sha256_bytes(data),
-                   **{k: consent[k] for k in ("source_voice_id", "source_voice_name") if consent.get(k) is not None}}
+                   **{k: consent[k] for k in ("source_voice_id", "source_voice_name", "source_seed", "source_instruct", "source_job_id") if consent.get(k) is not None}}
     with ctx.db.tx() as conn:
         name = _check_name(conn, name)
         vid = conn.execute("INSERT INTO voices(uid, name, kind, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
@@ -383,7 +439,9 @@ def promote_preview_to_clone(ctx, job_id: int, name: str) -> dict:
     out = create_clone_voice(ctx, name, path.name, data, p["text"],
                              {"owner_attest": True, "rights_holder": f"{SYNTHETIC_HOLDER} ('{v['name']}')",
                               "statement": f"Reference generated locally by Qwen3-TTS VoiceDesign (preview job {job_id}); no human voice involved.",
-                              "source_voice_id": v["id"], "source_voice_name": v["name"]})
+                              "source_voice_id": v["id"], "source_voice_name": v["name"],
+                              # what produced this exact clip, so emotion takes from the designed voice can start from the same point
+                              "source_seed": p.get("seed"), "source_instruct": p.get("instruct"), "source_job_id": job_id})
     return out
 
 
@@ -600,7 +658,26 @@ def _ref_dict(r: dict) -> dict:
             "source_ref": r["source_ref"], "metrics": m, "created_at": r["created_at"], "mock": m.get("engine") == "mock"}
 
 
+def _candidate_dict(m: dict) -> dict:
+    return {"id": m["id"], "label": m.get("label"), "created_at": m.get("created_at"), "duration_s": m.get("duration_s"),
+            "source": m.get("candidate_source") or "design", "asr_check": m.get("asr_check"), "drift": m.get("drift"),
+            "similarity": m.get("similarity"), "engine": m.get("engine"), "mock": m.get("engine") == "mock", "note": m.get("note")}
+
+
+def _pending_candidate_jobs(conn, voice_id: int) -> list[dict]:
+    """Queued or running emotion-candidate jobs for one clone."""
+    out = []
+    for j in rows(conn, "SELECT id, status, payload_json, created_at FROM jobs WHERE kind='preview' AND status IN ('queued','running') "
+                        "AND payload_json LIKE ? ORDER BY id", (f'%"target_voice_id":{int(voice_id)}%',)):
+        p = loads(j["payload_json"], {})
+        if p.get("to_lab") and p.get("target_voice_id") == voice_id:
+            out.append({"job_id": j["id"], "status": j["status"], "bucket": p.get("bucket"), "source": p.get("source") or "design", "created_at": j["created_at"]})
+    return out
+
+
 def list_refs(ctx, voice_id: int) -> dict:
+    """The clone's emotion clips, one row per emotion, with the takes waiting to be judged (lab drafts made for this clone) and any
+    take still being generated."""
     from .narrative import refbank as RB
 
     with ctx.db.session() as conn:
@@ -608,10 +685,17 @@ def list_refs(ctx, voice_id: int) -> dict:
         have = {r["bucket"]: r for r in rows(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (voice_id,))}
         src = clone_source_voice(conn, v)
         synthetic = _is_synthetic_consent(_clone_consent(conn, v))
+        pending = _pending_candidate_jobs(conn, voice_id)
+    drafts = [m for m in list_recordings(ctx) if m.get("target_voice_id") == voice_id]
+    s = ctx.settings()
     return {"voice_id": voice_id, "synthetic": synthetic,
             "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])} if src else None,
-            "buckets": [{"bucket": b, "label": info["label"], "emotion_text": info["emotion_text"], "script_id": info["script_id"],
-                         "ref": _ref_dict(have[b]) if b in have else None} for b, info in RB.BUCKET_INFO.items()]}
+            "sources": ["clone", "intensify"] + (["design"] if synthetic and src else []) + (["directable"] if directable_available(ctx) else []),
+            "min_similarity": s.narrative.delivery.bank_min_similarity,
+            "buckets": [{"bucket": b, "label": info["label"], "family": info["family"], "emotion_text": info["emotion_text"], "script_id": info["script_id"],
+                         "ref": _ref_dict(have[b]) if b in have else None,
+                         "pending": next((p for p in pending if p["bucket"] == b), None),
+                         "candidates": [_candidate_dict(m) for m in drafts if m.get("bucket") == b]} for b, info in RB.BUCKET_INFO.items()]}
 
 
 def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: bool = False, statement: str = "") -> dict:
@@ -638,7 +722,16 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
         src = clone_source_voice(conn, v)
     synthetic_clone = _is_synthetic_consent(consent_base)
     statement = " ".join((statement or "").split())
-    if synthetic_clone:
+    sim, min_sim = meta.get("similarity"), s.narrative.delivery.bank_min_similarity
+    if meta.get("source") == "synthetic" and min_sim is not None and sim is not None and float(sim) < min_sim and meta.get("engine") != "mock":
+        raise ServiceError(f"This take does not sound enough like {v['name']} (speaker similarity {float(sim):.3f}, at least {min_sim:.3f} required). "
+                           "Discard it and generate another.", 422, {"similarity": sim})
+    self_made = meta.get("source") == "synthetic" and meta.get("source_voice_id") == voice_id
+    if self_made:
+        # generated by this clone itself (its own reference, or one of its adopted clips): the voice is the clone's own
+        consent = {"type": "self", "source_voice_id": voice_id, "source_voice_name": v["name"], "candidate_source": meta.get("candidate_source"),
+                   "note": "Generated locally by this narrator itself; no other voice involved."}
+    elif synthetic_clone:
         if meta.get("source") != "synthetic":
             raise ServiceError("This clone was made from a designed (synthetic) voice, so its emotion clips must be generated by that voice "
                                "('Generate candidates'); a human recording cannot be adopted into it.", 422)
@@ -668,7 +761,8 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
     cen, cen_base = VC.spectral_centroid(adj, clip_sr), VC.spectral_centroid(base, base_sr)
     metrics = {"gain_db": round(gain_db, 2), "f0_hz": round(f0, 1) if f0 else None, "base_f0_hz": round(f0_base, 1) if f0_base else None,
                "f0_delta_hz": round(f0 - f0_base, 1) if f0 and f0_base else None, "centroid_hz": round(cen, 1), "base_centroid_hz": round(cen_base, 1),
-               "centroid_delta_hz": round(cen - cen_base, 1), "wer": chk.get("wer"), "engine": meta.get("engine"), "script": meta.get("script_title")}
+               "centroid_delta_hz": round(cen - cen_base, 1), "wer": chk.get("wer"), "engine": meta.get("engine"), "script": meta.get("script_title"),
+               "similarity": sim, "candidate_source": meta.get("candidate_source")}
     if meta.get("engine") == "mock":
         metrics["note"] = "Mock engine: synthetic test tones, not speech."
     ref_dir = ctx.category_dir("references", s) / v["uid"] / "refs"
@@ -687,6 +781,9 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
         new_id = max(scalar(conn, "SELECT MAX(id) FROM voice_refs", (), 0) or 0, scalar(conn, "SELECT MAX(ref_id_used) FROM attempts", (), 0) or 0) + 1
         if old:
             conn.execute("DELETE FROM voice_refs WHERE id=?", (old["id"],))
+            for p in (old["ref_audio_path"], old["ref_original_path"]):  # an old original with another extension (or a pre-v0.9 bucket name)
+                if p and Path(p) not in (wav_dst, orig_dst):
+                    Path(p).unlink(missing_ok=True)
         conn.execute(
             """INSERT INTO voice_refs(id, voice_id, bucket, ref_audio_path, ref_original_path, ref_text, ref_sha256, ref_duration_s, source, source_ref,
                    consent_json, metrics_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -711,37 +808,106 @@ def remove_ref(ctx, voice_id: int, ref_id: int) -> dict:
     return list_refs(ctx, voice_id)
 
 
-def generate_ref_candidates(ctx, voice_id: int, bucket: str, source_voice_id: int | None = None, n: int = 3) -> dict:
-    """Ask the designed voice a synthetic clone came from for ``n`` takes in one emotional register. Each finished job registers
-    a draft in the reference lab (with a Whisper check and its drift from the clone's base reference), ready to audition and adopt."""
+CANDIDATE_SOURCES = ("clone", "intensify", "design", "directable")
+
+
+def directable_available(ctx) -> bool:
+    """Whether this engine can render a clone with written instructions (its speaker vector in the CustomVoice model; see
+    engines.MlxQwenEngine). The mock engine imitates it for tests."""
+    return bool(getattr(ctx.settings().models, "directable_clones", True))
+
+
+def generate_ref_candidates(ctx, voice_id: int, bucket: str, source: str = "clone", source_voice_id: int | None = None) -> dict:
+    """Queue ONE take of an emotion clip for a cloned narrator. The finished job registers a draft in the reference lab (Whisper
+    check, speaker similarity and drift from the clone's base reference), listed under that emotion until it is adopted or discarded.
+
+    source  clone       the clone itself reads the emotion script (its identity is kept by construction; the emotion comes from the words)
+            intensify   the same, but from the emotion's adopted clip instead of the base reference (pushes an existing clip further)
+            directable  the clone's speaker vector in the instruction-following CustomVoice model, with the emotion as an instruction
+            design      the designed voice a synthetic clone came from, with the emotion as an instruction (may not sound like the narrator)
+    """
     from . import reference as R
     from .narrative import refbank as RB
+    from .narrative import vocab as V
 
     if bucket not in RB.BUCKETS:
         raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
-    n = max(1, min(5, int(n or 3)))
+    if source not in CANDIDATE_SOURCES:
+        raise ServiceError(f"source must be one of: {', '.join(CANDIDATE_SOURCES)}", 422)
+    info = RB.BUCKET_INFO[bucket]
+    script = R.script_by_id(info["script_id"])
     with ctx.db.session() as conn:
         v = _clone_row(conn, voice_id)
+        if any(p["bucket"] == bucket for p in _pending_candidate_jobs(conn, voice_id)):
+            raise ServiceError(f"A {info['label'].lower()} take for {v['name']} is already being generated. Wait for it, then judge it.", 409)
+        consent = _clone_consent(conn, v)
+        synthetic = _is_synthetic_consent(consent)
         src = clone_source_voice(conn, v)
-        synthetic = _is_synthetic_consent(_clone_consent(conn, v))
         if src is None and synthetic and source_voice_id:
             src = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (source_voice_id,))
             if not src:
                 raise ServiceError("source_voice_id is not a designed voice.", 422)
+        adopted = row(conn, "SELECT id FROM voice_refs WHERE voice_id=? AND bucket=?", (voice_id, bucket))
+    take = sum(1 for m in list_recordings(ctx) if m.get("target_voice_id") == voice_id and m.get("bucket") == bucket) + 1
+    seed = 7001 + 101 * take + 13 * RB.BUCKETS.index(bucket)
+    extra = {"to_lab": True, "bucket": bucket, "script_id": script["id"], "target_voice_id": voice_id, "candidate": take, "source": source}
+    phrase = V.EMOTION_PHRASES.get(bucket, info["emotion_text"])
+    if source in ("clone", "intensify", "directable"):
+        if source == "intensify":
+            if not adopted:
+                raise ServiceError(f"{v['name']} has no {info['label'].lower()} clip to intensify yet; generate a take from the clone first.", 422)
+            extra["ref_override"] = adopted["id"]
+        instruct = None
+        if source == "directable":
+            if not directable_available(ctx):
+                raise ServiceError("Directable takes are switched off in Settings (Models).", 422)
+            extra["directable"] = True
+            instruct = f"Speak {phrase}."
+        job = enqueue_preview(ctx, voice_id, script["text"], instruct, verify=True, seed=seed, allow_archived=True,
+                              extra={**extra, "source_voice_id": voice_id})
+        return {"voice_id": voice_id, "bucket": bucket, "source": source, "job": job}
     if not synthetic:
-        raise ServiceError("Candidates can only be generated for a clone made from a designed voice. For a human voice, record the clips in the "
-                           "Recording lab and adopt them here.", 422)
+        raise ServiceError("Design takes need a clone made from a designed voice. Generate the take from the clone itself instead.", 422)
     if src is None:
         raise ServiceError("The designed voice this clone came from could not be found; pass source_voice_id.", 422)
-    info = RB.BUCKET_INFO[bucket]
-    script = R.script_by_id(info["script_id"])
-    jobs = []
-    for i in range(n):
-        jobs.append(enqueue_preview(
-            ctx, src["id"], script["text"], f"Deliver the whole passage in a {info['emotion_text']} manner.", verify=True,
-            seed=7001 + 101 * i + 13 * RB.BUCKETS.index(bucket), allow_archived=True,
-            extra={"to_lab": True, "bucket": bucket, "script_id": script["id"], "target_voice_id": voice_id, "source_voice_id": src["id"], "candidate": i + 1}))
-    return {"voice_id": voice_id, "bucket": bucket, "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])}, "jobs": jobs}
+    # the same seed (and preview instruction) that produced the clone's base clip keeps the designed voice as close as it can get
+    base_seed = consent.get("source_seed") or 1234
+    instruct = " ".join(x for x in (consent.get("source_instruct"), f"Deliver the whole passage {phrase}.") if x)
+    job = enqueue_preview(ctx, src["id"], script["text"], instruct, verify=True, seed=int(base_seed), allow_archived=True,
+                          extra={**extra, "source_voice_id": src["id"]})
+    return {"voice_id": voice_id, "bucket": bucket, "source": source, "job": job,
+            "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])}}
+
+
+def discard_candidate(ctx, voice_id: int, rid: str) -> dict:
+    """Reject one emotion take (its lab draft is deleted)."""
+    meta = get_recording(ctx, rid)
+    if meta.get("target_voice_id") != voice_id:
+        raise ServiceError("That take was not made for this narrator.", 404)
+    delete_recording(ctx, rid)
+    return list_refs(ctx, voice_id)
+
+
+def discard_candidates(ctx, voice_id: int, bucket: str) -> dict:
+    """Reject every take of one emotion (none were usable), and withdraw a take that is still waiting for the GPU worker."""
+    from .narrative import refbank as RB
+
+    if bucket not in RB.BUCKETS:
+        raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
+    n = 0
+    for m in list_recordings(ctx):
+        if m.get("target_voice_id") == voice_id and m.get("bucket") == bucket:
+            delete_recording(ctx, m["id"])
+            n += 1
+    with ctx.db.tx() as conn:
+        _clone_row(conn, voice_id)
+        for p in _pending_candidate_jobs(conn, voice_id):
+            if p["bucket"] == bucket and p["status"] == "queued":
+                conn.execute("UPDATE jobs SET status='cancelled', finished_at=?, updated_at=? WHERE id=? AND status='queued'", (now(), now(), p["job_id"]))
+                n += 1
+    out = list_refs(ctx, voice_id)
+    out["discarded"] = n
+    return out
 
 
 # ====================================================================== imports

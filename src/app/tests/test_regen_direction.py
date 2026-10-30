@@ -107,9 +107,9 @@ def test_clone_pace_from_a_user_direction_and_honest_summary(client, ctx):
     assert p.instruct is None and p.delivery_applied is False                      # a clone takes no written instruction
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
     assert pv["voice_kind"] == "clone" and pv["applied"] is False and pv["instruct"] is None and pv["pace"] == pytest.approx(1.08)
-    assert pv["source"] == "you" and pv["bank_clip"] is None and pv["bank_bucket"] == "tense" and pv["bank_enabled"] is False
+    assert pv["source"] == "you" and pv["bank_clip"] is None and pv["bank_bucket"] == "anger" and pv["bank_enabled"] is False
     text = " ".join(pv["notes"])
-    assert "cannot take written instructions" in text and "reference bank is switched off" in text and "Speed x1.08" in text
+    assert "takes no written instructions" in text and "reference bank is switched off" in text and "Speed x1.08" in text
     assert pv["user_direction"]["emotion"] == "anger"
 
 
@@ -127,16 +127,16 @@ def test_clone_bank_clip_is_chosen_for_a_user_direction_and_missing_clip_is_repo
     assert "no adopted reference clip" in no_clip.delivery_reason and no_clip.delivery_reason.startswith("direction set by you")
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
     assert pv["applied"] is False and pv["bank_enabled"] is True and pv["bank_clip"] is None
-    assert "No 'tense' reference clip" in " ".join(pv["notes"]) and "differs only by chance" in " ".join(pv["notes"])
+    assert "No 'anger' reference clip" in " ".join(pv["notes"]) and "differs only by chance" in " ".join(pv["notes"])
     # adopt a clip for the bucket: the user's direction now selects it
     w = worker_with(ctx, RecordingEngine())
     rid = lab_recording(client, ctx, w)
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True,
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "anger", "recording_id": rid, "owner_attest": True,
                                                                      "statement": "Recorded by the speaker for this project."}).status_code == 200
     p = plan_of(ctx, seg["id"])
-    assert p.ref_id and p.ref_bucket == "tense" and p.delivery_applied is True and p.gen_key != base.gen_key
+    assert p.ref_id and p.ref_bucket == "anger" and p.delivery_applied is True and p.gen_key != base.gen_key
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
-    assert pv["applied"] is True and pv["bank_clip"] == "tense" and "Uses the 'tense' reference clip" in " ".join(pv["notes"])
+    assert pv["applied"] is True and pv["bank_clip"] == "anger" and "Uses the 'anger' reference clip" in " ".join(pv["notes"])
 
 
 def test_segments_without_a_user_direction_keep_their_keys(client, ctx):

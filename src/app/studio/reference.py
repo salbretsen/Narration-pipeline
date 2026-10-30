@@ -41,6 +41,39 @@ SCRIPTS: list[dict] = [
     {"id": "range-sad", "tier": "range", "emotion": "sad", "category": "Optional range", "title": "Quiet and sorrowful",
      "purpose": "Slow, low and reflective. A separate sombre variant only.",
      "text": "The house was quiet now. She sat on the stairs where he used to sit, and listened to the clock, and tried to remember the sound of his laugh."},
+] + [
+    # Emotion reference clips (one per emotion the Director and the Review page offer). A cloned voice takes no written instructions,
+    # but it does follow what the words themselves call for, so each text carries its emotion in the wording: exclamations, broken
+    # sentences, first-person reactions. Used to generate or record a clone's emotion clips.
+    {"id": f"emotion-{e}", "tier": "emotion", "emotion": e, "category": "Emotion reference", "title": title, "purpose": purpose, "text": text}
+    for e, title, purpose, text in (
+        ("joy", "Joy", "Open, delighted, smiling.",
+         "We did it! We actually did it! After all those years of waiting, it finally happened, and I can't stop smiling. Come here, everyone, come and see!"),
+        ("excitement", "Excitement", "Fast, eager, breathless.",
+         "Hurry, hurry, they're opening the gates! Can you hear the crowd? This is it, this is the moment we've been waiting for. Come on, run!"),
+        ("tenderness", "Tenderness", "Soft, close and gentle.",
+         "Hey. It's alright now. Come here, love. You don't have to be brave tonight. I'm right here beside you, and I'm not going anywhere."),
+        ("sadness", "Sadness", "Low, slow, heavy.",
+         "She's gone. I keep setting two cups out in the morning, and then I remember. I just wanted one more day with her. Just one more."),
+        ("grief", "Grief", "Raw, breaking, disbelieving.",
+         "No. No, no, please, not him. He was only nineteen. I told him to wait for me. I told him. Why didn't he wait?"),
+        ("fear", "Fear", "Hushed, tight, terrified.",
+         "Don't move. Please, don't make a sound. Something is in the room with us. I can hear it breathing. Oh God, it's getting closer."),
+        ("anxiety", "Anxiety", "Restless, uncertain, worried.",
+         "What if they don't call back? What if I said the wrong thing? I've checked the phone ten times already. Something's wrong, I just know it."),
+        ("anger", "Anger", "Hard, loud, cutting.",
+         "How dare you! I trusted you with everything, and you threw it all away. Get out. Get out of my house, and don't you ever come back!"),
+        ("surprise", "Surprise", "Sudden, high, astonished.",
+         "Wait, what? You're here? But you said you were still in Paris! Oh my goodness, look at you! I can't believe it's really you!"),
+        ("disgust", "Disgust", "Recoiling, sneering.",
+         "Ugh, what is that smell? Don't touch it. It's rotten, and it's crawling with flies. How could anyone leave food like that to fester? Revolting."),
+        ("determination", "Determination", "Firm, steady, resolute.",
+         "No. We are not turning back. We have come too far and lost too much. Tomorrow at dawn we march, and we will not stop until it's done."),
+        ("humor", "Humor", "Dry, amused, light.",
+         "Well, that went brilliantly. The cake collapsed, the dog ate all the candles, and Uncle Bernard is now wearing the trifle. Best party ever, honestly."),
+        ("resignation", "Resignation", "Flat, tired, defeated.",
+         "Fine. Do whatever you want. It doesn't really matter anymore. I stopped expecting anything to change a long, long time ago. It never does."),
+    )
 ]
 
 AUDITION_TEXT = ("The lighthouse at Gull Point had stood empty for eleven years before Margaret Hale climbed its stairs. "

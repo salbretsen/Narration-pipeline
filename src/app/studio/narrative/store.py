@@ -380,6 +380,7 @@ class Plan:
     ref_id: int | None = None
     ref_bucket: str | None = None
     user_source: bool = False  # the direction (or part of it) was set by the user, not the Director
+    directable_model: str | None = None  # a clone rendered by this CustomVoice model with its own speaker vector (delivery.clone = "directable")
 
 
 def spoken_text(seg: dict) -> str:
@@ -519,6 +520,26 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
             info = {"applied": True, "reason": why}
         else:
             info = {"applied": False, "reason": why}
+    directable_model = None
+    if v["kind"] == "clone" and ns.delivery.clone == "directable" and final:
+        dmodel = ctx.settings().models.custom_voice_model if ctx.settings().models.directable_clones else None
+        try:
+            inten = int(final.get("intensity") or 1)
+        except (TypeError, ValueError):
+            inten = 1
+        if not dmodel:
+            info = {"applied": False, "reason": "Directable clones are switched off in Settings (Models)."}
+        elif inten < ns.delivery.bank_min_intensity:
+            info = {"applied": False, "reason": f"intensity {inten} is below the directable threshold ({ns.delivery.bank_min_intensity}); the clone narrates as usual"}
+        else:
+            # the instruction a CustomVoice preset would get, read by the clone's own speaker vector
+            text_i, inf = DL.build_instruct(final, "preset", dmodel, ns.delivery, None)
+            if text_i:
+                delivery, directable_model = text_i, dmodel
+                info = {"applied": True, "reason": f"directable clone: {inf['reason']}"}
+                pace, pace_reason = DL.effective_pace(float(v.get("pace") or 1.0), pace_final, ns.delivery.pace_from_direction, True)
+            else:
+                info = inf
     if user_source:
         info = {**info, "reason": f"{USER_DIRECTION_REASON}; {info['reason']}"}
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
@@ -527,9 +548,9 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
         "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
         "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
         "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {}),
-        **({"ref": ref_row["ref_sha256"]} if ref_row else {})}), 20)
+        **({"ref": ref_row["ref_sha256"]} if ref_row else {}), **({"directable": directable_model} if directable_model else {})}), 20)
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace,
-                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user)
+                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user, directable_model)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -845,14 +866,19 @@ def delivery_summary(conn, ctx, seg: dict, book: dict, user_override: dict | Non
     emotion = final.get("emotion")
     bucket = RB.bucket_for(emotion) if final else None
     notes: list[str] = []
-    if kind == "clone":
-        notes.append("This is a cloned voice (Base model): it cannot take written instructions.")
-        if ns.delivery.clone != "reference_bank":
+    if kind == "clone" and plan.directable_model:
+        notes.append("Directable clone: this line is read by the narrator's own speaker vector in the instruction-following CustomVoice model, "
+                     "so the instruction above reaches the voice.")
+    elif kind == "clone":
+        notes.append("This is a cloned voice (Base model): it takes no written instructions unless clone delivery is set to 'directable' in Settings.")
+        if ns.delivery.clone == "directable":
+            notes.append(plan.delivery_reason or "This segment narrates as usual.")
+        elif ns.delivery.clone != "reference_bank":
             notes.append("The emotion reference bank is switched off in Settings, so emotion cannot steer this voice; only pace can.")
         elif plan.ref_id:
             notes.append(f"Uses the '{plan.ref_bucket}' reference clip for '{emotion}'.")
         elif final and bucket:
-            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one in Narrator Studio).")
+            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one on the narrator's page in Narrator Studio).")
         elif final:
             notes.append(f"'{emotion}' is served by the base reference, so no clip changes the sound.")
         if not plan.ref_id:

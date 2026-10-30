@@ -103,14 +103,18 @@ with sync_playwright() as p:
     pg.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type in ("error", "warning") else None)
     pg.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
 
-    # ---------------------------------------------------------------- reference bank panel on a clone card
+    # ---------------------------------------------------------------- emotion references on the clone's narrator page
     pg.goto(B + "/#/voices")
-    pg.wait_for_selector(".voice-grid", timeout=15000)
-    card = pg.locator(".voice-grid >> text=Clone Test").first
-    check("voices: the clone card is listed", card.count() == 1)
-    body = pg.inner_text(".voice-grid")
-    check("voices: clone card has the emotion reference-clip panel", "Reference clips" in body, body[:200])
-    check("voices: panel explains that clones take no text instructions", "instruction" in body.lower())
+    pg.wait_for_selector(".voice-grid .narrator-tile", timeout=15000)
+    card = pg.locator(".voice-grid .narrator-tile", has=pg.locator("h3:text-is('Clone Test')"))
+    check("voices: the clone tile is listed", card.count() == 1)
+    card.locator("a.tile-link").click()
+    pg.wait_for_selector("a.tab:has-text('Emotion references')", timeout=15000)
+    pg.click("a.tab:has-text('Emotion references')")
+    pg.wait_for_selector("#nr-emo .emo-row", timeout=15000)
+    body = pg.inner_text("#nr-panel")
+    check("narrator: the emotion references list every emotion", pg.locator("#nr-emo .emo-row").count() == 13 and "Anger" in body and "Fear" in body, body[:200])
+    check("narrator: the page explains that clones take no written instructions", "no written instructions" in body.lower())
     pg.screenshot(path=str(OUT / "1-voices-bank.png"), full_page=True)
 
     # ---------------------------------------------------------------- inspector A/B card

@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.8.2 (build 20261029213603-12b25fb0)
+#  Version v0.9.0 (build 20261029222442-6ee54454)
 #
 #  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
 #  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
@@ -23,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.8.2"
-BUILD_ID="20261029213603-12b25fb0"
+STUDIO_VERSION="v0.9.0"
+BUILD_ID="20261029222442-6ee54454"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -416,11 +416,63 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_ce1eca550f59__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_c95b132444d7__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.9.0
+Feature release: emotion clips that keep the narrator's voice, directable cloned narrators, and a new Narrator Studio. **What ran where:** the clone-instruction
+experiment ran on the Mac with the real Qwen3-TTS 1.7B models and Whisper (`docs/clone_instruct_experiment.json`). This version was then installed on the Mac
+(installer re-run; schema 6 → 7) and `tools/e2e/emotion_takes_real.py` drove the running studio's API with the real engine for the narrator "Dalinar (stable)":
+the narrator sample (generated in 9 s, served as audio/wav, a second press just plays) and one take per source, each refused a second concurrent take (409),
+all Whisper-clean (WER 0%), speaker similarity: clone takes anger 0.993 and joy 0.995, directable sadness 0.989 and fear 0.977, design tenderness 0.968
+(different people measured 0.934-0.965); all takes were discarded afterwards. Everything else ran only with the mock engine: 547 pytest tests and headless Edge
+(`tools/e2e/polish_voices.py`, `delivery_ui.py`). **Not run on the Mac:** the new pages in a browser (Safari or otherwise), adopting a take, directable
+narration of a book; nobody has listened to a directable take blind.
+
+**Emotion clips that sound like the narrator**
+- **Why the old candidates sounded like someone else:** they were made by the designed source voice (VoiceDesign), which builds a new voice from its description
+  on every call, with a different seed and instruction from the clone's base clip. The clone then copied that other voice.
+- **Takes are now made by the clone itself** by default: the narrator reads an emotionally written script (13 new `emotion-*` scripts) with its own reference, so
+  its identity is kept by construction. The Mac run measured speaker similarity 0.989-0.995 for these takes (different people: 0.934-0.965) and clear delivery
+  changes (median pitch anger 130 Hz, joy 137, tenderness 149 against 98 neutral). This works for clones of human voices too (consent type `self`).
+- **Intensify**: a take made from an emotion's adopted clip instead of the base reference.
+- **Directable takes and directable narration (experimental, opt-in)**: the clone's own speaker vector (the Base model's speaker encoder) is written into a spare
+  speaker row of the CustomVoice model in memory, which then follows a written instruction in the narrator's voice. Measured similarity 0.972-0.993. Used for
+  `directable` takes, and for narration when *Settings → Delivery → Cloned voices* is `directable` (segments directed at or above the intensity threshold; other
+  segments narrate as before). *Settings → Models → Directable cloned narrators* switches the route off.
+- **Speaker similarity** on every take (cosine of speaker-encoder vectors against the base reference), shown as "sounds like the narrator / close / likely a
+  different voice"; *Lowest take similarity* (`delivery.bank_min_similarity`, default unset) refuses adoption below a limit. Mock-engine values are labelled and
+  never enforced.
+- **Design takes** (the old route) now start from the seed and instruction that made the clone's base clip; promotion records them.
+
+**One clip per emotion; one take at a time; reject and discard**
+- The bank has one clip per emotion offered in Review & QA and by the Director (13: joy, excitement, tenderness, sadness, grief, fear, anxiety, anger, surprise,
+  disgust, determination, humor, resignation; neutral and calm use the base clip). Anger and fear are separate. A missing clip falls back to a related emotion's
+  clip (e.g. anxiety → fear, grief → sadness → resignation), then to the base clip; the reason says which. Schema 7 renames existing clips: tense → fear, tender →
+  tenderness, sorrow → sadness, bright → joy.
+- *Generate a take* queues exactly one take (`409` while one is in flight for that emotion), was three.
+- Takes are listed under their emotion (they survive leaving the page) with **Discard** and **Discard all takes** (also withdraws a queued take). Replacing a clip
+  also deletes the old clip's files (an original with another extension used to be left behind).
+
+**Narrator Studio and the narrator page**
+- Narrator Studio shows **tiles**: name, description and a play button. The first press generates a short sample on the GPU and keeps it (one per voice
+  version, outside the pruned previews folder); later presses just play it. *Add a narrator* is a collapsible section below the tiles.
+- The name or description opens the narrator's own page (`#/narrator/ID`) with tabs: **Overview** (details and version history), **Emotion references**
+  (clones), **Preview**, **Record & upload** (the lab, now with the emotion scripts) and **Tools** (Edit, Duplicate & retune, Retune from source, Archive).
+- New endpoints: `GET/POST /api/voices/{id}/sample`, `/media/voice/{id}/sample`, `DELETE /api/voices/{id}/refs/candidates/{rid}` and `?bucket=`;
+  `POST .../refs/candidates` takes `source` instead of `n`. Doc 3, 4, 9 and the roadmap (C17) are updated.
+
+**Fixes**
+- **An in-app update could roll back for no reason ("did not become healthy within 120 s").** Found on the Mac updating 0.8.1 → 0.8.2: `launchctl bootout`
+  returned while the old service was still shutting down, so the following start saw it as loaded, only kickstarted a job that was going away, and nothing ran
+  until the rollback. Stopping now waits until launchd has really unloaded the service, and starting loads it again if it vanished before the kickstart.
+  The fix takes effect for updates made *from* this version on; an update from 0.8.1 or 0.8.2 may still roll back once (harmlessly) and succeed on a retry.
+
+**Not verified:** a blind listen of directable takes and of directable narration across a chapter; similarity bands on more than one narrator; Safari's
+autoplay rule for the tile button (the tile falls back to "Ready: press to play").
 
 ## v0.8.2
 Patch: release notes reach GitHub and the Update Center. Tested with pytest only (no browser run and nothing run on the Mac); the release workflow
@@ -808,7 +860,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_ce1eca550f59__
+__STUDIO_EOF_c95b132444d7__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -2972,7 +3024,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_0eee46beefec__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_d492d7e7ba63__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2981,13 +3033,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.8.2"
+__version__ = "0.9.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_0eee46beefec__
+__STUDIO_EOF_d492d7e7ba63__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -4614,7 +4666,7 @@ def main(argv=None):
 if __name__ == "__main__":
     main()
 __STUDIO_EOF_ec66838fd57f__
-cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_6bbd6b9329b1__'
+cat > "$DEST/studio/config.py" <<'__STUDIO_EOF_0a21bd28da99__'
 """Validated application settings, persisted as JSON under <home>/config/settings.json.
 
 Settings are global defaults. Each book stores a snapshot at import time so that later
@@ -4766,6 +4818,10 @@ class ModelSettings(_M):
     retry_temperatures: list[float] = Field(default_factory=lambda: [0.7, 0.55])
     max_warm_models: int = Field(2, ge=1, le=4)
     allow_downloads: bool = True
+    # A cloned narrator can be rendered by the CustomVoice model with its own speaker vector (taken from its reference clip by the
+    # Base model's speaker encoder), which lets written emotion instructions reach a clone. Used for emotion takes and the
+    # "directable" clone delivery; measured on the Mac in docs/clone_instruct_experiment.json.
+    directable_clones: bool = True
     cache_dir: str = Field("", description="Hugging Face model cache; empty -> the installation default. Kept outside every release.")
 
     @field_validator("cache_dir")
@@ -4902,12 +4958,17 @@ class DeliverySettings(_M):
     voice_design: Literal["append", "off"] = "append"
     max_instruct_chars: int = Field(160, ge=40, le=400)
     # Cloned (Base) voices: pick an emotion reference clip from the voice's reference bank. Off keeps today's single reference.
-    clone: Literal["reference_bank", "off"] = "off"
+    # "directable": a strongly directed segment is read by the clone's own speaker vector in the CustomVoice model, which follows the
+    # written instruction (an emotion reaches the clone without a clip); other segments narrate as usual.
+    clone: Literal["reference_bank", "directable", "off"] = "off"
     # Per-segment pace from the Director. auto = only when no instruct reaches the model. Default off so existing takes never change silently.
     pace_from_direction: Literal["auto", "always", "off"] = "off"
     pauses_from_direction: bool = False
     translator: Literal["template", "llm"] = "template"
     bank_min_intensity: int = Field(3, ge=1, le=5)
+    # Lowest speaker similarity (cosine of Base speaker-encoder vectors, vs the clone's base reference) an emotion take may have to be
+    # adopted. None = shown but not enforced.
+    bank_min_similarity: Optional[float] = Field(None, ge=0.5, le=1.0)
 
 
 class NarrativeSettings(_M):
@@ -5039,7 +5100,7 @@ def synth_fingerprint(snapshot: dict, voice_version: dict | None, instructions: 
         "instructions": (instructions or "").strip(),
     }
     return short_hash(dumps(payload), 16)
-__STUDIO_EOF_6bbd6b9329b1__
+__STUDIO_EOF_0a21bd28da99__
 cat > "$DEST/studio/context.py" <<'__STUDIO_EOF_2e4a2a1622be__'
 """Application context: resolved home directory, settings, database and logging helpers."""
 from __future__ import annotations
@@ -5211,7 +5272,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     root.addHandler(fh)
     root.addHandler(sh)
 __STUDIO_EOF_2e4a2a1622be__
-cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_24b4e17cea10__'
+cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_44bb83939ab0__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
 
@@ -5737,6 +5798,15 @@ CREATE INDEX IF NOT EXISTS ix_jobs_book ON jobs(book_id);
 ALTER TABLE jobs ADD COLUMN active_seconds REAL NOT NULL DEFAULT 0;
 """
 
+# v0.9.0: the emotion reference bank has one clip per emotion (narrative/refbank.py) instead of four family buckets; each old clip
+# moves to the emotion its script was written for (refbank.LEGACY_BUCKETS). File paths are absolute, so no file moves.
+SCHEMA_V7 = """
+UPDATE voice_refs SET bucket = 'fear' WHERE bucket = 'tense';
+UPDATE voice_refs SET bucket = 'tenderness' WHERE bucket = 'tender';
+UPDATE voice_refs SET bucket = 'sadness' WHERE bucket = 'sorrow';
+UPDATE voice_refs SET bucket = 'joy' WHERE bucket = 'bright';
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
@@ -5745,6 +5815,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (4, SCHEMA_V4),
     (5, SCHEMA_V5),
     (6, SCHEMA_V6),
+    (7, SCHEMA_V7),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 
@@ -5859,7 +5930,7 @@ def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), defau
 
 def copy_db_file(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
-__STUDIO_EOF_24b4e17cea10__
+__STUDIO_EOF_44bb83939ab0__
 cat > "$DEST/studio/diskmgmt.py" <<'__STUDIO_EOF_fd0c1bcdbab5__'
 """Disk management (roadmap C3): usage report, delete/purge, and book/database backup and restore.
 
@@ -6909,7 +6980,7 @@ def install_checks(ctx) -> list[dict]:
     out.append(_check("Model cache", "ok", f"{cache} ({sm.free_bytes(cache) / 1024**3:.0f} GB free; separate from the application releases)"))
     return out
 __STUDIO_EOF_538595482854__
-cat > "$DEST/studio/engines.py" <<'__STUDIO_EOF_5fb1a9635011__'
+cat > "$DEST/studio/engines.py" <<'__STUDIO_EOF_b515925c35e5__'
 """Speech synthesis and recognition engines.
 
 ``MlxQwenEngine`` / ``MlxWhisperASR`` run real local inference on Apple Silicon through
@@ -6975,6 +7046,8 @@ class SynthParams:
     repetition_penalty: float | None = None
     max_tokens: int | None = None
     instruct: str | None = None  # per-book delivery instruction
+    # A clone rendered by this CustomVoice model with its own speaker vector, so ``instruct`` reaches it ("directable" clone)
+    directable_model: str | None = None
 
 
 @dataclass
@@ -7012,6 +7085,21 @@ def hf_revision(model_id: str) -> str | None:
     return None
 
 
+def cosine(a, b) -> float | None:
+    if a is None or b is None:
+        return None
+    a, b = np.asarray(a, dtype=np.float64).reshape(-1), np.asarray(b, dtype=np.float64).reshape(-1)
+    if a.size != b.size or not a.size:
+        return None
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+
+# The spare CustomVoice speaker row a directable clone's speaker vector is written into (in memory only). Qwen's own single-speaker
+# fine-tuning recipe uses the same row; the 1.7B CustomVoice presets occupy 2861-3066 but not 3000 (checked before every use).
+DIRECTABLE_ROW = 3000
+DIRECTABLE_SPEAKER = "studio_narrator"
+
+
 def max_tokens_for(text: str, wpm: float = 155.0) -> int:
     # Qwen3-TTS-12Hz emits ~12.5 codec frames per second; cap generation at 2.5x the
     # expected duration to stop runaway babble without truncating slow delivery.
@@ -7031,6 +7119,7 @@ class MlxQwenEngine:
         self.allow_downloads = allow_downloads
         self._models: "OrderedDict[str, object]" = OrderedDict()
         self._lock = threading.Lock()
+        self._vectors: "OrderedDict[tuple, np.ndarray]" = OrderedDict()  # (wav path, size, mtime, model) -> speaker vector
 
     def versions(self) -> dict:
         return {
@@ -7089,6 +7178,52 @@ class MlxQwenEngine:
             self._models.clear()
             gc.collect()
 
+    def speaker_embedding(self, wav_path: str | Path, model_id: str) -> np.ndarray | None:
+        """The speaker vector the Base model's speaker encoder computes for a 24 kHz clip (what cloning conditions on). Cached per file."""
+        p = Path(wav_path)
+        st = p.stat()
+        key = (str(p), st.st_size, st.st_mtime_ns, model_id)
+        if key in self._vectors:
+            self._vectors.move_to_end(key)
+            return self._vectors[key]
+        mx = self._mx()
+        model = self._model(model_id)
+        if getattr(model, "speaker_encoder", None) is None or not hasattr(model, "extract_speaker_embedding"):
+            return None
+        from mlx_audio.utils import load_audio  # type: ignore
+
+        audio = load_audio(str(p), sample_rate=24000)
+        vec = np.array(model.extract_speaker_embedding(audio, sr=24000).astype(mx.float32), dtype=np.float32).reshape(-1)
+        self._vectors[key] = vec
+        while len(self._vectors) > 64:
+            self._vectors.popitem(last=False)
+        return vec
+
+    def speaker_similarity(self, a: str | Path, b: str | Path, model_id: str) -> float | None:
+        return cosine(self.speaker_embedding(a, model_id), self.speaker_embedding(b, model_id))
+
+    def _install_speaker(self, cv, vec: np.ndarray) -> None:
+        """Write a clone's speaker vector into the CustomVoice model's spare speaker row (in memory; the files are untouched)."""
+        mx = self._mx()
+        tc = cv.config.talker_config
+        spk = tc.spk_id if tc.spk_id is not None else {}
+        if any(v == DIRECTABLE_ROW and k != DIRECTABLE_SPEAKER for k, v in spk.items()):
+            raise EngineUnavailable(f"This CustomVoice model already uses speaker row {DIRECTABLE_ROW}; directable clones are not available with it.")
+        emb = cv.talker.get_input_embeddings()
+        w = emb.weight
+        if w.shape[-1] != vec.size or w.shape[0] <= DIRECTABLE_ROW:
+            raise EngineUnavailable(f"The speaker vector ({vec.size}) does not fit this CustomVoice model ({tuple(w.shape)}); use matching 1.7B Base and CustomVoice models.")
+        key = hashlib.sha1(vec.tobytes()).hexdigest()
+        if getattr(cv, "_studio_speaker_key", None) == key:
+            return
+        w[DIRECTABLE_ROW] = mx.array(vec).astype(w.dtype)
+        emb.weight = w
+        spk[DIRECTABLE_SPEAKER] = DIRECTABLE_ROW
+        tc.spk_id = spk
+        if DIRECTABLE_SPEAKER not in cv.supported_speakers:
+            cv.supported_speakers.append(DIRECTABLE_SPEAKER)
+        cv._studio_speaker_key = key
+
     @staticmethod
     def _filter_kwargs(fn, kwargs: dict) -> dict:
         try:
@@ -7100,7 +7235,17 @@ class MlxQwenEngine:
 
     def synthesize(self, voice: VoiceSpec, text: str, params: SynthParams, sid: str | None = None) -> SynthResult:
         mx = self._mx()
-        model = self._model(voice.model_id)
+        directable = voice.kind == "clone" and bool(params.directable_model)
+        if directable:
+            if not voice.ref_audio_path:
+                raise ValueError("cloned voice requires reference audio")
+            vec = self.speaker_embedding(voice.ref_audio_path, voice.model_id)  # Base model: computed before the CustomVoice model loads
+            if vec is None:
+                raise EngineUnavailable(f"{voice.model_id} has no speaker encoder; a directable clone needs the Base model.")
+            model = self._model(params.directable_model)
+            self._install_speaker(model, vec)
+        else:
+            model = self._model(voice.model_id)
         text = " ".join(text.split())  # no newlines: generate() splits on them
         mx.random.seed(int(params.seed) % (2**32))
         common = {
@@ -7113,7 +7258,10 @@ class MlxQwenEngine:
         instruct = " ".join(x for x in (voice.instruct, params.instruct) if x and x.strip()) or None
         t0 = time.time()
         try:
-            if voice.kind == "preset":
+            if directable:
+                fn = model.generate_custom_voice
+                gen = fn(text=text, speaker=DIRECTABLE_SPEAKER, language=voice.language, instruct=instruct, **self._filter_kwargs(fn, common))
+            elif voice.kind == "preset":
                 if not voice.speaker:
                     raise ValueError("preset voice has no speaker")
                 fn = model.generate_custom_voice
@@ -7158,10 +7306,11 @@ class MlxQwenEngine:
                 peak_gb = float(mx.metal.get_peak_memory()) / 1e9
             except Exception:
                 peak_gb = float(peak) if peak else None
+        used = params.directable_model if directable else voice.model_id
         return SynthResult(
-            audio=audio, sample_rate=sr, engine=self.name, model_id=voice.model_id, seconds=elapsed,
+            audio=audio, sample_rate=sr, engine=self.name, model_id=used, seconds=elapsed,
             rtf=(elapsed / dur) if dur else None, peak_mem_gb=peak_gb,
-            meta={"library_rtf": rtf, "model_revision": hf_revision(voice.model_id)},
+            meta={"library_rtf": rtf, "model_revision": hf_revision(used), **({"directable": True, "speaker_model": voice.model_id} if directable else {})},
         )
 
 
@@ -7264,9 +7413,28 @@ class MockEngine:
             audio = np.clip(audio * 12.0, -1.0, 1.0)
         elif fault == "quiet":
             audio = audio * 0.002
-        return SynthResult(audio=audio, sample_rate=sr, engine=self.name, model_id=f"mock:{voice.model_id}",
+        directable = voice.kind == "clone" and bool(params.directable_model)
+        return SynthResult(audio=audio, sample_rate=sr, engine=self.name, model_id=f"mock:{params.directable_model if directable else voice.model_id}",
                            seconds=0.0, rtf=None, peak_mem_gb=None,
-                           meta={"mock_transcript": " ".join(spoken), "mock_fault": fault, "label": "synthetic test tones - not speech"})
+                           meta={"mock_transcript": " ".join(spoken), "mock_fault": fault, "label": "synthetic test tones - not speech",
+                                 **({"directable": True} if directable else {})})
+
+    def speaker_embedding(self, wav_path: str | Path, model_id: str) -> np.ndarray | None:
+        """A stand-in speaker vector (the clip's average log spectrum). It is NOT a speaker model: similarities from the mock engine
+        are labelled and never gate anything."""
+        from . import audio as A
+
+        audio, sr = A.read_wav(Path(wav_path))
+        audio = np.asarray(audio, dtype=np.float32).reshape(-1)[: sr * 20]
+        n = 1024
+        if audio.size < n:
+            return None
+        frames = audio[: (audio.size // n) * n].reshape(-1, n)
+        spec = np.log1p(np.abs(np.fft.rfft(frames * np.hanning(n), axis=1)).mean(axis=0))
+        return spec[:256].astype(np.float32)
+
+    def speaker_similarity(self, a: str | Path, b: str | Path, model_id: str) -> float | None:
+        return cosine(self.speaker_embedding(a, model_id), self.speaker_embedding(b, model_id))
 
 
 class MockASR:
@@ -7305,7 +7473,7 @@ def create_asr(ctx) -> object:
     if ctx.engine_mode == "mock":
         return MockASR()
     return MlxWhisperASR(s.models.asr_model, allow_downloads=s.models.allow_downloads)
-__STUDIO_EOF_5fb1a9635011__
+__STUDIO_EOF_b515925c35e5__
 cat > "$DEST/studio/interfaces.py" <<'__STUDIO_EOF_bee7a44c349c__'
 """Platform and provider boundaries. Nothing outside the implementing modules should import launchd, MLX, GitHub or a
 specific storage layout directly; they depend on these contracts, which makes Windows/Linux/container ports and
@@ -10442,35 +10610,61 @@ def resolve_models(llm_cfg: LLMSettings) -> dict:
         "translator": (llm_cfg.translator_model or "").strip() or None,
     }
 __STUDIO_EOF_cf75d2f25c33__
-cat > "$DEST/studio/narrative/refbank.py" <<'__STUDIO_EOF_b46b73a672a4__'
+cat > "$DEST/studio/narrative/refbank.py" <<'__STUDIO_EOF_7bbab537cf96__'
 """Emotion reference bank for cloned voices.
 
 A cloned (Qwen3-TTS Base) voice has no instruction input: how it sounds is steered only by its
-reference clip. The bank lets a clone carry a few short clips of the *same voice* in different
-emotional registers (one adopted clip per bucket). When a segment's direction is strong enough and
-its emotion maps to a bucket that has a clip, that clip replaces the base reference for that
-segment. Everything here is pure: no database, no engine, no network.
+reference clip. The bank lets a clone carry short clips of the *same voice* in different
+emotional registers, one adopted clip per emotion the Director and the Review page can ask for
+(every emotion in ``vocab.EMOTIONS`` except neutral and calm, which the base reference already
+serves). When a segment's direction is strong enough, the clip for its emotion replaces the base
+reference for that segment; without one, a related emotion's clip is used, else the base reference.
+Everything here is pure: no database, no engine, no network.
 """
 from __future__ import annotations
 
 from . import vocab as V
 
-# bucket -> (label, phrase used to ask a VoiceDesign voice for that register, lab script id)
+# emotions the base reference already serves
+BASE_EMOTIONS = ("neutral", "calm")
+
+# emotion -> label, phrase used to ask a VoiceDesign voice for that register, and its emotion script (reference.py)
 BUCKET_INFO: dict[str, dict] = {
-    "tense": {"label": "Tense / urgent", "emotion_text": "tense, urgent, strained", "script_id": "range-tense"},
-    "tender": {"label": "Tender / warm", "emotion_text": "tender, warm, gentle", "script_id": "range-warm"},
-    "sorrow": {"label": "Sorrowful / heavy", "emotion_text": "sorrowful, heavy, subdued", "script_id": "range-sad"},
-    "bright": {"label": "Bright / lively", "emotion_text": "bright, joyful, lively", "script_id": "range-joy"},
+    e: {"label": e.capitalize(), "family": V.FAMILIES[e], "emotion_text": V.EMOTION_PHRASES[e], "script_id": f"emotion-{e}"}
+    for e in V.EMOTIONS if e not in BASE_EMOTIONS
 }
 BUCKETS = tuple(BUCKET_INFO)
 
-# emotion family (vocab.FAMILIES) -> bucket; None = the voice's base reference is already right
-_FAMILY_BUCKET = {"flat": None, "low": "sorrow", "warm": "tender", "high": "bright", "hot": "tense", "tense": "tense"}
+# when an emotion has no clip of its own: the closest emotions to try, in order
+NEIGHBOURS: dict[str, tuple[str, ...]] = {
+    "anger": ("disgust", "determination"),
+    "disgust": ("anger",),
+    "determination": ("anger", "excitement"),
+    "fear": ("anxiety", "surprise"),
+    "anxiety": ("fear",),
+    "sadness": ("grief", "resignation"),
+    "grief": ("sadness", "resignation"),
+    "resignation": ("sadness", "grief"),
+    "joy": ("excitement", "humor", "tenderness"),
+    "excitement": ("joy", "surprise"),
+    "surprise": ("excitement", "fear"),
+    "tenderness": ("joy",),
+    "humor": ("joy",),
+}
+
+# bucket names before v0.9.0 (one clip served a whole emotion family) -> the emotion their clip was written for
+LEGACY_BUCKETS = {"tense": "fear", "tender": "tenderness", "sorrow": "sadness", "bright": "joy"}
 
 
 def bucket_for(emotion: str | None) -> str | None:
-    """Which bank bucket serves an emotion. ``None`` means the base reference (neutral / calm / unknown)."""
-    return _FAMILY_BUCKET.get(V.FAMILIES.get(str(emotion or "").lower(), "flat"))
+    """Which bank clip serves an emotion. ``None`` means the base reference (neutral / calm / unknown)."""
+    e = str(emotion or "").lower()
+    return e if e in BUCKET_INFO else None
+
+
+def fallback_chain(bucket: str) -> tuple[str, ...]:
+    """The emotion itself, then its neighbours."""
+    return (bucket, *NEIGHBOURS.get(bucket, ()))
 
 
 def select(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, dict]) -> tuple[dict | None, str]:
@@ -10492,16 +10686,19 @@ def select(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, di
         return None, f"emotion '{emotion}' is served by the base reference"
     if intensity < cfg.bank_min_intensity:
         return None, f"intensity {intensity} is below the reference-bank threshold ({cfg.bank_min_intensity}); using the base reference"
-    ref = (refs_by_bucket or {}).get(bucket)
-    if not ref:
-        return None, f"emotion '{emotion}' maps to the '{bucket}' bucket, which has no adopted reference clip; using the base reference"
-    return ref, f"emotion '{emotion}' → '{bucket}' reference clip"
+    refs = refs_by_bucket or {}
+    for b in fallback_chain(bucket):
+        if refs.get(b):
+            if b == bucket:
+                return refs[b], f"emotion '{emotion}' → '{b}' reference clip"
+            return refs[b], f"emotion '{emotion}' has no clip of its own → the related '{b}' reference clip"
+    return None, f"emotion '{emotion}' has no adopted reference clip (nor a related one); using the base reference"
 
 
 def choose(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, dict]) -> dict | None:
     """The bank row to use for this segment, or None to keep the voice's base reference."""
     return select(ns, final, voice_kind, refs_by_bucket)[0]
-__STUDIO_EOF_b46b73a672a4__
+__STUDIO_EOF_7bbab537cf96__
 cat > "$DEST/studio/narrative/segmenter.py" <<'__STUDIO_EOF_42741318923c__'
 """Pass 2 - narration segment construction from the Pass 1 structure.
 
@@ -10773,7 +10970,7 @@ def check_coverage(struct: ChapterStructure, segs: list[Seg]) -> list[str]:
             break
     return problems[:10]
 __STUDIO_EOF_42741318923c__
-cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_73fa3ac164be__'
+cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_3ef2c3aba6e0__'
 """Persistence and orchestration for semantic segmentation (Pass 1 + Pass 2).
 
 Segments keep stable ids. Re-segmentation (after a voice assignment, a merge of characters, a
@@ -11156,6 +11353,7 @@ class Plan:
     ref_id: int | None = None
     ref_bucket: str | None = None
     user_source: bool = False  # the direction (or part of it) was set by the user, not the Director
+    directable_model: str | None = None  # a clone rendered by this CustomVoice model with its own speaker vector (delivery.clone = "directable")
 
 
 def spoken_text(seg: dict) -> str:
@@ -11295,6 +11493,26 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
             info = {"applied": True, "reason": why}
         else:
             info = {"applied": False, "reason": why}
+    directable_model = None
+    if v["kind"] == "clone" and ns.delivery.clone == "directable" and final:
+        dmodel = ctx.settings().models.custom_voice_model if ctx.settings().models.directable_clones else None
+        try:
+            inten = int(final.get("intensity") or 1)
+        except (TypeError, ValueError):
+            inten = 1
+        if not dmodel:
+            info = {"applied": False, "reason": "Directable clones are switched off in Settings (Models)."}
+        elif inten < ns.delivery.bank_min_intensity:
+            info = {"applied": False, "reason": f"intensity {inten} is below the directable threshold ({ns.delivery.bank_min_intensity}); the clone narrates as usual"}
+        else:
+            # the instruction a CustomVoice preset would get, read by the clone's own speaker vector
+            text_i, inf = DL.build_instruct(final, "preset", dmodel, ns.delivery, None)
+            if text_i:
+                delivery, directable_model = text_i, dmodel
+                info = {"applied": True, "reason": f"directable clone: {inf['reason']}"}
+                pace, pace_reason = DL.effective_pace(float(v.get("pace") or 1.0), pace_final, ns.delivery.pace_from_direction, True)
+            else:
+                info = inf
     if user_source:
         info = {**info, "reason": f"{USER_DIRECTION_REASON}; {info['reason']}"}
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
@@ -11303,9 +11521,9 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
         "text": " ".join(text.split()), "voice": [v["kind"], vv["model_id"], vv.get("speaker"), vv.get("instruct"), vv.get("ref_sha256"), vv.get("language")],
         "instruct": instruct, "engine": snap.get("engine"), "lang": snap.get("language"), "t": snap.get("temperature"), "p": snap.get("top_p"),
         "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {}),
-        **({"ref": ref_row["ref_sha256"]} if ref_row else {})}), 20)
+        **({"ref": ref_row["ref_sha256"]} if ref_row else {}), **({"directable": directable_model} if directable_model else {})}), 20)
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace,
-                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user)
+                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user, directable_model)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -11621,14 +11839,19 @@ def delivery_summary(conn, ctx, seg: dict, book: dict, user_override: dict | Non
     emotion = final.get("emotion")
     bucket = RB.bucket_for(emotion) if final else None
     notes: list[str] = []
-    if kind == "clone":
-        notes.append("This is a cloned voice (Base model): it cannot take written instructions.")
-        if ns.delivery.clone != "reference_bank":
+    if kind == "clone" and plan.directable_model:
+        notes.append("Directable clone: this line is read by the narrator's own speaker vector in the instruction-following CustomVoice model, "
+                     "so the instruction above reaches the voice.")
+    elif kind == "clone":
+        notes.append("This is a cloned voice (Base model): it takes no written instructions unless clone delivery is set to 'directable' in Settings.")
+        if ns.delivery.clone == "directable":
+            notes.append(plan.delivery_reason or "This segment narrates as usual.")
+        elif ns.delivery.clone != "reference_bank":
             notes.append("The emotion reference bank is switched off in Settings, so emotion cannot steer this voice; only pace can.")
         elif plan.ref_id:
             notes.append(f"Uses the '{plan.ref_bucket}' reference clip for '{emotion}'.")
         elif final and bucket:
-            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one in Narrator Studio).")
+            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one on the narrator's page in Narrator Studio).")
         elif final:
             notes.append(f"'{emotion}' is served by the base reference, so no clip changes the sound.")
         if not plan.ref_id:
@@ -11729,7 +11952,7 @@ def _narrative_status(ctx, book_id: int, conn) -> dict:
             "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
             "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
                          "semantic_segmentation": ns.semantic_segmentation}}
-__STUDIO_EOF_73fa3ac164be__
+__STUDIO_EOF_3ef2c3aba6e0__
 cat > "$DEST/studio/narrative/structure.py" <<'__STUDIO_EOF_e99ef7430c0a__'
 """Pass 1 - manuscript structure and speaker analysis.
 
@@ -13872,7 +14095,7 @@ def _epub_toc_labels(zf: zipfile.ZipFile, manifest: dict, toc_id: str | None) ->
             pass
     return labels
 __STUDIO_EOF_1b54c58a2a23__
-cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_a6ca514a20fa__'
+cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_6c1061bfdc9a__'
 """Per-segment attempt lifecycle: synthesize -> transcribe -> QA -> score -> retry/flag.
 
 Budget rules (crash-safe):
@@ -14136,6 +14359,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
                 break
             attempt_no = seg["attempts_used"] + 1
             params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, plan.instruct or "")
+            params.directable_model = plan.directable_model
             cur = conn.execute(
                 """INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id,
                        fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped,
@@ -14275,8 +14499,8 @@ def recover_interrupted(conn) -> dict:
 
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
-__STUDIO_EOF_a6ca514a20fa__
-cat > "$DEST/studio/platform_services.py" <<'__STUDIO_EOF_6d7f7e457f3b__'
+__STUDIO_EOF_6c1061bfdc9a__
+cat > "$DEST/studio/platform_services.py" <<'__STUDIO_EOF_b58e5937fbea__'
 """PlatformService implementations.
 
 MacPlatformService  per-user launchd LaunchAgent (gui/<uid> domain). No sudo, no daemon, no /Library, no shell profiles.
@@ -14370,17 +14594,27 @@ class MacPlatformService(PlatformService):
         except FileNotFoundError:
             pass
 
+    def _bootstrap(self, label: str) -> None:
+        r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(self.plist_path(label))])
+        if r.returncode != 0:
+            raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
+
     def start(self, label: str) -> None:
         if not self._loaded(label):
-            r = self.run(["/bin/launchctl", "bootstrap", self._domain(), str(self.plist_path(label))])
-            if r.returncode != 0:
-                raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.stdout.strip()}")
-        self.run(["/bin/launchctl", "kickstart", f"{self._domain()}/{label}"])
+            self._bootstrap(label)
+        r = self.run(["/bin/launchctl", "kickstart", f"{self._domain()}/{label}"])
+        if r.returncode != 0 and not self._loaded(label):  # the job went away between the check and the kickstart: load it again
+            self._bootstrap(label)
 
-    def stop(self, label: str) -> None:
-        # bootout stops the process and keeps KeepAlive from restarting it until start()
+    def stop(self, label: str, timeout: float = 60.0, poll: float = 0.25) -> None:
+        # bootout stops the process and keeps KeepAlive from restarting it until start(). It can return while the job is still being torn
+        # down (the server finishing a segment); a start() in that window saw it "loaded", only kickstarted a job that was going away, and
+        # nothing ran until the update rolled back (the 0.8.1 -> 0.8.2 update on the Mac, 2026-10-29). So wait until it is really gone.
         if self._loaded(label):
             self.run(["/bin/launchctl", "bootout", f"{self._domain()}/{label}"])
+            deadline = time.monotonic() + timeout
+            while self._loaded(label) and time.monotonic() < deadline:
+                time.sleep(poll)
 
     def restart(self, label: str) -> None:
         if self._loaded(label):
@@ -14509,7 +14743,7 @@ def _alive(pid: int) -> bool:
 
 def default_platform(state_dir: Path) -> PlatformService:
     return MacPlatformService() if sys.platform == "darwin" else ProcessPlatformService(state_dir)
-__STUDIO_EOF_6d7f7e457f3b__
+__STUDIO_EOF_b58e5937fbea__
 cat > "$DEST/studio/pronunciation.py" <<'__STUDIO_EOF_8b16a5d5b9c0__'
 """Pronunciation dictionary (global and per book) and per-voice pace (roadmap C2).
 
@@ -14916,7 +15150,7 @@ class StudioStorageManager(StorageManager):
             p = p.parent
         return shutil.disk_usage(p).free
 __STUDIO_EOF_c422f9cf89b9__
-cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_b80b30d1c5e8__'
+cat > "$DEST/studio/reference.py" <<'__STUDIO_EOF_a9955f73ee45__'
 """Reference-voice lab: sample scripts to read aloud and an objective quality report for a recording.
 
 The scripts are original texts chosen for phonetic variety (plosives, sibilants, long vowels),
@@ -14960,6 +15194,39 @@ SCRIPTS: list[dict] = [
     {"id": "range-sad", "tier": "range", "emotion": "sad", "category": "Optional range", "title": "Quiet and sorrowful",
      "purpose": "Slow, low and reflective. A separate sombre variant only.",
      "text": "The house was quiet now. She sat on the stairs where he used to sit, and listened to the clock, and tried to remember the sound of his laugh."},
+] + [
+    # Emotion reference clips (one per emotion the Director and the Review page offer). A cloned voice takes no written instructions,
+    # but it does follow what the words themselves call for, so each text carries its emotion in the wording: exclamations, broken
+    # sentences, first-person reactions. Used to generate or record a clone's emotion clips.
+    {"id": f"emotion-{e}", "tier": "emotion", "emotion": e, "category": "Emotion reference", "title": title, "purpose": purpose, "text": text}
+    for e, title, purpose, text in (
+        ("joy", "Joy", "Open, delighted, smiling.",
+         "We did it! We actually did it! After all those years of waiting, it finally happened, and I can't stop smiling. Come here, everyone, come and see!"),
+        ("excitement", "Excitement", "Fast, eager, breathless.",
+         "Hurry, hurry, they're opening the gates! Can you hear the crowd? This is it, this is the moment we've been waiting for. Come on, run!"),
+        ("tenderness", "Tenderness", "Soft, close and gentle.",
+         "Hey. It's alright now. Come here, love. You don't have to be brave tonight. I'm right here beside you, and I'm not going anywhere."),
+        ("sadness", "Sadness", "Low, slow, heavy.",
+         "She's gone. I keep setting two cups out in the morning, and then I remember. I just wanted one more day with her. Just one more."),
+        ("grief", "Grief", "Raw, breaking, disbelieving.",
+         "No. No, no, please, not him. He was only nineteen. I told him to wait for me. I told him. Why didn't he wait?"),
+        ("fear", "Fear", "Hushed, tight, terrified.",
+         "Don't move. Please, don't make a sound. Something is in the room with us. I can hear it breathing. Oh God, it's getting closer."),
+        ("anxiety", "Anxiety", "Restless, uncertain, worried.",
+         "What if they don't call back? What if I said the wrong thing? I've checked the phone ten times already. Something's wrong, I just know it."),
+        ("anger", "Anger", "Hard, loud, cutting.",
+         "How dare you! I trusted you with everything, and you threw it all away. Get out. Get out of my house, and don't you ever come back!"),
+        ("surprise", "Surprise", "Sudden, high, astonished.",
+         "Wait, what? You're here? But you said you were still in Paris! Oh my goodness, look at you! I can't believe it's really you!"),
+        ("disgust", "Disgust", "Recoiling, sneering.",
+         "Ugh, what is that smell? Don't touch it. It's rotten, and it's crawling with flies. How could anyone leave food like that to fester? Revolting."),
+        ("determination", "Determination", "Firm, steady, resolute.",
+         "No. We are not turning back. We have come too far and lost too much. Tomorrow at dawn we march, and we will not stop until it's done."),
+        ("humor", "Humor", "Dry, amused, light.",
+         "Well, that went brilliantly. The cake collapsed, the dog ate all the candles, and Uncle Bernard is now wearing the trifle. Best party ever, honestly."),
+        ("resignation", "Resignation", "Flat, tired, defeated.",
+         "Fine. Do whatever you want. It doesn't really matter anymore. I stopped expecting anything to change a long, long time ago. It never does."),
+    )
 ]
 
 AUDITION_TEXT = ("The lighthouse at Gull Point had stood empty for eleven years before Margaret Hale climbed its stairs. "
@@ -15099,7 +15366,7 @@ def compare_takes(takes: list[dict]) -> dict:
     for r in rows:
         r["recommended"] = bool(best and r["id"] == best["id"])
     return {"rows": rows, "recommended_id": best["id"] if best else None}
-__STUDIO_EOF_b80b30d1c5e8__
+__STUDIO_EOF_a9955f73ee45__
 cat > "$DEST/studio/reports.py" <<'__STUDIO_EOF_d7c04f37b6d5__'
 """Review summary reports (JSON + self-contained, escaped HTML)."""
 from __future__ import annotations
@@ -15676,7 +15943,7 @@ class SecretStore:
             out[slot] = {"label": label, "configured": has, "updated_at": entry.get("updated_at") if has else None}
         return out
 __STUDIO_EOF_ae0d5bdc74d1__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_909689d4ec74__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_3c50270d2b98__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -15779,13 +16046,69 @@ def _voice_dict(conn, v: dict, vv: dict | None = None, used: int | None = None, 
 
 
 def list_voices(ctx, include_archived: bool = False) -> list[dict]:
-    """A constant number of queries however many voices exist (versions, book counts and clone sources are batched)."""
+    """A constant number of queries however many voices exist (versions, book counts, clone sources and samples are batched)."""
     with ctx.db.session() as conn:
         vs = rows(conn, "SELECT * FROM voices " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY builtin DESC, name")
         vvs = {r["id"]: r for r in rows(conn, "SELECT * FROM voice_versions WHERE id IN (SELECT current_version_id FROM voices)")}
         used = {r["voice_id"]: r["n"] for r in rows(conn, "SELECT voice_id, COUNT(*) AS n FROM books WHERE archived=0 GROUP BY voice_id")}
         designs = rows(conn, "SELECT id, name, archived FROM voices WHERE kind='design' ORDER BY archived, id DESC")
-        return [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
+        pending = _pending_samples(conn)
+        out = [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
+    for d in out:
+        d["sample"] = _sample_state(ctx, d, pending)
+    return out
+
+
+# ------------------------------------------------------------ narrator samples (the play button on a narrator tile)
+
+SAMPLE_TEXT = ("Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, "
+               "trembling lines on the black water.")
+
+
+def sample_path(ctx, uid: str, version_id: int) -> Path:
+    """Kept beside the voice's references, outside the previews folder (whose old files are pruned), one per voice version."""
+    return ctx.category_dir("references", ctx.settings()) / uid / f"sample-v{int(version_id)}.wav"
+
+
+def _pending_samples(conn) -> dict[int, dict]:
+    out = {}
+    for j in rows(conn, "SELECT id, status, payload_json FROM jobs WHERE kind='preview' AND status IN ('queued','running') AND payload_json LIKE '%\"tile\":true%'"):
+        p = loads(j["payload_json"], {})
+        out[p.get("voice_version_id")] = {"job_id": j["id"], "status": j["status"]}
+    return out
+
+
+def _sample_state(ctx, v: dict, pending: dict) -> dict:
+    vid = (v.get("version") or {}).get("id")
+    if not vid:
+        return {"status": "none"}
+    try:
+        ready = sample_path(ctx, v["uid"], vid).exists()
+    except OSError:
+        ready = False
+    if ready:
+        return {"status": "ready", "url": f"/media/voice/{v['id']}/sample?v={vid}"}
+    if vid in pending:
+        return pending[vid]
+    return {"status": "none"}
+
+
+def voice_sample(ctx, voice_id: int) -> dict:
+    with ctx.db.session() as conn:
+        v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not v:
+            raise ServiceError("Voice not found", 404)
+        pending = _pending_samples(conn)
+    return _sample_state(ctx, {"id": v["id"], "uid": v["uid"], "version": {"id": v["current_version_id"]}}, pending)
+
+
+def request_sample(ctx, voice_id: int) -> dict:
+    """Generate the narrator's sample once (it is then kept until the voice changes): a queued preview job, deduplicated."""
+    st = voice_sample(ctx, voice_id)
+    if st["status"] != "none":
+        return st
+    enqueue_preview(ctx, voice_id, SAMPLE_TEXT, None, verify=False, seed=1234, allow_archived=True, extra={"tile": True})
+    return voice_sample(ctx, voice_id)
 
 
 def get_voice(ctx, voice_id: int) -> dict:
@@ -15883,7 +16206,7 @@ def create_clone_voice(ctx, name: str, filename: str, data: bytes, ref_text: str
         info["warnings"].append("The transcript looks long for this clip; it must match the audio exactly.")
     consent_rec = {"owner_attest": True, "rights_holder": rights_holder, "statement": str(consent.get("statement") or "")[:1000],
                    "attested_at": now(), "original_filename": safe_filename(filename), "sha256": sha256_bytes(data),
-                   **{k: consent[k] for k in ("source_voice_id", "source_voice_name") if consent.get(k) is not None}}
+                   **{k: consent[k] for k in ("source_voice_id", "source_voice_name", "source_seed", "source_instruct", "source_job_id") if consent.get(k) is not None}}
     with ctx.db.tx() as conn:
         name = _check_name(conn, name)
         vid = conn.execute("INSERT INTO voices(uid, name, kind, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
@@ -16062,7 +16385,9 @@ def promote_preview_to_clone(ctx, job_id: int, name: str) -> dict:
     out = create_clone_voice(ctx, name, path.name, data, p["text"],
                              {"owner_attest": True, "rights_holder": f"{SYNTHETIC_HOLDER} ('{v['name']}')",
                               "statement": f"Reference generated locally by Qwen3-TTS VoiceDesign (preview job {job_id}); no human voice involved.",
-                              "source_voice_id": v["id"], "source_voice_name": v["name"]})
+                              "source_voice_id": v["id"], "source_voice_name": v["name"],
+                              # what produced this exact clip, so emotion takes from the designed voice can start from the same point
+                              "source_seed": p.get("seed"), "source_instruct": p.get("instruct"), "source_job_id": job_id})
     return out
 
 
@@ -16279,7 +16604,26 @@ def _ref_dict(r: dict) -> dict:
             "source_ref": r["source_ref"], "metrics": m, "created_at": r["created_at"], "mock": m.get("engine") == "mock"}
 
 
+def _candidate_dict(m: dict) -> dict:
+    return {"id": m["id"], "label": m.get("label"), "created_at": m.get("created_at"), "duration_s": m.get("duration_s"),
+            "source": m.get("candidate_source") or "design", "asr_check": m.get("asr_check"), "drift": m.get("drift"),
+            "similarity": m.get("similarity"), "engine": m.get("engine"), "mock": m.get("engine") == "mock", "note": m.get("note")}
+
+
+def _pending_candidate_jobs(conn, voice_id: int) -> list[dict]:
+    """Queued or running emotion-candidate jobs for one clone."""
+    out = []
+    for j in rows(conn, "SELECT id, status, payload_json, created_at FROM jobs WHERE kind='preview' AND status IN ('queued','running') "
+                        "AND payload_json LIKE ? ORDER BY id", (f'%"target_voice_id":{int(voice_id)}%',)):
+        p = loads(j["payload_json"], {})
+        if p.get("to_lab") and p.get("target_voice_id") == voice_id:
+            out.append({"job_id": j["id"], "status": j["status"], "bucket": p.get("bucket"), "source": p.get("source") or "design", "created_at": j["created_at"]})
+    return out
+
+
 def list_refs(ctx, voice_id: int) -> dict:
+    """The clone's emotion clips, one row per emotion, with the takes waiting to be judged (lab drafts made for this clone) and any
+    take still being generated."""
     from .narrative import refbank as RB
 
     with ctx.db.session() as conn:
@@ -16287,10 +16631,17 @@ def list_refs(ctx, voice_id: int) -> dict:
         have = {r["bucket"]: r for r in rows(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (voice_id,))}
         src = clone_source_voice(conn, v)
         synthetic = _is_synthetic_consent(_clone_consent(conn, v))
+        pending = _pending_candidate_jobs(conn, voice_id)
+    drafts = [m for m in list_recordings(ctx) if m.get("target_voice_id") == voice_id]
+    s = ctx.settings()
     return {"voice_id": voice_id, "synthetic": synthetic,
             "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])} if src else None,
-            "buckets": [{"bucket": b, "label": info["label"], "emotion_text": info["emotion_text"], "script_id": info["script_id"],
-                         "ref": _ref_dict(have[b]) if b in have else None} for b, info in RB.BUCKET_INFO.items()]}
+            "sources": ["clone", "intensify"] + (["design"] if synthetic and src else []) + (["directable"] if directable_available(ctx) else []),
+            "min_similarity": s.narrative.delivery.bank_min_similarity,
+            "buckets": [{"bucket": b, "label": info["label"], "family": info["family"], "emotion_text": info["emotion_text"], "script_id": info["script_id"],
+                         "ref": _ref_dict(have[b]) if b in have else None,
+                         "pending": next((p for p in pending if p["bucket"] == b), None),
+                         "candidates": [_candidate_dict(m) for m in drafts if m.get("bucket") == b]} for b, info in RB.BUCKET_INFO.items()]}
 
 
 def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: bool = False, statement: str = "") -> dict:
@@ -16317,7 +16668,16 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
         src = clone_source_voice(conn, v)
     synthetic_clone = _is_synthetic_consent(consent_base)
     statement = " ".join((statement or "").split())
-    if synthetic_clone:
+    sim, min_sim = meta.get("similarity"), s.narrative.delivery.bank_min_similarity
+    if meta.get("source") == "synthetic" and min_sim is not None and sim is not None and float(sim) < min_sim and meta.get("engine") != "mock":
+        raise ServiceError(f"This take does not sound enough like {v['name']} (speaker similarity {float(sim):.3f}, at least {min_sim:.3f} required). "
+                           "Discard it and generate another.", 422, {"similarity": sim})
+    self_made = meta.get("source") == "synthetic" and meta.get("source_voice_id") == voice_id
+    if self_made:
+        # generated by this clone itself (its own reference, or one of its adopted clips): the voice is the clone's own
+        consent = {"type": "self", "source_voice_id": voice_id, "source_voice_name": v["name"], "candidate_source": meta.get("candidate_source"),
+                   "note": "Generated locally by this narrator itself; no other voice involved."}
+    elif synthetic_clone:
         if meta.get("source") != "synthetic":
             raise ServiceError("This clone was made from a designed (synthetic) voice, so its emotion clips must be generated by that voice "
                                "('Generate candidates'); a human recording cannot be adopted into it.", 422)
@@ -16347,7 +16707,8 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
     cen, cen_base = VC.spectral_centroid(adj, clip_sr), VC.spectral_centroid(base, base_sr)
     metrics = {"gain_db": round(gain_db, 2), "f0_hz": round(f0, 1) if f0 else None, "base_f0_hz": round(f0_base, 1) if f0_base else None,
                "f0_delta_hz": round(f0 - f0_base, 1) if f0 and f0_base else None, "centroid_hz": round(cen, 1), "base_centroid_hz": round(cen_base, 1),
-               "centroid_delta_hz": round(cen - cen_base, 1), "wer": chk.get("wer"), "engine": meta.get("engine"), "script": meta.get("script_title")}
+               "centroid_delta_hz": round(cen - cen_base, 1), "wer": chk.get("wer"), "engine": meta.get("engine"), "script": meta.get("script_title"),
+               "similarity": sim, "candidate_source": meta.get("candidate_source")}
     if meta.get("engine") == "mock":
         metrics["note"] = "Mock engine: synthetic test tones, not speech."
     ref_dir = ctx.category_dir("references", s) / v["uid"] / "refs"
@@ -16366,6 +16727,9 @@ def adopt_ref(ctx, voice_id: int, bucket: str, recording_id: str, owner_attest: 
         new_id = max(scalar(conn, "SELECT MAX(id) FROM voice_refs", (), 0) or 0, scalar(conn, "SELECT MAX(ref_id_used) FROM attempts", (), 0) or 0) + 1
         if old:
             conn.execute("DELETE FROM voice_refs WHERE id=?", (old["id"],))
+            for p in (old["ref_audio_path"], old["ref_original_path"]):  # an old original with another extension (or a pre-v0.9 bucket name)
+                if p and Path(p) not in (wav_dst, orig_dst):
+                    Path(p).unlink(missing_ok=True)
         conn.execute(
             """INSERT INTO voice_refs(id, voice_id, bucket, ref_audio_path, ref_original_path, ref_text, ref_sha256, ref_duration_s, source, source_ref,
                    consent_json, metrics_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
@@ -16390,37 +16754,106 @@ def remove_ref(ctx, voice_id: int, ref_id: int) -> dict:
     return list_refs(ctx, voice_id)
 
 
-def generate_ref_candidates(ctx, voice_id: int, bucket: str, source_voice_id: int | None = None, n: int = 3) -> dict:
-    """Ask the designed voice a synthetic clone came from for ``n`` takes in one emotional register. Each finished job registers
-    a draft in the reference lab (with a Whisper check and its drift from the clone's base reference), ready to audition and adopt."""
+CANDIDATE_SOURCES = ("clone", "intensify", "design", "directable")
+
+
+def directable_available(ctx) -> bool:
+    """Whether this engine can render a clone with written instructions (its speaker vector in the CustomVoice model; see
+    engines.MlxQwenEngine). The mock engine imitates it for tests."""
+    return bool(getattr(ctx.settings().models, "directable_clones", True))
+
+
+def generate_ref_candidates(ctx, voice_id: int, bucket: str, source: str = "clone", source_voice_id: int | None = None) -> dict:
+    """Queue ONE take of an emotion clip for a cloned narrator. The finished job registers a draft in the reference lab (Whisper
+    check, speaker similarity and drift from the clone's base reference), listed under that emotion until it is adopted or discarded.
+
+    source  clone       the clone itself reads the emotion script (its identity is kept by construction; the emotion comes from the words)
+            intensify   the same, but from the emotion's adopted clip instead of the base reference (pushes an existing clip further)
+            directable  the clone's speaker vector in the instruction-following CustomVoice model, with the emotion as an instruction
+            design      the designed voice a synthetic clone came from, with the emotion as an instruction (may not sound like the narrator)
+    """
     from . import reference as R
     from .narrative import refbank as RB
+    from .narrative import vocab as V
 
     if bucket not in RB.BUCKETS:
         raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
-    n = max(1, min(5, int(n or 3)))
+    if source not in CANDIDATE_SOURCES:
+        raise ServiceError(f"source must be one of: {', '.join(CANDIDATE_SOURCES)}", 422)
+    info = RB.BUCKET_INFO[bucket]
+    script = R.script_by_id(info["script_id"])
     with ctx.db.session() as conn:
         v = _clone_row(conn, voice_id)
+        if any(p["bucket"] == bucket for p in _pending_candidate_jobs(conn, voice_id)):
+            raise ServiceError(f"A {info['label'].lower()} take for {v['name']} is already being generated. Wait for it, then judge it.", 409)
+        consent = _clone_consent(conn, v)
+        synthetic = _is_synthetic_consent(consent)
         src = clone_source_voice(conn, v)
-        synthetic = _is_synthetic_consent(_clone_consent(conn, v))
         if src is None and synthetic and source_voice_id:
             src = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (source_voice_id,))
             if not src:
                 raise ServiceError("source_voice_id is not a designed voice.", 422)
+        adopted = row(conn, "SELECT id FROM voice_refs WHERE voice_id=? AND bucket=?", (voice_id, bucket))
+    take = sum(1 for m in list_recordings(ctx) if m.get("target_voice_id") == voice_id and m.get("bucket") == bucket) + 1
+    seed = 7001 + 101 * take + 13 * RB.BUCKETS.index(bucket)
+    extra = {"to_lab": True, "bucket": bucket, "script_id": script["id"], "target_voice_id": voice_id, "candidate": take, "source": source}
+    phrase = V.EMOTION_PHRASES.get(bucket, info["emotion_text"])
+    if source in ("clone", "intensify", "directable"):
+        if source == "intensify":
+            if not adopted:
+                raise ServiceError(f"{v['name']} has no {info['label'].lower()} clip to intensify yet; generate a take from the clone first.", 422)
+            extra["ref_override"] = adopted["id"]
+        instruct = None
+        if source == "directable":
+            if not directable_available(ctx):
+                raise ServiceError("Directable takes are switched off in Settings (Models).", 422)
+            extra["directable"] = True
+            instruct = f"Speak {phrase}."
+        job = enqueue_preview(ctx, voice_id, script["text"], instruct, verify=True, seed=seed, allow_archived=True,
+                              extra={**extra, "source_voice_id": voice_id})
+        return {"voice_id": voice_id, "bucket": bucket, "source": source, "job": job}
     if not synthetic:
-        raise ServiceError("Candidates can only be generated for a clone made from a designed voice. For a human voice, record the clips in the "
-                           "Recording lab and adopt them here.", 422)
+        raise ServiceError("Design takes need a clone made from a designed voice. Generate the take from the clone itself instead.", 422)
     if src is None:
         raise ServiceError("The designed voice this clone came from could not be found; pass source_voice_id.", 422)
-    info = RB.BUCKET_INFO[bucket]
-    script = R.script_by_id(info["script_id"])
-    jobs = []
-    for i in range(n):
-        jobs.append(enqueue_preview(
-            ctx, src["id"], script["text"], f"Deliver the whole passage in a {info['emotion_text']} manner.", verify=True,
-            seed=7001 + 101 * i + 13 * RB.BUCKETS.index(bucket), allow_archived=True,
-            extra={"to_lab": True, "bucket": bucket, "script_id": script["id"], "target_voice_id": voice_id, "source_voice_id": src["id"], "candidate": i + 1}))
-    return {"voice_id": voice_id, "bucket": bucket, "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])}, "jobs": jobs}
+    # the same seed (and preview instruction) that produced the clone's base clip keeps the designed voice as close as it can get
+    base_seed = consent.get("source_seed") or 1234
+    instruct = " ".join(x for x in (consent.get("source_instruct"), f"Deliver the whole passage {phrase}.") if x)
+    job = enqueue_preview(ctx, src["id"], script["text"], instruct, verify=True, seed=int(base_seed), allow_archived=True,
+                          extra={**extra, "source_voice_id": src["id"]})
+    return {"voice_id": voice_id, "bucket": bucket, "source": source, "job": job,
+            "source_voice": {"id": src["id"], "name": src["name"], "archived": bool(src["archived"])}}
+
+
+def discard_candidate(ctx, voice_id: int, rid: str) -> dict:
+    """Reject one emotion take (its lab draft is deleted)."""
+    meta = get_recording(ctx, rid)
+    if meta.get("target_voice_id") != voice_id:
+        raise ServiceError("That take was not made for this narrator.", 404)
+    delete_recording(ctx, rid)
+    return list_refs(ctx, voice_id)
+
+
+def discard_candidates(ctx, voice_id: int, bucket: str) -> dict:
+    """Reject every take of one emotion (none were usable), and withdraw a take that is still waiting for the GPU worker."""
+    from .narrative import refbank as RB
+
+    if bucket not in RB.BUCKETS:
+        raise ServiceError(f"bucket must be one of: {', '.join(RB.BUCKETS)}", 422)
+    n = 0
+    for m in list_recordings(ctx):
+        if m.get("target_voice_id") == voice_id and m.get("bucket") == bucket:
+            delete_recording(ctx, m["id"])
+            n += 1
+    with ctx.db.tx() as conn:
+        _clone_row(conn, voice_id)
+        for p in _pending_candidate_jobs(conn, voice_id):
+            if p["bucket"] == bucket and p["status"] == "queued":
+                conn.execute("UPDATE jobs SET status='cancelled', finished_at=?, updated_at=? WHERE id=? AND status='queued'", (now(), now(), p["job_id"]))
+                n += 1
+    out = list_refs(ctx, voice_id)
+    out["discarded"] = n
+    return out
 
 
 # ====================================================================== imports
@@ -17786,7 +18219,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_909689d4ec74__
+__STUDIO_EOF_3c50270d2b98__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -20822,7 +21255,7 @@ def add_version(ctx, book_id: int, voice_id: int, instructions: str | None = Non
 __STUDIO_EOF_533aecc73aba__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_99a2b45eba5a__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_261c264c3565__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -21076,8 +21509,8 @@ class FromRecordingReq(_Req):
 
 class RefCandidatesReq(_Req):
     bucket: str = Field(max_length=20)
+    source: str = Field("clone", max_length=20)   # clone | intensify | directable | design (services.generate_ref_candidates)
     source_voice_id: Optional[int] = None
-    n: int = Field(3, ge=1, le=5)
 
 
 class RefAdoptReq(_Req):
@@ -21575,7 +22008,16 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     @app.post("/api/voices/{voice_id}/refs/candidates")
     def api_voice_ref_candidates(voice_id: int, req: RefCandidatesReq):
-        return S.generate_ref_candidates(ctx, voice_id, req.bucket, req.source_voice_id, req.n)
+        return S.generate_ref_candidates(ctx, voice_id, req.bucket, req.source, req.source_voice_id)
+
+    # before /refs/{ref_id}: "candidates" is not a clip id
+    @app.delete("/api/voices/{voice_id}/refs/candidates/{rid}")
+    def api_voice_ref_candidate_discard(voice_id: int, rid: str):
+        return S.discard_candidate(ctx, voice_id, rid)
+
+    @app.delete("/api/voices/{voice_id}/refs/candidates")
+    def api_voice_ref_candidates_discard(voice_id: int, bucket: str):
+        return S.discard_candidates(ctx, voice_id, bucket)
 
     @app.post("/api/voices/{voice_id}/refs/adopt")
     def api_voice_ref_adopt(voice_id: int, req: RefAdoptReq):
@@ -21584,6 +22026,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     @app.delete("/api/voices/{voice_id}/refs/{ref_id}")
     def api_voice_ref_delete(voice_id: int, ref_id: int):
         return S.remove_ref(ctx, voice_id, ref_id)
+
+    @app.get("/api/voices/{voice_id}/sample")
+    def api_voice_sample(voice_id: int):
+        return S.voice_sample(ctx, voice_id)
+
+    @app.post("/api/voices/{voice_id}/sample")
+    def api_voice_sample_request(voice_id: int):
+        return S.request_sample(ctx, voice_id)
 
     @app.post("/api/voices/{voice_id}/preview")
     def api_voice_preview(voice_id: int, req: PreviewReq):
@@ -21764,6 +22214,15 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         p = Path(vv["ref_audio_path"])
         return _serve(p, [p.parent], request, None)
 
+    @app.api_route("/media/voice/{voice_id}/sample", methods=["GET", "HEAD"])
+    def media_voice_sample(voice_id: int, request: Request):
+        with ctx.db.session() as conn:
+            v = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not v:
+            raise S.ServiceError("Voice not found", 404)
+        p = S.sample_path(ctx, v["uid"], v["current_version_id"])
+        return _serve(p, [p.parent], request, None)
+
     @app.api_route("/media/voice/{voice_id}/ref/{ref_id}", methods=["GET", "HEAD"])
     def media_voice_bank_ref(voice_id: int, ref_id: int, request: Request):
         with ctx.db.session() as conn:
@@ -21860,7 +22319,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_99a2b45eba5a__
+__STUDIO_EOF_261c264c3565__
 cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_b70b0c22eb95__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
@@ -22719,7 +23178,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_5cd414f9fcb1__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_2958c3f33d55__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_eee72cf83c93__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -23257,7 +23716,46 @@ details.earlier summary { cursor: pointer; font-size: .82rem; color: var(--muted
 .regen-explain ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
 .regen-explain .instruct-text { font-style: italic; }
 @media (max-width: 900px) { .regen-wrap { grid-template-columns: 1fr; } }
-__STUDIO_EOF_2958c3f33d55__
+
+/* ---- Narrator Studio tiles and the narrator page (v0.9.0) ---- */
+.narrator-tile { display: flex; flex-direction: column; gap: .5rem; padding: .9rem 1rem; }
+.narrator-tile .tile-link { color: inherit; text-decoration: none; display: block; border-radius: 6px; }
+.narrator-tile .tile-link:hover h3, .narrator-tile .tile-link:focus-visible h3 { text-decoration: underline; color: var(--accent); }
+.narrator-tile h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
+.tile-desc { margin: 0; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.tile-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: auto; }
+.tile-foot .play-btn { margin-left: auto; }
+.tile-note { margin: 0; }
+.play-btn { min-width: 2.75rem; min-height: 2.75rem; border-radius: 50%; font-size: 1rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.play-btn.ready, .play-btn.none, .play-btn.blocked { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.play-btn.playing { background: var(--accent-soft); color: var(--accent); }
+.add-narrator > summary { cursor: pointer; list-style: revert; }
+.add-narrator > summary h2 { display: inline; margin: 0; font-size: 1.1rem; }
+.add-narrator[open] > summary { margin-bottom: .75rem; }
+.nr-head { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; margin-bottom: .75rem; }
+.nr-desc { margin: .4rem 0 .2rem; }
+#nr-panel { margin-top: 1rem; display: grid; gap: 1rem; }
+tr.current td { font-weight: 600; }
+.emo-family { font-size: .95rem; margin: 1.1rem 0 .4rem; color: var(--muted); }
+.emo-list, .take-list, .tool-list { list-style: none; margin: 0; padding: 0; }
+.emo-row { border: 1px solid var(--border); border-radius: var(--radius); padding: .6rem .75rem; margin-bottom: .5rem; background: var(--surface); }
+.emo-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.emo-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .45rem; }
+.take-list { margin-top: .5rem; border-top: 1px dashed var(--border); }
+.take { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .45rem 0; border-bottom: 1px dashed var(--border); }
+.take-actions { display: inline-flex; gap: .4rem; margin-left: auto; }
+.tool-list li { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .5rem 0; border-bottom: 1px solid var(--border); }
+.tool-list li:last-child { border-bottom: 0; }
+.tone-text-good { color: var(--good); }
+.tone-text-warn { color: var(--warn); }
+.tone-text-bad { color: var(--bad); font-weight: 600; }
+.tone-text-neutral { color: var(--muted); }
+.tabs a.tab { text-decoration: none; display: inline-block; }
+@media (max-width: 600px) {
+  .nr-head { flex-direction: column; }
+  .take-actions { margin-left: 0; }
+}
+__STUDIO_EOF_eee72cf83c93__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 <!doctype html>
 <html lang="en">
@@ -23311,13 +23809,14 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 </html>
 __STUDIO_EOF_31fd707206f2__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_e343455cc84d__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_d221a110f980__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy, setSessionUser } from "./ui.js";
 import * as overview from "./views/overview.js";
 import * as library from "./views/library.js";
 import * as queue from "./views/queue.js";
 import * as voices from "./views/voices.js";
+import * as narrator from "./views/narrator.js";
 import * as review from "./views/review.js";
 import * as book from "./views/book.js";
 import * as settings from "./views/settings.js";
@@ -23328,7 +23827,7 @@ import * as updates from "./views/updates.js";
 import * as disk from "./views/disk.js";
 import * as pronunciation from "./views/pronunciation.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
+const ROUTES = { overview, library, queue, voices, narrator, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
 let cleanup = null;
 let currentKey = "";
 
@@ -23373,7 +23872,7 @@ async function route() {
   navAbort = new AbortController();
   const nav = { signal: navAbort.signal, isCurrent: () => token === navToken };
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
+    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review") || (name === "narrator" && a.dataset.nav === "voices");
     a.classList.toggle("active", active);
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
@@ -23601,7 +24100,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_e343455cc84d__
+__STUDIO_EOF_d221a110f980__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -25556,7 +26055,7 @@ export async function render(view, parts, query, nav) {
   };
 }
 __STUDIO_EOF_5bbecfb1b732__
-cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_12ce0cfe4f36__'
+cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_94c29e42bd76__'
 // Shared description of the narrative settings, used by the global Settings page and the per-book overrides editor.
 import { html } from "../ui.js";
 
@@ -25590,11 +26089,13 @@ export const NARRATIVE_FIELDS = [
     ["delivery.custom_voice", "CustomVoice (preset speakers) — emotion/style instruction", "select", { options: [["instruct", "send as instruct"], ["off", "off"]] }],
     ["delivery.voice_design", "VoiceDesign — instruction is the voice description itself", "select", { options: [["append", "append delivery to the description"], ["off", "off"]] }],
     ["delivery.max_instruct_chars", "Longest instruction sent to a model (characters)", "number", { min: 40, max: 400 }],
-    ["delivery.clone", "Cloned voices: emotion via reference clips", "select", { options: [["reference_bank", "pick a reference clip per emotion"], ["off", "off"]] }],
+    ["delivery.clone", "Cloned voices: how emotion reaches them", "select", { options: [["reference_bank", "pick the narrator's reference clip for the emotion"],
+      ["directable", "directable: the narrator's voice reads the written instruction (experimental)"], ["off", "off"]] }],
     ["delivery.pace_from_direction", "Pace from the Director's direction", "select", { options: [["off", "off"], ["auto", "auto (only when no instruction reaches the model)"], ["always", "always"]] }],
     ["delivery.pauses_from_direction", "Pauses from the Director's direction", "bool"],
     ["delivery.translator", "Direction-to-instruction translator", "select", { options: [["template", "built-in templates"], ["llm", "small LLM"]] }],
-    ["delivery.bank_min_intensity", "Weakest emotion intensity (1–5) that uses a reference clip", "number", { min: 1, max: 5 }]]],
+    ["delivery.bank_min_intensity", "Weakest emotion intensity (1–5) that changes a cloned voice", "number", { min: 1, max: 5 }],
+    ["delivery.bank_min_similarity", "Lowest speaker similarity an emotion take may have to be adopted (0.5–1; blank = not enforced)", "number", { min: 0.5, max: 1, step: 0.005 }]]],
   ["Local LLM (OpenAI-compatible endpoint)", [
     ["llm.provider", "Provider", "select", { options: [["none", "none (rules engine only)"], ["openai_compatible", "OpenAI-compatible server"]] }],
     ["llm.base_url", "Base URL (e.g. http://127.0.0.1:1234/v1)", "text"],
@@ -25639,7 +26140,7 @@ export function readInput(form, prefix, [path, , type]) {
 }
 
 export const allFields = () => NARRATIVE_FIELDS.flatMap(([, fields]) => fields);
-__STUDIO_EOF_12ce0cfe4f36__
+__STUDIO_EOF_94c29e42bd76__
 cat > "$DEST/studio/web/static/js/views/narrative.js" <<'__STUDIO_EOF_f6fd8b4c43b8__'
 // Narrative page for one book: analysis stages, project-level overrides, character directory, story notes.
 import { get, post, put, patch, api, html, setHTML, badge, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, ApiError, qs, navigate } from "../ui.js";
@@ -25959,6 +26460,514 @@ export async function render(view, parts) {
 }
 export { toastError };
 __STUDIO_EOF_f6fd8b4c43b8__
+cat > "$DEST/studio/web/static/js/views/narrator-common.js" <<'__STUDIO_EOF_afd9d3ebfa9d__'
+// Dialogs and small views shared by the Narrator Studio tiles (voices.js) and the narrator page (narrator.js).
+import { get, post, patch, html, toast, toastError, busy, dialog } from "../ui.js";
+
+export const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, trembling lines on the black water.";
+
+export function lineage(v) {
+  const d = v.derived_from;
+  if (d) return d.relation === "retune" ? `Retuned from ${d.voice_name}` : `Copy of ${d.voice_name}`;
+  if (v.kind === "clone" && v.source_voice) return `Promoted from the designed voice ${v.source_voice.name}${v.source_voice.archived ? " (archived)" : ""}`;
+  return "";
+}
+
+const normNl = (t) => String(t || "").split("\r").join("").trim();
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+export function freeName(voices, base) {
+  const taken = new Set((voices || []).map((x) => x.name.toLowerCase()));
+  let n = base, i = 2;
+  while (taken.has(n.toLowerCase())) n = base.replace(/\)$/, "") + ` ${i++})`;
+  return n.slice(0, 80);
+}
+
+function versionNote(v) {
+  const nv = v.version.version;
+  if (v.builtin) return html`<p class="callout info small"><strong>${v.name}</strong> is a built-in speaker, so its name and speaker are fixed. You can change only its
+    <strong>delivery instruction</strong>. Saving creates <strong>version ${nv + 1}</strong> of ${v.name}; previews and new books use it straight away, but books already
+    narrated with version ${nv} keep that version until you switch them on the book page. To keep ${v.name} as it is and try a variation, use
+    <strong>Duplicate &amp; retune…</strong>.</p>`;
+  if (v.kind === "clone") return html`<p class="callout info small">A cloned voice is defined by its reference clip, so only its name can be edited here.
+    Emotion reaches it through its emotion reference clips.
+    ${v.source_voice ? html`To make a variant, use <strong>Retune from ‘${v.source_voice.name}’…</strong>` : "To make a variant, upload a new reference clip"}.</p>`;
+  return html`<p class="callout info small">${v.kind === "design"
+    ? html`You can change the <strong>name</strong> and the <strong>description</strong>. A new description makes VoiceDesign create a different-sounding voice.`
+    : html`You can change the <strong>name</strong>, the <strong>speaker</strong> and the <strong>delivery instruction</strong>.`}
+    Changing the sound saves <strong>version ${nv + 1}</strong> of this voice (renaming does not). Previews and new books use it straight away; books already narrated with
+    version ${nv} keep it until you switch them on the book page. Prefer a separate voice? Use <strong>Duplicate &amp; retune…</strong>.</p>`;
+}
+
+/** Edit dialog. Returns {voice, note} after a save, {duplicate: instruct} when the user chose to duplicate instead, or null. */
+export async function editVoice(b, v, speakers) {
+  const nv = v.version.version;
+  const res = await dialog({ title: v.builtin ? `Delivery for ${v.name} (built-in)` : `Edit ${v.name}`, form: true,
+    buttons: [{ label: v.kind === "clone" ? "Save name" : v.builtin ? `Save as version ${nv + 1}` : "Save", value: "save", kind: "primary" },
+      ...(v.kind !== "clone" ? [{ label: "Duplicate & retune instead…", value: "dup" }] : [])],
+    body: html`${versionNote(v)}
+      ${!v.builtin ? html`<label>Name <input name="name" required maxlength="80" value="${v.name}"></label>` : ""}
+      ${v.kind === "preset" && !v.builtin ? html`<label>Speaker <select name="speaker">${Object.keys(speakers || {}).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>`
+        : v.kind === "preset" ? html`<p class="small">Speaker: <strong>${v.version.speaker}</strong> (fixed)</p>` : ""}
+      ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="4" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${v.version.instruct || ""}</textarea></label>` : ""}` });
+  if (!res) return null;
+  if (res.value === "dup") return { duplicate: res.data.instruct };
+  const body = {};
+  if (res.data.name !== undefined && res.data.name.trim() !== v.name) body.name = res.data.name;
+  if (res.data.instruct !== undefined && normNl(res.data.instruct) !== normNl(v.version.instruct)) body.instruct = res.data.instruct;
+  if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+  if (!Object.keys(body).length) { toast("Nothing was changed.", "info"); return null; }
+  let out;
+  try { out = await busy(b, () => patch(`/api/voices/${v.id}`, body)); } catch (e) { return null; }
+  const nver = out.version.version, made = nver !== nv, older = out.books_on_older_version || [];
+  const vers = [...new Set(older.map((x) => x.voice_version).filter((x) => x))].sort((x, y) => x - y);
+  const still = older.length ? ` ${plural(older.length, "book still uses", "books still use")} ${vers.length ? (vers.length === 1 ? `version ${vers[0]}` : `versions ${vers.join(" and ")}`) : "an earlier version"}.` : "";
+  const msg = made ? `Saved as version ${nver}.${still}` : "Saved (name only: no new version).";
+  toast(msg, made && older.length ? "warn" : "success", 10000);
+  return { voice: out, note: made ? { tone: "good", text: `${msg} Previews and new books use version ${nver} now.${older.length ? " Switch those books from their book page to hear the new sound." : ""}` } : null };
+}
+
+/** Duplicate & retune dialog for a preset or designed voice. Returns the new voice or null. */
+export async function duplicateVoice(b, v, speakers, voices, instruct) {
+  const text = instruct !== undefined ? instruct : (v.version.instruct || "");
+  const res = await dialog({ title: `Duplicate & retune ${v.name}`, form: true, buttons: [{ label: "Create copy", value: "ok", kind: "primary" }],
+    body: html`<p class="callout info small">Creates a <strong>new, separate voice</strong> from ${v.name}’s current settings (version ${v.version.version}) with the delivery you choose below.
+      ${v.name} itself and the books using it are not changed. Then generate a preview of the copy, and keep refining it until you like it.</p>
+      <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(voices, v.name + " (retune)")}"></label>
+      ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(speakers || {}).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
+      <label>${v.kind === "design" ? "Voice description" : "Delivery instruction"} <textarea name="instruct" rows="5" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${text}</textarea></label>` });
+  if (!res) return null;
+  const body = { name: res.data.name };
+  if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
+  if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+  try { return await busy(b, () => post(`/api/voices/${v.id}/duplicate`, body), `Copy of ${v.name} created`); } catch (e) { return null; }
+}
+
+/** Retune a clone from the designed voice it came from. Returns the new designed voice or null. */
+export async function retuneVoice(b, v, voices) {
+  const src = v.source_voice;
+  let srcFull;
+  try { srcFull = await get(`/api/voices/${src.id}`); } catch (e) { toastError(e); return null; }
+  const res = await dialog({ title: `Retune from ‘${src.name}’`, form: true, buttons: [{ label: "Create designed voice", value: "ok", kind: "primary" }],
+    body: html`<p class="callout info small">${v.name} is a stable clone. This creates a <strong>new designed voice</strong> from ‘${src.name}’
+      (the voice ${v.name} was made from), with the description below. ${v.name} is not changed.
+      ${src.archived ? " (The source voice is archived; it can still be used.)" : ""}</p>
+      <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(voices, src.name + " (retune)")}"></label>
+      <label>Voice description <textarea name="instruct" rows="5" required minlength="10" maxlength="1000">${srcFull.version.instruct || ""}</textarea></label>` });
+  if (!res) return null;
+  try { return await busy(b, () => post(`/api/voices/${v.id}/retune`, { name: res.data.name, instruct: res.data.instruct }), "Retuned design voice created"); } catch (e) { return null; }
+}
+
+/** Promote a designed voice's preview to a stable cloned narrator. Returns the new clone or null. */
+export async function promotePreview(b, jobId, name) {
+  const res = await dialog({ title: "Promote preview to a stable narrator", form: true, buttons: [{ label: "Create narrator", value: "ok", kind: "primary" }],
+    body: html`<p>This preview becomes the reference clip of a new cloned narrator, so every segment uses the same voice.</p>
+      <label>Name <input name="name" required maxlength="80" value="${name} (stable)"></label>` });
+  if (!res) return null;
+  try { return await busy(b, () => post("/api/voices/promote", { job_id: Number(jobId), name: res.data.name }), "Stable narrator created"); } catch (e) { return null; }
+}
+__STUDIO_EOF_afd9d3ebfa9d__
+cat > "$DEST/studio/web/static/js/views/narrator-model.js" <<'__STUDIO_EOF_81aaf29be129__'
+// Pure helpers for Narrator Studio (tiles and the narrator page). No DOM, no network: unit-tested in tests/js/narrator_model.test.mjs.
+
+export const KIND = { preset: "Preset speaker", design: "Designed voice", clone: "Cloned voice" };
+export const KIND_LONG = { preset: "Preset speaker (CustomVoice)", design: "Designed voice (VoiceDesign)", clone: "Cloned voice (Base + reference)" };
+
+export const SOURCES = {
+  clone: { label: "Read by the narrator", hint: "The narrator itself reads an emotional script: it keeps its own voice; the emotion comes from the words." },
+  intensify: { label: "Intensify the adopted clip", hint: "The same, starting from this emotion's adopted clip instead of the base reference, to push it further." },
+  directable: { label: "Directed (written instruction)", hint: "The narrator's own voice in the instruction-following model, with the emotion as a written instruction (stronger, experimental)." },
+  design: { label: "From the designed voice", hint: "The designed voice this clone was promoted from, asked for the emotion. Often sounds like a different person." },
+};
+
+/** What a tile's play button shows. sample = {status, url?, job_id?}; local = {wanted, playing, blocked} for this tile. */
+export function tileState(sample, local = {}) {
+  const st = (sample && sample.status) || "none";
+  if (local.playing) return { state: "playing", label: "Stop", icon: "■", busy: false };
+  if (st === "ready") return local.blocked ? { state: "blocked", label: "Ready: press to play", icon: "▶", busy: false }
+    : { state: "ready", label: "Play sample", icon: "▶", busy: false };
+  if (st === "queued" || st === "running") return { state: st, label: st === "queued" ? "Waiting for the GPU worker" : "Generating the sample", icon: "…", busy: true };
+  return { state: "none", label: "Generate and play a sample", icon: "▶", busy: false };
+}
+
+/** Plain-words verdict for a speaker similarity (cosine of Base speaker-encoder vectors vs the narrator's base reference).
+ *  Bands come from one Mac calibration (docs/clone_instruct_experiment.json): the narrator's own takes 0.985-0.996, other people 0.93-0.965. */
+export function similarityVerdict(sim, min, mock) {
+  if (sim === null || sim === undefined) return { tone: "neutral", text: "similarity not measured" };
+  const v = Number(sim).toFixed(3);
+  if (mock) return { tone: "neutral", text: `similarity ${v} (mock engine: not a measurement)` };
+  if (min !== null && min !== undefined && sim < min) return { tone: "bad", text: `similarity ${v}: below the adoption limit ${Number(min).toFixed(3)}` };
+  if (sim >= 0.985) return { tone: "good", text: `similarity ${v}: sounds like the narrator` };
+  if (sim >= 0.97) return { tone: "warn", text: `similarity ${v}: close, listen carefully` };
+  return { tone: "bad", text: `similarity ${v}: likely a different voice` };
+}
+
+/** Group the 13 emotion rows by family for display, keeping the server's order inside each family. */
+export const FAMILY_LABEL = { warm: "Warm", high: "Bright and high", low: "Low and heavy", tense: "Tense", hot: "Hot" };
+export function byFamily(buckets) {
+  const order = ["warm", "high", "low", "tense", "hot"];
+  const groups = new Map(order.map((f) => [f, []]));
+  for (const b of buckets || []) {
+    if (!groups.has(b.family)) groups.set(b.family, []);
+    groups.get(b.family).push(b);
+  }
+  return [...groups].filter(([, list]) => list.length).map(([family, list]) => ({ family, label: FAMILY_LABEL[family] || family, buckets: list }));
+}
+
+/** One line describing a clip's provenance. */
+export function clipLine(ref) {
+  if (!ref) return "";
+  const src = ref.source === "synthetic" ? ((ref.metrics && ref.metrics.candidate_source) ? (SOURCES[ref.metrics.candidate_source] || {}).label || "synthetic" : "synthetic") : "recorded";
+  return `${ref.duration_s}s · ${src}`;
+}
+
+export const NARRATOR_TABS = [["overview", "Overview"], ["emotions", "Emotion references"], ["preview", "Preview"], ["record", "Record & upload"], ["tools", "Tools"]];
+export const tabOf = (q, kind) => {
+  const t = q && q.get ? q.get("tab") : null;
+  const ok = NARRATOR_TABS.some(([k]) => k === t) && (t !== "emotions" || kind === "clone");
+  return ok ? t : "overview";
+};
+__STUDIO_EOF_81aaf29be129__
+cat > "$DEST/studio/web/static/js/views/narrator.js" <<'__STUDIO_EOF_afdb97fdb437__'
+// One narrator's page (#/narrator/ID): details and versions, previews, emotion reference clips (cloned narrators), recording and
+// uploading reference clips, and the tools that edit, copy or retune it. Opened from a tile in Narrator Studio (voices.js).
+import { api, get, post, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player, isAdmin, navigate, patchRegions, onState } from "../ui.js";
+import { createLab } from "./voicelab.js";
+import { KIND_LONG, SOURCES, NARRATOR_TABS, tabOf, tileState, similarityVerdict, byFamily, clipLine } from "./narrator-model.js";
+import { DEFAULT_TEXT, lineage, editVoice, duplicateVoice, retuneVoice, promotePreview } from "./narrator-common.js";
+
+const pforms = {};       // voiceId -> {text, instruct, verify}: the preview form, kept across visits
+const lastPreview = {};  // voiceId -> preview job id
+const notes = {};        // voiceId -> {tone, text}: a callout shown until dismissed ("Saved as version 3")
+let takeSource = "clone";
+
+const TONE = { clone: "approved", design: "info", preset: "good" };
+const DONE = ["completed", "failed", "cancelled"];
+
+function head(v, local) {
+  const t = tileState(v.sample, local);
+  const lin = lineage(v);
+  return html`<div class="nr-head">
+    <div><span class="badge tone-${TONE[v.kind] || "neutral"}">${KIND_LONG[v.kind]}</span>${v.builtin ? html` <span class="badge tone-neutral">built-in</span>` : ""}
+      ${v.archived ? html` <span class="badge tone-warn">archived</span>` : ""}
+      <p class="nr-desc">${v.description || ""}</p>${lin ? html`<p class="small muted">${lin}</p>` : ""}</div>
+    <button class="btn play-btn ${t.state}" type="button" data-act="play" aria-label="${t.label}: ${v.name}" title="${t.label}" ${t.busy ? html`aria-busy="true"` : ""}>
+      ${t.busy ? html`<span class="spinner" aria-hidden="true"></span>` : t.icon}</button>
+  </div>
+  ${t.state === "blocked" ? html`<p class="small muted">The browser blocked automatic playback. Press ▶ to listen.</p>` : ""}
+  ${notes[v.id] ? html`<div class="callout ${notes[v.id].tone || "info"} small" role="status">${notes[v.id].text}
+    <div class="form-actions"><button class="btn small ghost" type="button" data-act="note-dismiss">Dismiss</button></div></div>` : ""}`;
+}
+
+function overview(v) {
+  const vv = v.version;
+  return html`<section class="card" aria-labelledby="ov-h"><h2 id="ov-h">Details</h2>
+    <dl class="kv small">
+      <dt>Version</dt><dd>v${vv.version} · ${fmtDate(vv.created_at)}</dd>
+      <dt>Model</dt><dd><code>${vv.model_id}</code></dd>
+      ${vv.speaker ? html`<dt>Speaker</dt><dd>${vv.speaker}</dd>` : ""}
+      ${vv.instruct ? html`<dt>${v.kind === "design" ? "Description" : "Delivery"}</dt><dd>${vv.instruct}</dd>` : ""}
+      ${v.kind === "clone" ? html`<dt>Transcript</dt><dd>“${vv.ref_text}”</dd><dt>Base reference</dt><dd>${vv.ref_duration_s}s
+        ${player(`/media/voice/${v.id}/reference`, `${v.name} reference clip`, "mini")}</dd>
+        <dt>Consent</dt><dd>${vv.consent ? html`Attested for <strong>${vv.consent.rights_holder}</strong> on ${fmtDate(vv.consent.attested_at)}` : "–"}</dd>` : ""}
+      <dt>Pace</dt><dd>x${Number(v.pace || 1).toFixed(2)} <a class="small" href="#/pronunciation">change</a></dd>
+      <dt>Used by</dt><dd>${v.books_using} book(s)</dd>
+    </dl>
+    ${v.kind === "design" ? html`<p class="callout info small">VoiceDesign re-creates the voice from its description on every segment, so timbre can drift across a long book.
+      Generate a preview you like on the <a href="#/narrator/${v.id}?tab=preview">Preview</a> tab and <strong>promote it to a stable narrator</strong>.</p>` : ""}
+    ${v.kind === "clone" ? html`<p class="small muted">A cloned narrator reads with the voice of its reference clip. Emotion reaches it through its
+      <a href="#/narrator/${v.id}?tab=emotions">emotion reference clips</a>.</p>` : ""}
+  </section>
+  <section class="card" aria-labelledby="vh-h"><h2 id="vh-h">Version history</h2>
+    <div class="table-wrap"><table class="small"><thead><tr><th scope="col">Version</th><th scope="col">Created</th><th scope="col">Model</th><th scope="col">${v.kind === "clone" ? "Reference transcript" : "Instruction / description"}</th></tr></thead>
+    <tbody>${(v.versions || []).map((x) => html`<tr${x.id === vv.id ? html` class="current"` : ""}><td>v${x.version}${x.id === vv.id ? " (current)" : ""}</td><td>${fmtDate(x.created_at)}</td>
+      <td><code>${String(x.model_id || "").split("/").pop()}</code></td><td>${x.instruct || x.ref_text || "–"}</td></tr>`)}</tbody></table></div>
+    <p class="small muted">Books keep the version they were narrated with until you switch them on the book page.</p></section>`;
+}
+
+function previewForm(v) {
+  const pf = pforms[v.id] || {};
+  return html`<section class="card" aria-labelledby="pv-h"><h2 id="pv-h">Preview</h2>
+    <form class="preview-form" id="nr-preview-form">
+      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${pf.text !== undefined ? pf.text : DEFAULT_TEXT}</textarea></label>
+      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered" value="${pf.instruct || ""}"></label>` : ""}
+      <label class="check"><input type="checkbox" name="verify" ${pf.verify ? html`checked` : ""}> Also verify with local Whisper (shows WER)</label>
+      <div class="form-actions"><button class="btn primary" type="submit">Generate preview</button></div>
+    </form>
+    <div class="preview-out" id="nr-pv" aria-live="polite"></div></section>`;
+}
+
+function previewResult(v, j) {
+  if (!j) return "";
+  if (j.status === "queued" || j.status === "running") return html`<p class="muted"><span class="spinner" aria-hidden="true"></span> ${j.status === "queued" ? "Waiting for the GPU worker (previews run between book segments)…" : "Synthesizing…"}</p>`;
+  if (j.status === "failed") return html`<p class="err">Preview failed: ${j.error}</p>`;
+  if (j.status !== "completed" || !j.result) return "";
+  const r = j.result;
+  return html`<div class="preview-result">
+    ${player(`/media/preview/${j.id}`, `${v.name} preview`)}
+    <div class="small muted">${r.duration_s}s audio · ${r.engine} · ${r.rtf ? `RTF ${r.rtf.toFixed(2)}` : ""} ${r.peak_mem_gb ? `· peak ${r.peak_mem_gb.toFixed(1)} GB` : ""}</div>
+    ${r.note ? html`<p class="callout warn small">${r.note}</p>` : ""}
+    ${r.asr_text !== undefined ? html`<p class="small">Whisper heard: “${r.asr_text}” · WER ${(r.wer * 100).toFixed(1)}%</p>` : ""}
+    <div class="form-actions"><a class="btn small" href="/media/preview/${j.id}?download=1" download>Download WAV</a>
+      ${v.kind === "design" ? html`<button class="btn small primary" type="button" data-act="promote" data-job="${j.id}">Promote to stable narrator…</button>` : ""}</div>
+  </div>`;
+}
+
+function emotionsIntro(v, refs) {
+  const opts = refs.sources.filter((k) => SOURCES[k]);
+  if (!opts.includes(takeSource)) takeSource = opts[0];
+  return html`<section class="card" aria-labelledby="em-h"><h2 id="em-h">Emotion references</h2>
+    <p class="small">A cloned narrator takes no written instructions; it sounds like its reference clip. Give it one short clip per emotion, in its own voice:
+      when the reference bank is on for cloned voices (Settings → Delivery), a strongly directed segment uses the clip for its emotion, or a related emotion's
+      clip, else the base reference.</p>
+    <p class="small muted">Generate one take at a time, listen, then <strong>Adopt</strong> or <strong>Discard</strong> it. The speaker-similarity score says whether a take
+      still sounds like ${v.name}; Whisper checks that every word was read.</p>
+    <div class="form-grid"><label>New takes are made <select id="take-source">${opts.map((k) => html`<option value="${k}" ${k === takeSource ? html`selected` : ""}>${SOURCES[k].label}</option>`)}</select></label>
+      <p class="small muted" id="take-source-hint">${SOURCES[takeSource].hint}</p></div>
+    <div id="nr-emo"></div></section>`;
+}
+
+function takeRow(b, c, refs) {
+  const chk = c.asr_check;
+  const sv = similarityVerdict(c.similarity, refs.min_similarity, c.mock);
+  return html`<li class="take" id="take-${c.id}">
+    ${player(`/media/recording/${c.id}`, `${b.label} take`, "mini")}
+    <span class="small">${(SOURCES[c.source] || {}).label || c.source} ·
+      ${chk ? `Whisper WER ${(chk.wer * 100).toFixed(1)}% ${chk.matches ? "(every word read)" : "(words missing or wrong)"}` : "not checked"} ·
+      <span class="tone-text-${sv.tone}">${sv.text}</span>${c.mock ? html` <span class="badge tone-warn">mock test tones</span>` : ""}</span>
+    <span class="take-actions"><button class="btn small primary" type="button" data-act="adopt-take" data-bucket="${b.bucket}" data-label="${b.label}" data-rid="${c.id}"
+      ${chk && chk.matches ? "" : html`disabled title="Only takes whose words all match can be adopted"`}>Adopt</button>
+      <button class="btn small ghost" type="button" data-act="discard" data-rid="${c.id}" data-label="${b.label}">Discard</button></span></li>`;
+}
+
+function emotionRows(v, refs) {
+  return html`${byFamily(refs.buckets).map((g) => html`<h3 class="emo-family">${g.label}</h3><ul class="emo-list">${g.buckets.map((b) => html`<li class="emo-row" id="emo-${b.bucket}">
+    <div class="emo-head"><strong>${b.label}</strong>
+      ${b.ref ? html`<span class="small muted">${clipLine(b.ref)}${b.ref.metrics && b.ref.metrics.similarity !== undefined && b.ref.metrics.similarity !== null ? ` · similarity ${Number(b.ref.metrics.similarity).toFixed(3)}` : ""}</span>
+          ${b.ref.mock ? html`<span class="badge tone-warn">mock test tones</span>` : ""}
+          ${player(`/media/voice/${v.id}/ref/${b.ref.id}`, `${b.label} reference clip`, "mini")}
+          ${isAdmin() ? html`<button class="btn small ghost danger" type="button" data-act="ref-remove" data-ref="${b.ref.id}" data-label="${b.label}">Remove clip</button>` : ""}`
+        : html`<span class="small muted">no clip yet (a related emotion's clip or the base reference is used)</span>`}</div>
+    <div class="emo-actions">
+      <button class="btn small" type="button" data-act="take" data-bucket="${b.bucket}" data-label="${b.label}" ${b.pending ? html`disabled` : ""}>Generate a take</button>
+      <button class="btn small ghost" type="button" data-act="adopt-lab" data-bucket="${b.bucket}" data-label="${b.label}">Adopt a lab recording…</button>
+      ${b.candidates.length || b.pending ? html`<button class="btn small ghost danger" type="button" data-act="discard-all" data-bucket="${b.bucket}" data-label="${b.label}">Discard all takes</button>` : ""}
+    </div>
+    ${b.pending ? html`<p class="small muted"><span class="spinner" aria-hidden="true"></span> ${(SOURCES[b.pending.source] || {}).label || "Take"}: ${b.pending.status === "queued" ? "waiting for the GPU worker…" : "synthesizing…"}</p>` : ""}
+    ${b.candidates.length ? html`<ul class="take-list">${b.candidates.map((c) => takeRow(b, c, refs))}</ul>` : ""}
+  </li>`)}</ul>`)}`;
+}
+
+function tools(v) {
+  return html`<section class="card" aria-labelledby="tl-h"><h2 id="tl-h">Tools</h2>
+    <ul class="tool-list">
+      <li><button class="btn" type="button" data-act="edit">${v.builtin ? "Delivery…" : "Edit…"}</button>
+        <span class="small muted">${v.kind === "clone" ? "Rename this narrator." : "Change its name and how it sounds (saved as a new version)."}</span></li>
+      ${v.kind !== "clone" ? html`<li><button class="btn" type="button" data-act="duplicate">Duplicate &amp; retune…</button>
+        <span class="small muted">An editable copy with a different delivery; ${v.name} itself is not changed.</span></li>` : ""}
+      ${v.kind === "clone" && v.source_voice ? html`<li><button class="btn" type="button" data-act="retune">Retune from ‘${v.source_voice.name}’…</button>
+        <span class="small muted">A new designed voice from the voice this clone came from, with a new description.</span></li>` : ""}
+      ${!v.builtin && isAdmin() ? html`<li><button class="btn danger" type="button" data-act="archive" ${v.archived ? html`disabled` : ""}>Archive</button>
+        <span class="small muted">No longer offered for new books. Existing books keep using it.</span></li>` : ""}
+    </ul></section>`;
+}
+
+export async function render(view, parts, query, nav) {
+  const id = Number(parts[0]);
+  const signal = nav && nav.signal;
+  let [v, list] = await Promise.all([get(`/api/voices/${id}`, { signal }), get("/api/voices", { signal })]);
+  v.sample = (list.voices.find((x) => x.id === id) || {}).sample || { status: "none" };
+  const tab = tabOf(query, v.kind);
+  let refs = v.kind === "clone" && tab === "emotions" ? await get(`/api/voices/${id}/refs`, { signal }) : null;
+  let pjob = null;
+  if (tab === "preview" && lastPreview[id]) { try { pjob = await get(`/api/jobs/${lastPreview[id]}`, { signal }); } catch (e) { pjob = null; } }
+  const local = {};
+  const audio = new Audio();
+  let disposed = false, seq = 0, applied = 0, lab = null;
+
+  setHTML(view, html`<div class="page-head"><h1>${v.name}</h1><div class="head-actions"><a class="btn ghost" href="#/voices">← Narrator Studio</a></div></div>
+    <div id="nr-head"></div>
+    <div class="tabs" role="tablist" aria-label="Narrator sections">${NARRATOR_TABS.filter(([k]) => k !== "emotions" || v.kind === "clone").map(([k, l]) =>
+      html`<a role="tab" class="tab ${tab === k ? "active" : ""}" aria-selected="${tab === k}" ${tab === k ? html`aria-current="page"` : ""} href="#/narrator/${id}?tab=${k}">${l}</a>`)}</div>
+    <div role="tabpanel" id="nr-panel">
+      ${tab === "overview" ? overview(v) : ""}
+      ${tab === "preview" ? previewForm(v) : ""}
+      ${tab === "emotions" ? emotionsIntro(v, refs) : ""}
+      ${tab === "record" ? html`<section class="card" aria-labelledby="rc-h"><h2 id="rc-h">Record &amp; upload</h2>
+        <p class="small muted">${v.kind === "clone"
+          ? html`Record or upload a clip of ${v.name}'s speaker reading one of the <strong>Emotion reference</strong> scripts, check it with Whisper, then adopt it on the
+            <a href="#/narrator/${id}?tab=emotions">Emotion references</a> tab. Saved takes are drafts for 14 days.`
+          : "Record or upload a reference voice and turn it into a new cloned narrator."}</p><div id="lab-host"></div></section>` : ""}
+      ${tab === "tools" ? tools(v) : ""}
+    </div>`);
+
+  const playingIn = (sel) => Array.from(view.querySelectorAll(`${sel} audio`)).some((a) => !a.paused && !a.ended);
+  function paint() {
+    if (disposed) return;
+    const map = { "#nr-head": () => head(v, local) };
+    if (tab === "preview") map["#nr-pv"] = () => previewResult(v, pjob);
+    if (tab === "emotions" && refs) map["#nr-emo"] = () => emotionRows(v, refs);
+    for (const sel of Object.keys(map)) if (sel !== "#nr-head" && playingIn(sel)) delete map[sel];  // never re-create a player while it plays
+    patchRegions(view, map);
+  }
+
+  async function refresh() {
+    if (disposed) return;
+    const mine = ++seq;
+    try {
+      const [nl, nr, nj] = await Promise.all([
+        get("/api/voices", { signal }),
+        tab === "emotions" && v.kind === "clone" ? get(`/api/voices/${id}/refs`, { signal }) : null,
+        tab === "preview" && lastPreview[id] && !(pjob && DONE.includes(pjob.status)) ? get(`/api/jobs/${lastPreview[id]}`, { signal }) : null]);
+      if (disposed || mine < applied) return;
+      applied = mine;
+      const fresh = nl.voices.find((x) => x.id === id);
+      if (fresh) v.sample = fresh.sample;
+      if (nr) refs = nr;
+      if (nj) pjob = nj;
+    } catch (e) { return; }
+    if (local.wanted && v.sample.status === "ready") { local.wanted = false; start(); }
+    else if (local.wanted && v.sample.status === "none") { local.wanted = false; toast("The sample could not be generated. Generate a preview to see the error.", "warn", 9000); }
+    paint();
+  }
+
+  function start() {
+    audio.src = v.sample.url;
+    audio.play().then(() => { local.playing = true; local.blocked = false; paint(); })
+      .catch((e) => { if (e && e.name === "NotAllowedError") { local.blocked = true; paint(); } else toastError(e); });
+  }
+  const stopped = () => { if (local.playing) { local.playing = false; paint(); } };
+  audio.addEventListener("ended", stopped);
+  audio.addEventListener("pause", stopped);
+
+  async function playSample() {
+    if (local.playing) { audio.pause(); return; }
+    if (v.sample.status === "ready") { start(); return; }
+    if (v.sample.status === "none") { try { v.sample = await post(`/api/voices/${id}/sample`); } catch (e) { toastError(e); return; } }
+    if (v.sample.status === "ready") start(); else local.wanted = true;
+    paint();
+  }
+
+  async function reloadVoice() { try { v = { ...(await get(`/api/voices/${id}`)), sample: v.sample }; } catch (e) { /* keep */ } }
+
+  async function adopt(b, bucket, label, rid, fromLab) {
+    const body = { bucket, recording_id: rid };
+    if (fromLab && refs && !refs.synthetic) {
+      const res = await dialog({ title: `Adopt a clip for ${label}`, form: true, buttons: [{ label: "Adopt clip", value: "ok", kind: "primary" }],
+        body: html`<p class="small">A recording must be of the same speaker as ${v.name}. (A take ${v.name} generated itself needs no statement.)</p>
+          <label class="check"><input type="checkbox" name="owner_attest" value="true"> I own this recording, or have the speaker's written permission to clone it.</label>
+          <label>Consent statement <input name="statement" maxlength="1000" placeholder="e.g. Recorded by the speaker on 2026-10-01 for this project"></label>` });
+      if (!res) return;
+      body.owner_attest = res.data.owner_attest === "true"; body.statement = res.data.statement || "";
+    } else if (refs && refs.buckets.find((x) => x.bucket === bucket && x.ref)) {
+      if (!(await confirmDialog(`Replace the ${label} clip?`, `The new take replaces ${v.name}'s current ${label.toLowerCase()} clip. Takes already narrated with the old clip keep their audio until you regenerate them.`, "Adopt"))) return;
+    }
+    try { refs = await busy(b, () => post(`/api/voices/${id}/refs/adopt`, body), `${label} reference clip adopted`); } catch (e) { return; }
+    paint();
+  }
+
+  async function onClick(e) {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === "play") return playSample();
+    if (act === "note-dismiss") { delete notes[id]; paint(); return; }
+    if (act === "edit") {
+      const out = await editVoice(b, v, list.speakers);
+      if (out && out.duplicate !== undefined) { const nv = await duplicateVoice(b, v, list.speakers, list.voices, out.duplicate); if (nv) navigate(`#/narrator/${nv.id}?tab=preview`); return; }
+      if (out && out.voice) {
+        if (out.note) notes[id] = out.note;
+        await reloadVoice();
+        setHTML(view.querySelector("h1"), v.name);
+        const panel = view.querySelector("#nr-panel");
+        if (tab === "overview") setHTML(panel, overview(v));
+        if (tab === "tools") setHTML(panel, tools(v));
+        refresh();
+      }
+      return;
+    }
+    if (act === "duplicate") { const nv = await duplicateVoice(b, v, list.speakers, list.voices); if (nv) navigate(`#/narrator/${nv.id}?tab=preview`); return; }
+    if (act === "retune") { const nv = await retuneVoice(b, v, list.voices); if (nv) navigate(`#/narrator/${nv.id}?tab=preview`); return; }
+    if (act === "archive") {
+      if (!(await confirmDialog("Archive narrator?", "It will no longer be offered for new books. Existing books keep using it.", "Archive", true))) return;
+      try { await busy(b, () => post(`/api/voices/${id}/archive`), "Narrator archived"); } catch (err) { return; }
+      navigate("#/voices"); return;
+    }
+    if (act === "promote") { const nv = await promotePreview(b, b.dataset.job, v.name); if (nv) navigate(`#/narrator/${nv.id}?tab=emotions`); return; }
+    if (act === "take") {
+      try {
+        await busy(b, () => post(`/api/voices/${id}/refs/candidates`, { bucket: b.dataset.bucket, source: takeSource }), `${b.dataset.label} take queued (it runs between book segments)`);
+      } catch (err) { return; }
+      refresh(); return;
+    }
+    if (act === "discard") {
+      try { refs = await api("DELETE", `/api/voices/${id}/refs/candidates/${b.dataset.rid}`); toast(`${b.dataset.label} take discarded`, "success"); } catch (err) { toastError(err); }
+      paint(); return;
+    }
+    if (act === "discard-all") {
+      if (!(await confirmDialog(`Discard every ${b.dataset.label.toLowerCase()} take?`, "Takes not adopted yet are deleted, and a take still waiting for the GPU worker is withdrawn. The adopted clip (if any) stays.", "Discard all", true))) return;
+      try { refs = await api("DELETE", `/api/voices/${id}/refs/candidates?bucket=${encodeURIComponent(b.dataset.bucket)}`); toast(`${refs.discarded} ${b.dataset.label.toLowerCase()} take(s) discarded`, "success"); } catch (err) { toastError(err); }
+      paint(); return;
+    }
+    if (act === "adopt-take") return adopt(b, b.dataset.bucket, b.dataset.label, b.dataset.rid, false);
+    if (act === "adopt-lab") {
+      let recs;
+      try { recs = (await get("/api/recordings")).recordings.filter((r) => r.asr_check && r.asr_check.matches && (!r.target_voice_id || r.target_voice_id === id)); } catch (err) { toastError(err); return; }
+      if (!recs.length) { toast("No lab recordings have passed the Whisper check yet. Record or upload one on the Record & upload tab and run its transcript check.", "warn", 9000); return; }
+      const res = await dialog({ title: `Adopt a recording for ${b.dataset.label}`, form: true, buttons: [{ label: "Continue", value: "ok", kind: "primary" }],
+        body: html`<label>Checked recording <select name="rid">${recs.map((r) => html`<option value="${r.id}">${r.label || r.script_title} · ${r.duration_s}s · ${fmtDate(r.created_at)}</option>`)}</select></label>
+          <p class="small muted">Only recordings whose transcript matched the Whisper check are listed.</p>` });
+      if (!res) return;
+      return adopt(b, b.dataset.bucket, b.dataset.label, res.data.rid, true);
+    }
+    if (act === "ref-remove") {
+      if (!(await confirmDialog("Remove reference clip?", `The ${b.dataset.label} clip is deleted. Takes already made with it keep their audio; new takes use a related clip or the base reference.`, "Remove", true))) return;
+      try { refs = await api("DELETE", `/api/voices/${id}/refs/${b.dataset.ref}`); toast("Reference clip removed", "success"); } catch (err) { toastError(err); }
+      paint();
+    }
+  }
+
+  async function onSubmit(e) {
+    const f = e.target;
+    if (f.id !== "nr-preview-form") return;
+    e.preventDefault();
+    const fd = new FormData(f);
+    let j;
+    try { j = await busy(e.submitter, () => post(`/api/voices/${id}/preview`, { text: fd.get("text"), instruct: fd.get("instruct") || null, verify: fd.get("verify") === "on" })); } catch (err) { return; }
+    lastPreview[id] = j.id; pjob = j; paint();
+  }
+  const onInput = (e) => {
+    const f = e.target.closest && e.target.closest("#nr-preview-form");
+    if (f) { const fd = new FormData(f); pforms[id] = { text: fd.get("text") || "", instruct: fd.get("instruct") || "", verify: fd.get("verify") === "on" }; }
+    if (e.target.id === "take-source") {
+      takeSource = e.target.value;
+      const h = view.querySelector("#take-source-hint");
+      if (h) h.textContent = (SOURCES[takeSource] || {}).hint || "";
+    }
+  };
+  const onMediaIdle = () => setTimeout(refresh, 300);
+
+  paint();
+  if (tab === "record") {
+    lab = createLab({ onVoiceCreated: (nv) => (nv && nv.id ? navigate(`#/narrator/${nv.id}`) : null) });
+    view.querySelector("#lab-host").appendChild(lab.el);
+    lab.init();
+  }
+  view.addEventListener("click", onClick);
+  view.addEventListener("submit", onSubmit);
+  view.addEventListener("input", onInput);
+  view.addEventListener("change", onInput);
+  view.addEventListener("ended", onMediaIdle, true);
+  const off = onState(() => refresh(), 2000);
+  return () => {
+    disposed = true; off(); audio.pause(); audio.removeAttribute("src");
+    view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit);
+    view.removeEventListener("input", onInput); view.removeEventListener("change", onInput);
+    view.removeEventListener("ended", onMediaIdle, true);
+    if (lab) lab.destroy();
+  };
+}
+__STUDIO_EOF_afdb97fdb437__
 cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_260731b18809__'
 // Overview & progress dashboard. The page is a fixed shell with live regions (cards, strip, recent books, attention list, activity feed,
 // worker and update notices); each region is repainted in place only when its markup changed, so scroll positions and focus survive.
@@ -26977,7 +27986,7 @@ export async function render(view, parts, query, nav) {
 }
 export { navigate };
 __STUDIO_EOF_413afc59d42d__
-cat > "$DEST/studio/web/static/js/views/settings-model.js" <<'__STUDIO_EOF_7a7b7b9d201b__'
+cat > "$DEST/studio/web/static/js/views/settings-model.js" <<'__STUDIO_EOF_88e8f423f57b__'
 // Settings page model: field definitions, tab routing, payload collection and dirty tracking. Pure (no DOM at import time), so it is
 // covered by tests/js/settings_model.test.mjs. The saved payload shape is the one the server has always accepted.
 import { allFields, setPath, readInput } from "./narrative-fields.js";
@@ -27024,7 +28033,8 @@ export const SECTIONS = [
     ["retry_temperatures", "Retry temperatures", "list", { hint: "Comma separated, one per retry." }],
     ["max_warm_models", "Models kept loaded in memory", "number", { min: 1, max: 4 }],
     ["cache_dir", "Model cache folder", "text", { hint: "Blank = default. May be an external disk. Applies after a restart." }],
-    ["allow_downloads", "Allow downloading model weights", "bool", { hint: "From Hugging Face." }]]],
+    ["allow_downloads", "Allow downloading model weights", "bool", { hint: "From Hugging Face." }],
+    ["directable_clones", "Directable cloned narrators", "bool", { hint: "A clone's own speaker vector in the CustomVoice model, so written emotion instructions reach it (emotion takes; clone delivery 'directable')." }]]],
   ["export", "Export", [
     ["sample_rate", "Master sample rate (Hz)", "select", { options: [22050, 44100, 48000] }],
     ["mp3_bitrate_kbps", "MP3 bitrate (kbps)", "select", { options: [128, 160, 192, 256, 320], hint: "Constant bitrate." }],
@@ -27068,11 +28078,12 @@ export const NARRATIVE_LABELS = {
   "delivery.custom_voice": ["CustomVoice instructions", "Emotion and style instruction for preset speakers."],
   "delivery.voice_design": ["VoiceDesign instructions", "The instruction is the voice description itself."],
   "delivery.max_instruct_chars": ["Longest instruction (chars)", "Sent to a model."],
-  "delivery.clone": ["Cloned voices", "Emotion through reference clips."],
+  "delivery.clone": ["Cloned voices", "Emotion through the narrator's reference clips, or directable (experimental): the narrator's voice reads the written instruction."],
   "delivery.pace_from_direction": ["Pace from direction"],
   "delivery.pauses_from_direction": ["Pauses from direction"],
   "delivery.translator": ["Instruction translator", "Turns a direction into a model instruction."],
-  "delivery.bank_min_intensity": ["Reference clip from intensity (1–5)", "Weakest emotion intensity that uses a reference clip."],
+  "delivery.bank_min_intensity": ["Clone emotion from intensity (1–5)", "Weakest emotion intensity that changes a cloned voice (clip or directable)."],
+  "delivery.bank_min_similarity": ["Lowest take similarity (0.5–1)", "An emotion take must sound at least this much like the narrator to be adopted. Blank = not enforced. A different person measured 0.93-0.965 on the Mac."],
   "llm.provider": ["Provider"],
   "llm.base_url": ["Base URL", "For example http://127.0.0.1:1234/v1"],
   "llm.model": ["Model name"],
@@ -27171,8 +28182,8 @@ export function collectSettings(form) {
   form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
   return out;
 }
-__STUDIO_EOF_7a7b7b9d201b__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_cfa28686e972__'
+__STUDIO_EOF_88e8f423f57b__
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_4242fa6c19e7__'
 // Settings & Storage: seven tabs (#/settings/<tab>) over ONE form with ONE Save; server-validated paths, disk status, every tunable.
 import { get, post, put, del, html, setHTML, patchHTML, snapshotForm, applyForm, confirmDialog, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
 import { allFields, getPath, narrativeInput } from "./narrative-fields.js";
@@ -27350,15 +28361,16 @@ function qualityPanel(s) {
 function modelsPanel(s) {
   const n = s.settings.narrative;
   return html`${card("models", "Models", html`Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.`,
-      grid(sf(s, "models", ["custom_voice_model", "base_model", "voice_design_model", "asr_model", "language"])))}
+      grid(sf(s, "models", ["custom_voice_model", "base_model", "voice_design_model", "asr_model", "language", "directable_clones"])))}
     ${card("sampling", "Sampling", "Blank values use each model's own default.", grid(sf(s, "models", ["temperature", "top_p", "repetition_penalty", "retry_temperatures"])))}
     <details id="set-models-adv" class="card set-card set-details"><summary>Memory and downloads</summary>
       <p class="small muted set-intro">Where the models are cached and how many stay in memory.</p>
       ${grid(sf(s, "models", ["max_warm_models", "cache_dir", "allow_downloads"]))}</details>
     ${card("delivery", "Delivery instructions per model", html`How the Director's emotion and style directions reach each Qwen3-TTS model.
-        Base (voice cloning) takes <strong>no instruction input</strong>: it is conditioned only by the reference clip, so emotion is applied through reference clips instead.
+        Base (voice cloning) takes <strong>no instruction input</strong>: it is conditioned only by the reference clip, so emotion reaches a clone through its emotion
+        reference clips, or (directable, experimental) through its own speaker vector in the CustomVoice model, which does follow instructions.
         The 0.6B CustomVoice model ignores instructions as well.`,
-      grid(nfs(n, ["delivery.custom_voice", "delivery.voice_design", "delivery.max_instruct_chars", "delivery.clone", "delivery.bank_min_intensity", "delivery.pace_from_direction", "delivery.pauses_from_direction", "delivery.translator"])))}`;
+      grid(nfs(n, ["delivery.custom_voice", "delivery.voice_design", "delivery.max_instruct_chars", "delivery.clone", "delivery.bank_min_intensity", "delivery.bank_min_similarity", "delivery.pace_from_direction", "delivery.pauses_from_direction", "delivery.translator"])))}`;
 }
 
 function narrativePanel(s) {
@@ -27637,7 +28649,7 @@ export async function render(view, parts, query, nav) {
     window.removeEventListener("beforeunload", onBeforeUnload);
   };
 }
-__STUDIO_EOF_cfa28686e972__
+__STUDIO_EOF_4242fa6c19e7__
 cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_6c3b9a5b5df7__'
 // Update Center: check / download / verify / stage / install (after the current job or at the next segment boundary) / restart, with history.
 // Everything the user sees is plain text (auto-escaped); release notes are never interpreted as HTML.
@@ -27820,7 +28832,7 @@ export async function render(view) {
   return () => { clearInterval(timer); view.removeEventListener("click", onClick); view.removeEventListener("submit", onSubmit); view.removeEventListener("focusin", onFocus); };
 }
 __STUDIO_EOF_6c3b9a5b5df7__
-cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_8d720d0b065e__'
+cat > "$DEST/studio/web/static/js/views/voicelab.js" <<'__STUDIO_EOF_95bbfa0e4da2__'
 // Reference voice lab: guided in-browser recording of a reference clip for a cloned narrator.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, confirmDialog, fmtDate, player } from "../ui.js";
 import { Mic, micSupport, listMics, encodeWav, roomMetrics, envelope, dbfs, BLUETOOTH_RE } from "../recorder.js";
@@ -28160,13 +29172,14 @@ export function createLab({ onVoiceCreated }) {
   function recordPanel() {
     const s = script(), own = L.scriptId === "own";
     const text = own ? "" : s ? s.text : "";
-    const core = L.scripts.filter((x) => x.tier === "core"), range = L.scripts.filter((x) => x.tier === "range");
+    const core = L.scripts.filter((x) => x.tier === "core"), range = L.scripts.filter((x) => x.tier === "range"), emo = L.scripts.filter((x) => x.tier === "emotion");
     const rs = L.recState;
     return html`<div class="lab-panel"><h3>Record a take</h3>
       ${micOn() ? "" : html`<div class="callout warn small">Turn on the microphone in step 1 first.</div>`}
       <label>Script <select id="lab-script" ${rs === "idle" ? "" : html`disabled`}>
         <optgroup label="Recommended - neutral narration (record these first)">${core.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
         <optgroup label="Optional emotional range (separate variants only - read the note in step 4)">${range.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
+        <optgroup label="Emotion reference clips (one per emotion, adopted on the narrator's page)">${emo.map((x) => html`<option value="${x.id}" ${x.id === L.scriptId ? html`selected` : ""}>${x.title} (~${Math.round(x.est_seconds)}s)</option>`)}</optgroup>
         <optgroup label="Your own text"><option value="own" ${own ? html`selected` : ""}>Read a page from my own book (best match)</option></optgroup></select></label>
       ${s ? html`<p class="small muted"><strong>${s.category}.</strong> ${s.purpose}</p>` : html`<p class="small muted">Read 40-60 words from the book you will narrate, in the voice you want. Type exactly what you read below after recording.</p>`}
       <div class="prompter ${rs === "recording" ? "live" : ""}" aria-live="off">${rs === "countdown" ? html`<div class="count">${L.countdown}</div>` : ""}
@@ -28329,138 +29342,37 @@ export function createLab({ onVoiceCreated }) {
     destroy() { destroyed = true; timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); if (raf) cancelAnimationFrame(raf); mic.close(); if (L.cur && L.cur.url) URL.revokeObjectURL(L.cur.url); },
   };
 }
-__STUDIO_EOF_8d720d0b065e__
-cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_53fefa529ac6__'
-// Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
-import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player, isAdmin } from "../ui.js";
+__STUDIO_EOF_95bbfa0e4da2__
+cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_b0a202c010e6__'
+// Narrator Studio: every narrator as a tile (name, description, play). The name and description open the narrator's own page
+// (narrator.js), where it is previewed, edited, retuned and given emotion reference clips. New narrators are added here.
+import { api, get, post, html, setHTML, toast, toastError, busy, navigate, patchRegions, onState } from "../ui.js";
 import { createLab } from "./voicelab.js";
+import { KIND, tileState } from "./narrator-model.js";
 
-const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, trembling lines on the black water.";
-const previews = {}; // voiceId -> last preview job
-const banks = {};    // voiceId -> GET /api/voices/{id}/refs (emotion reference bank of a cloned voice)
-const cands = {};    // voiceId -> candidate jobs generated for the bank [{job_id, bucket, status, result, error}]
-const pform = {};    // voiceId -> {text, instruct, verify}: what the owner typed in a card's preview form (kept across repaints and page visits)
-const notes = {};    // voiceId -> {kind, text}: callouts shown at the top of a card until dismissed ("Saved as version 3", "New copy created. Next: ...")
 let tab = "preset";
-let flashId = null;  // the voice that was just created: its card is highlighted and scrolled into view
+let addOpen = false;
 
-const KIND = { preset: "Preset speaker (CustomVoice)", design: "Designed voice (VoiceDesign)", clone: "Cloned voice (Base + reference)" };
+const TONE = { clone: "approved", design: "info", preset: "good" };
 
-function lineage(v) {
-  const d = v.derived_from;
-  if (d) return d.relation === "retune" ? `Retuned from ${d.voice_name}` : `Copy of ${d.voice_name}`;
-  if (v.kind === "clone" && v.source_voice) return `Promoted from the designed voice ${v.source_voice.name}${v.source_voice.archived ? " (archived)" : ""}`;
-  return "";
-}
-
-function noteBlock(v) {
-  const n = notes[v.id];
-  if (!n) return "";
-  return html`<div class="callout ${n.tone || "info"} small voice-note" role="status">${n.text}
-    <div class="form-actions">${n.preview ? html`<button class="btn small primary" type="button" data-act="preview-now" data-id="${v.id}">Preview with new delivery</button>` : ""}
-      <button class="btn small ghost" type="button" data-act="note-dismiss" data-id="${v.id}">Dismiss</button></div></div>`;
-}
-
-function voiceCard(v) {
-  const vv = v.version;
-  const pj = previews[v.id];
-  const pf = pform[v.id] || {};
-  const lin = lineage(v);
-  return html`<article class="card voice ${flashId === v.id ? "voice-new" : ""}" id="voice-${v.id}" data-voice-card="${v.id}" aria-labelledby="v-${v.id}">
-    <header class="voice-head"><h3 id="v-${v.id}">${v.name}</h3><span class="badge tone-${v.kind === "clone" ? "approved" : v.kind === "design" ? "info" : "good"}">${KIND[v.kind]}</span>
-      ${v.builtin ? html`<span class="badge tone-neutral">built-in</span>` : ""}</header>
-    <p class="small">${v.description}</p>
-    ${lin ? html`<p class="small muted voice-lineage">${lin}</p>` : ""}
-    ${noteBlock(v)}
-    <dl class="kv small">
-      <dt>Version</dt><dd>v${vv.version} · ${fmtDate(vv.created_at)}</dd>
-      <dt>Model</dt><dd><code>${vv.model_id}</code></dd>
-      ${vv.speaker ? html`<dt>Speaker</dt><dd>${vv.speaker}</dd>` : ""}
-      ${vv.instruct ? html`<dt>${v.kind === "design" ? "Description" : "Delivery"}</dt><dd>${vv.instruct}</dd>` : ""}
-      ${v.kind === "clone" ? html`<dt>Transcript</dt><dd>“${vv.ref_text}”</dd><dt>Reference</dt><dd>${vv.ref_duration_s}s
-        ${player(`/media/voice/${v.id}/reference`, `${v.name} reference clip`, "mini")}</dd>
-        <dt>Consent</dt><dd>${vv.consent ? html`Attested for <strong>${vv.consent.rights_holder}</strong> on ${fmtDate(vv.consent.attested_at)}` : "–"}</dd>` : ""}
-      <dt>Used by</dt><dd>${v.books_using} book(s)</dd>
-    </dl>
-    ${v.kind === "clone" ? html`<div class="bank" id="bank-${v.id}">${bankPanel(v)}</div>` : ""}
-    ${v.kind === "design" ? html`<p class="callout info small">VoiceDesign re-creates the voice from its description on every segment, so timbre can drift across a long book.
-      For consistent narration, generate a preview you like and <strong>promote it to a stable narrator</strong> (it becomes a clone reference).</p>` : ""}
-    <form class="preview-form" data-voice="${v.id}">
-      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${pf.text !== undefined ? pf.text : DEFAULT_TEXT}</textarea></label>
-      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered" value="${pf.instruct || ""}"></label>` : ""}
-      <label class="check"><input type="checkbox" name="verify" ${pf.verify ? html`checked` : ""}> Also verify with local Whisper (shows WER)</label>
-      <div class="form-actions"><button class="btn primary" type="submit">Generate preview</button>
-        <button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">${v.builtin ? "Delivery…" : "Edit…"}</button>
-        ${v.kind !== "clone" ? html`<button class="btn ghost" type="button" data-act="duplicate" data-id="${v.id}" title="Make an editable copy with different delivery instructions">Duplicate &amp; retune…</button>` : ""}
-        ${v.kind === "clone" && v.source_voice ? html`<button class="btn ghost" type="button" data-act="retune" data-id="${v.id}" title="Make a designed copy of the voice this clone came from, with new instructions">Retune from ‘${v.source_voice.name}’…</button>` : ""}
-        ${!v.builtin && isAdmin() ? html`<button class="btn ghost danger" type="button" data-act="archive" data-id="${v.id}">Archive</button>` : ""}</div>
-    </form>
-    <div class="preview-out" id="pv-${v.id}" aria-live="polite">${pj ? previewResult(v, pj) : ""}</div>
+function tile(v, local) {
+  const t = tileState(v.sample, local);
+  return html`<article class="card narrator-tile" id="voice-${v.id}" aria-labelledby="v-${v.id}">
+    <a class="tile-link" href="#/narrator/${v.id}">
+      <h3 id="v-${v.id}">${v.name}</h3>
+      <p class="tile-desc small">${v.description || ""}</p>
+    </a>
+    <div class="tile-foot">
+      <span class="badge tone-${TONE[v.kind] || "neutral"}">${KIND[v.kind]}</span>${v.builtin ? html`<span class="badge tone-neutral">built-in</span>` : ""}
+      <button class="btn play-btn ${t.state}" type="button" data-act="play" data-id="${v.id}" aria-label="${t.label}: ${v.name}" title="${t.label}"
+        ${t.busy ? html`aria-busy="true"` : ""}>${t.busy ? html`<span class="spinner" aria-hidden="true"></span>` : t.icon}</button>
+    </div>
+    ${t.state === "blocked" ? html`<p class="small muted tile-note">The browser blocked automatic playback. Press ▶ to listen.</p>` : ""}
   </article>`;
 }
 
-const fmtDelta = (x, unit) => (x === null || x === undefined ? "–" : `${x > 0 ? "+" : ""}${x} ${unit}`);
-
-function driftText(m) {
-  if (!m) return "";
-  return `pitch ${fmtDelta(m.f0_delta_hz, "Hz")} · brightness ${fmtDelta(m.centroid_delta_hz, "Hz")}`;
-}
-
-function candidateRow(v, c) {
-  const r = c.result || {};
-  if (c.status === "failed" || c.status === "cancelled") return html`<li class="small err">${c.bucket} candidate failed: ${c.error || c.status}</li>`;
-  if (c.status !== "completed" || !r.recording_id) return html`<li class="small muted"><span class="spinner" aria-hidden="true"></span> ${c.bucket} candidate ${c.status === "running" ? "synthesizing…" : "waiting for the GPU worker…"}</li>`;
-  const chk = r.asr_check;
-  return html`<li class="small">
-    <strong>${c.bucket}</strong> candidate ${chk ? `· Whisper WER ${(chk.wer * 100).toFixed(1)}% ${chk.matches ? "(matches)" : "(does not match)"}` : "· not checked"}
-    ${r.drift && !r.drift.error ? `· drift from base: ${driftText(r.drift)}` : ""}
-    ${c.note ? html`<span class="badge tone-warn">mock test tones</span>` : ""}
-    ${player(`/media/recording/${r.recording_id}`, `${c.bucket} candidate`, "mini")}
-    <button class="btn small primary" type="button" data-act="bank-adopt-cand" data-voice="${v.id}" data-bucket="${c.bucket}" data-rid="${r.recording_id}"
-      ${chk && chk.matches ? "" : html`disabled`}>Adopt for ${c.bucket}</button></li>`;
-}
-
-function bankPanel(v) {
-  const b = banks[v.id];
-  const cs = cands[v.id] || [];
-  if (!b) return html`<p class="small muted"><span class="spinner" aria-hidden="true"></span> Loading reference clips…</p>`;
-  const canGen = b.synthetic && b.source_voice;
-  return html`<h4>Reference clips (emotion bank)</h4>
-    <p class="small muted">A cloned voice cannot take text instructions: it is steered only by its reference clip, plus pace. Add short clips of the same voice in
-      other registers; when the reference bank is switched on for cloned voices in Settings, a strongly directed segment uses the matching clip. Without a clip, the base reference is used.</p>
-    ${b.synthetic && !b.source_voice ? html`<p class="callout warn small">The designed voice this clone came from could not be found, so candidates cannot be generated automatically.</p>` : ""}
-    <ul class="bank-list">${b.buckets.map((x) => html`<li class="small">
-      <strong>${x.label}</strong>
-      ${x.ref ? html`<span class="muted">· ${x.ref.duration_s}s · ${x.ref.source === "synthetic" ? "synthetic" : "recorded"} · ${driftText(x.ref.metrics)}</span>
-          ${x.ref.mock ? html`<span class="badge tone-warn">mock test tones</span>` : ""}
-          ${player(`/media/voice/${v.id}/ref/${x.ref.id}`, `${x.label} reference clip`, "mini")}
-          ${isAdmin() ? html`<button class="btn small ghost danger" type="button" data-act="bank-remove" data-voice="${v.id}" data-ref="${x.ref.id}" data-label="${x.label}">Remove</button>` : ""}`
-        : html`<span class="muted">· no clip (uses the base reference)</span>`}
-      ${canGen ? html`<button class="btn small" type="button" data-act="bank-gen" data-voice="${v.id}" data-bucket="${x.bucket}">Generate candidates…</button>` : ""}
-      <button class="btn small ghost" type="button" data-act="bank-adopt" data-voice="${v.id}" data-bucket="${x.bucket}" data-label="${x.label}">Adopt a lab recording…</button>
-    </li>`)}</ul>
-    ${cs.length ? html`<div aria-live="polite"><h5>Candidates</h5><ul class="bank-list">${cs.map((c) => candidateRow(v, c))}</ul>
-      <p class="small muted">Candidates are also saved as drafts in the Record tab (14 days), where you can compare them.</p></div>` : ""}`;
-}
-
-function previewResult(v, j) {
-  if (j.status === "queued" || j.status === "running") return html`<p class="muted"><span class="spinner" aria-hidden="true"></span> ${j.status === "queued" ? "Waiting for the GPU worker (previews run between book segments)…" : "Synthesizing…"}</p>`;
-  if (j.status === "failed") return html`<p class="err">Preview failed: ${j.error}</p>`;
-  if (j.status !== "completed" || !j.result) return "";
-  const r = j.result;
-  return html`<div class="preview-result">
-    ${player(`/media/preview/${j.id}`, `${v.name} preview`)}
-    <div class="small muted">${r.duration_s}s audio · ${r.engine} · ${r.rtf ? `RTF ${r.rtf.toFixed(2)}` : ""} ${r.peak_mem_gb ? `· peak ${r.peak_mem_gb.toFixed(1)} GB` : ""}</div>
-    ${r.note ? html`<p class="callout warn small">${r.note}</p>` : ""}
-    ${r.asr_text !== undefined ? html`<p class="small">Whisper heard: “${r.asr_text}” · WER ${(r.wer * 100).toFixed(1)}%</p>` : ""}
-    <div class="form-actions"><a class="btn small" href="/media/preview/${j.id}?download=1" download>Download WAV</a>
-      ${v.kind === "design" ? html`<button class="btn small primary" data-act="promote" data-job="${j.id}" data-name="${v.name}">Promote to stable narrator…</button>` : ""}</div>
-  </div>`;
-}
-
-function createForms(speakers, english) {
-  return html`<section class="card" aria-labelledby="new-h"><h2 id="new-h">Add a narrator</h2>
-    <div class="tabs" role="tablist" aria-label="Narrator type">
+function createForms(speakers) {
+  return html`<div class="tabs" role="tablist" aria-label="Narrator type">
       ${[["preset", "Preset speaker"], ["design", "Designed voice"], ["clone", "Clone an authorised voice"], ["record", "Record a reference voice"]].map(([k, l]) =>
         html`<button role="tab" type="button" class="tab ${tab === k ? "active" : ""}" aria-selected="${tab === k}" data-tab="${k}" id="tab-${k}" aria-controls="panel-${k}">${l}</button>`)}
     </div>
@@ -28468,7 +29380,7 @@ function createForms(speakers, english) {
     ${tab === "preset" ? html`<form id="f-preset" class="form">
       <p class="muted small">Qwen3-TTS CustomVoice built-in speakers. Ryan and Aiden are native English speakers. No human recording is involved.</p>
       <div class="form-grid"><label>Name <input name="name" required maxlength="80" placeholder="e.g. Ryan – thriller"></label>
-      <label>Speaker <select name="speaker">${Object.entries(speakers).map(([k, d]) => html`<option value="${k}" ${k === "Ryan" ? html`selected` : ""}>${k} – ${d}${english.includes(k) ? "" : ""}</option>`)}</select></label></div>
+      <label>Speaker <select name="speaker">${Object.entries(speakers).map(([k, d]) => html`<option value="${k}" ${k === "Ryan" ? html`selected` : ""}>${k} – ${d}</option>`)}</select></label></div>
       <label>Delivery instruction <input name="instruct" maxlength="1000" value="Calm, clear, warm audiobook narration with natural pacing."></label>
       <button class="btn primary" type="submit">Create preset narrator</button></form>` : ""}
     ${tab === "design" ? html`<form id="f-design" class="form">
@@ -28490,294 +29402,125 @@ function createForms(speakers, english) {
       <button class="btn primary" type="submit">Upload &amp; create cloned narrator</button>
       <p class="small muted">No recording yet? Use the <button type="button" class="linklike" data-tab="record">Record a reference voice</button> tab to record one in your browser with guidance.</p></form>` : ""}
     ${tab === "record" ? html`<div id="lab-host"></div>` : ""}
-    </div></section>`;
+    </div>`;
 }
 
-export async function render(view) {
-  let data = await get("/api/voices");
-  const lab = createLab({ onVoiceCreated: () => reload() });
-  const timers = new Set();
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  let data = await get("/api/voices", { signal });
+  const lab = createLab({ onVoiceCreated: (v) => (v && v.id ? navigate(`#/narrator/${v.id}`) : refresh()) });
+  const audio = new Audio();
+  const local = {};          // voiceId -> {wanted, playing, blocked}
+  let disposed = false, seq = 0, applied = 0;
+  const L = (id) => (local[id] = local[id] || {});
 
-  const paint = () => {
-    setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
-      <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: changing a voice's delivery creates a new version;
-        books keep the version they were created with until you explicitly switch them (which regenerates their audio).
-        To try a different delivery without touching a voice that is already in use, use <strong>Duplicate &amp; retune…</strong> on its card.</p>
-      ${createForms(data.speakers, data.english_speakers)}
-      <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
-    const host = view.querySelector("#lab-host");
-    if (host) host.appendChild(lab.el);  // the lab keeps its own state while the tab is switched or the page repaints
-    wireForms();
-    data.voices.filter((v) => v.kind === "clone" && !banks[v.id]).forEach((v) => loadBank(v.id));
-    if (flashId !== null) {
-      const card = view.querySelector(`#voice-${flashId}`);
-      flashId = null;
-      if (card) { card.scrollIntoView({ block: "center" }); const h = card.querySelector("h3"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
-    }
+  setHTML(view, "");
+  const shell = document.createElement("div");
+  view.appendChild(shell);
+  setHTML(shell, html`<div class="page-head"><h1>Narrator Studio</h1></div>
+    <p class="muted">Press ▶ to hear a narrator (the first time, a short sample is generated on this Mac's GPU and kept). Open a narrator to preview it,
+      edit or retune it, and give a cloned narrator its emotion reference clips.</p>
+    <div class="voice-grid" id="voice-grid" aria-live="polite"></div>
+    <details class="card add-narrator" id="add-narrator" ${addOpen ? "open" : ""}><summary><h2 id="new-h">Add a narrator</h2></summary>
+      <div id="create-host"></div></details>`);
+
+  const grid = () => html`${data.voices.map((v) => tile(v, local[v.id] || {}))}`;
+  const paintGrid = () => { if (!disposed) patchRegions(shell, { "#voice-grid": grid }); };
+  const paintCreate = () => {
+    const host = shell.querySelector("#create-host");
+    setHTML(host, createForms(data.speakers));
+    const lh = host.querySelector("#lab-host");
+    if (lh) lh.appendChild(lab.el);  // the lab keeps its own state while the tab is switched
+    wireForms(host);
   };
 
-  async function reload() { data = await get("/api/voices"); paint(); }
-
-  function paintBank(vid) {
-    const v = data.voices.find((x) => x.id === vid), host = view.querySelector(`#bank-${vid}`);
-    if (v && host) setHTML(host, bankPanel(v));
-  }
-
-  async function loadBank(vid) {
-    try { banks[vid] = await get(`/api/voices/${vid}/refs`); } catch (e) { toastError(e); return; }
-    paintBank(vid);
-  }
-
-  function pollCandidate(vid, c) {
-    const t = setInterval(async () => {
-      try {
-        const j = await get(`/api/jobs/${c.job_id}`);
-        c.status = j.status; c.result = j.result; c.error = j.error; c.note = j.result && j.result.note;
-        paintBank(vid);
-        if (["completed", "failed", "cancelled"].includes(j.status)) { clearInterval(t); timers.delete(t); }
-      } catch (e) { clearInterval(t); timers.delete(t); toastError(e); }
-    }, 2000);
-    timers.add(t);
-  }
-
-  async function adoptRecording(vid, bucket, rid, label, fromCandidate) {
-    const v = data.voices.find((x) => x.id === vid);
-    const b = banks[vid];
-    const body = { bucket, recording_id: rid };
-    if (!(b && b.synthetic)) {
-      const res = await dialog({ title: `Adopt a clip for ${label}`, form: true, buttons: [{ label: "Adopt clip", value: "ok", kind: "primary" }],
-        body: html`<p class="small">This recording must be of the same speaker as ${v.name}.</p>
-          <label class="check"><input type="checkbox" name="owner_attest" value="true" required> I own this recording, or have the speaker's written permission to clone it.</label>
-          <label>Consent statement <input name="statement" required minlength="10" maxlength="1000" placeholder="e.g. Recorded by the speaker on 2026-10-01 for this project"></label>` });
-      if (!res) return;
-      body.owner_attest = res.data.owner_attest === "true"; body.statement = res.data.statement || "";
-    } else if (!fromCandidate) {
-      const ok = await confirmDialog("Adopt this clip?", `It replaces any ${label} clip ${v.name} already has. Existing takes made with the old clip are not changed until you regenerate them.`, "Adopt");
-      if (!ok) return;
+  async function refresh() {
+    const mine = ++seq;
+    try {
+      const d = await get("/api/voices", { signal });
+      if (disposed || mine < applied) return;
+      applied = mine; data = d;
+    } catch (e) { return; }
+    for (const v of data.voices) {  // a requested sample that is now ready plays straight away
+      const l = local[v.id];
+      if (!l || !l.wanted) continue;
+      if (v.sample.status === "ready") { l.wanted = false; start(v); }
+      else if (v.sample.status === "none") { l.wanted = false; toast(`The sample for ${v.name} could not be generated. Open the narrator to preview it and see the error.`, "warn", 9000); }
     }
-    try { banks[vid] = await post(`/api/voices/${vid}/refs/adopt`, body); toast(`${label} reference clip adopted`, "success"); } catch (e) { toastError(e); }
-    paintBank(vid);
+    paintGrid();
   }
 
-  function pollPreview(voiceId, jobId) {
-    const t = setInterval(async () => {
-      try {
-        const j = await get(`/api/jobs/${jobId}`);
-        previews[voiceId] = j;
-        const out = view.querySelector(`#pv-${voiceId}`);
-        const v = data.voices.find((x) => x.id === voiceId);
-        if (out && v) setHTML(out, previewResult(v, j));
-        if (["completed", "failed", "cancelled"].includes(j.status)) { clearInterval(t); timers.delete(t); }
-      } catch (e) { clearInterval(t); timers.delete(t); toastError(e); }
-    }, 1500);
-    timers.add(t);
+  function start(v) {
+    for (const k of Object.keys(local)) local[k].playing = false;
+    audio.src = v.sample.url;
+    audio.play().then(() => { L(v.id).playing = true; L(v.id).blocked = false; paintGrid(); })
+      .catch((e) => { if (e && e.name === "NotAllowedError") { L(v.id).blocked = true; paintGrid(); } else toastError(e); });
   }
 
-  function wireForms() {
-    view.querySelectorAll(".preview-form").forEach((f) => f.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const fd = new FormData(f), vid = Number(f.dataset.voice);
-      const j = await busy(e.submitter, () => post(`/api/voices/${vid}/preview`, { text: fd.get("text"), instruct: fd.get("instruct") || null, verify: fd.get("verify") === "on" }));
-      previews[vid] = j;
-      const v = data.voices.find((x) => x.id === vid);
-      setHTML(view.querySelector(`#pv-${vid}`), previewResult(v, j));
-      pollPreview(vid, j.id);
-    }));
-    const fp = view.querySelector("#f-preset");
+  async function play(b) {
+    const v = data.voices.find((x) => x.id === Number(b.dataset.id));
+    if (!v) return;
+    if (L(v.id).playing) { audio.pause(); return; }
+    if (v.sample.status === "ready") { L(v.id).blocked = false; start(v); return; }
+    if (v.sample.status === "queued" || v.sample.status === "running") { L(v.id).wanted = true; return; }
+    try { v.sample = await post(`/api/voices/${v.id}/sample`); } catch (e) { toastError(e); return; }
+    L(v.id).wanted = v.sample.status !== "ready";
+    if (v.sample.status === "ready") start(v);
+    paintGrid();
+  }
+
+  const stopped = () => { let ch = false; for (const k of Object.keys(local)) if (local[k].playing) { local[k].playing = false; ch = true; } if (ch) paintGrid(); };
+  audio.addEventListener("ended", stopped);
+  audio.addEventListener("pause", stopped);
+
+  function wireForms(host) {
+    const fp = host.querySelector("#f-preset");
     if (fp) fp.addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = new FormData(fp);
-      await busy(e.submitter, () => post("/api/voices/preset", { name: fd.get("name"), speaker: fd.get("speaker"), instruct: fd.get("instruct") }), "Narrator created");
-      await reload();
+      try { const v = await busy(e.submitter, () => post("/api/voices/preset", { name: fd.get("name"), speaker: fd.get("speaker"), instruct: fd.get("instruct") }), "Narrator created"); navigate(`#/narrator/${v.id}`); } catch (err) { /* shown */ }
     });
-    const fdz = view.querySelector("#f-design");
+    const fdz = host.querySelector("#f-design");
     if (fdz) fdz.addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = new FormData(fdz);
-      await busy(e.submitter, () => post("/api/voices/design", { name: fd.get("name"), description: fd.get("description") }), "Designed voice created");
-      await reload();
+      try { const v = await busy(e.submitter, () => post("/api/voices/design", { name: fd.get("name"), description: fd.get("description") }), "Designed voice created"); navigate(`#/narrator/${v.id}?tab=preview`); } catch (err) { /* shown */ }
     });
-    const fc = view.querySelector("#f-clone");
+    const fc = host.querySelector("#f-clone");
     if (fc) fc.addEventListener("submit", async (e) => {
       e.preventDefault();
       if (!fc.reportValidity()) return;
       const fd = new FormData(fc);
       fd.set("owner_attest", fc.owner_attest.checked ? "true" : "false");
-      const v = await busy(e.submitter, () => api("POST", "/api/voices/clone", fd));
+      let v;
+      try { v = await busy(e.submitter, () => api("POST", "/api/voices/clone", fd)); } catch (err) { return; }
       toast(`Cloned narrator '${v.name}' created (${v.version.ref_duration_s}s reference)`, "success");
       (v.warnings || []).forEach((w) => toast(w, "warn", 9000));
-      await reload();
+      navigate(`#/narrator/${v.id}`);
     });
   }
 
-  const normNl = (t) => String(t || "").split("\r").join("").trim();
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-  function versionNote(v) {
-    const nv = v.version.version;
-    if (v.builtin) return html`<p class="callout info small"><strong>${v.name}</strong> is a built-in speaker, so its name and speaker are fixed. You can change only its
-      <strong>delivery instruction</strong>. Saving creates <strong>version ${nv + 1}</strong> of ${v.name}; previews and new books use it straight away, but books already
-      narrated with version ${nv} keep that version until you switch them on the book page. To keep ${v.name} as it is and try a variation, use
-      <strong>Duplicate &amp; retune…</strong>.</p>`;
-    if (v.kind === "clone") return html`<p class="callout info small">A cloned voice is defined by its reference clip and cannot take instructions, so only its name can be edited here.
-      ${v.source_voice ? html`To make a variant, use <strong>Retune from ‘${v.source_voice.name}’…</strong>` : "To make a variant, upload a new reference clip"}.</p>`;
-    return html`<p class="callout info small">${v.kind === "design"
-      ? html`You can change the <strong>name</strong> and the <strong>description</strong>. A new description makes VoiceDesign create a different-sounding voice.`
-      : html`You can change the <strong>name</strong>, the <strong>speaker</strong> and the <strong>delivery instruction</strong>.`}
-      Changing the sound saves <strong>version ${nv + 1}</strong> of this voice (renaming does not). Previews and new books use it straight away; books already narrated with
-      version ${nv} keep it until you switch them on the book page. Prefer a separate voice? Use <strong>Duplicate &amp; retune…</strong>.</p>`;
-  }
-
-  async function editVoice(b, v) {
-    const nv = v.version.version;
-    const res = await dialog({ title: v.builtin ? `Delivery for ${v.name} (built-in)` : `Edit ${v.name}`, form: true,
-      buttons: [{ label: v.kind === "clone" ? "Save name" : v.builtin ? `Save as version ${nv + 1}` : "Save", value: "save", kind: "primary" },
-        ...(v.kind !== "clone" ? [{ label: "Duplicate & retune instead…", value: "dup" }] : [])],
-      body: html`${versionNote(v)}
-        ${!v.builtin ? html`<label>Name <input name="name" required maxlength="80" value="${v.name}"></label>` : ""}
-        ${v.kind === "preset" && !v.builtin ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>`
-          : v.kind === "preset" ? html`<p class="small">Speaker: <strong>${v.version.speaker}</strong> (fixed)</p>` : ""}
-        ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="4" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${v.version.instruct || ""}</textarea></label>` : ""}` });
-    if (!res) return;
-    if (res.value === "dup") { await duplicateVoice(b, v, res.data.instruct); return; }
-    const body = {};
-    if (res.data.name !== undefined && res.data.name.trim() !== v.name) body.name = res.data.name;
-    if (res.data.instruct !== undefined && normNl(res.data.instruct) !== normNl(v.version.instruct)) body.instruct = res.data.instruct;
-    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
-    if (!Object.keys(body).length) { toast("Nothing was changed.", "info"); return; }
-    let out;
-    try { out = await busy(b, () => patch(`/api/voices/${v.id}`, body)); } catch (e) { return; }
-    const nver = out.version.version, made = nver !== nv, older = out.books_on_older_version || [];
-    const vers = [...new Set(older.map((x) => x.voice_version).filter((x) => x))].sort((x, y) => x - y);
-    const still = older.length ? ` ${plural(older.length, "book still uses", "books still use")} ${vers.length ? (vers.length === 1 ? `version ${vers[0]}` : `versions ${vers.join(" and ")}`) : "an earlier version"}.` : "";
-    const msg = made ? `Saved as version ${nver}.${still}` : "Saved (name only: no new version).";
-    toast(msg, made && older.length ? "warn" : "success", 10000);
-    if (made) notes[v.id] = { tone: "good", preview: true, text: `${msg} Previews and new books use version ${nver} now.${older.length ? " Switch those books from their book page to hear the new sound." : ""}` };
-    await reload();
-  }
-
-  const freeName = (base) => {
-    const taken = new Set(data.voices.map((x) => x.name.toLowerCase()));
-    let n = base, i = 2;
-    while (taken.has(n.toLowerCase())) n = base.replace(/\)$/, "") + ` ${i++})`;
-    return n.slice(0, 80);
-  };
-
-  async function duplicateVoice(b, v, instruct) {
-    const text = instruct !== undefined ? instruct : (v.version.instruct || "");
-    const res = await dialog({ title: `Duplicate & retune ${v.name}`, form: true, buttons: [{ label: "Create copy", value: "ok", kind: "primary" }],
-      body: html`<p class="callout info small">Creates a <strong>new, separate voice</strong> from ${v.name}’s current settings (version ${v.version.version}) with the delivery you choose below.
-        ${v.name} itself and the books using it are not changed. Then generate a preview of the copy, and keep refining it until you like it.</p>
-        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(v.name + " (retune)")}"></label>
-        ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
-        <label>${v.kind === "design" ? "Voice description" : "Delivery instruction"} <textarea name="instruct" rows="5" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${text}</textarea></label>` });
-    if (!res) return;
-    const body = { name: res.data.name };
-    if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
-    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
-    await createdCopy(b, () => post(`/api/voices/${v.id}/duplicate`, body), v, `Copy of ${v.name} created`);
-  }
-
-  async function retuneVoice(b, v) {
-    const src = v.source_voice;
-    let srcFull;
-    try { srcFull = await get(`/api/voices/${src.id}`); } catch (e) { toastError(e); return; }
-    const res = await dialog({ title: `Retune from ‘${src.name}’`, form: true, buttons: [{ label: "Create designed voice", value: "ok", kind: "primary" }],
-      body: html`<p class="callout info small">${v.name} is a stable clone and cannot take instructions. This creates a <strong>new designed voice</strong> from ‘${src.name}’
-        (the voice ${v.name} was made from), with the description below. ${v.name} is not changed.
-        ${src.archived ? " (The source voice is archived; it can still be used.)" : ""}</p>
-        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(src.name + " (retune)")}"></label>
-        <label>Voice description <textarea name="instruct" rows="5" required minlength="10" maxlength="1000">${srcFull.version.instruct || ""}</textarea></label>` });
-    if (!res) return;
-    await createdCopy(b, () => post(`/api/voices/${v.id}/retune`, { name: res.data.name, instruct: res.data.instruct }), v, "Retuned design voice created", true);
-  }
-
-  async function createdCopy(b, fn, from, okMsg, fromClone) {
-    let out;
-    try { out = await busy(b, fn, okMsg); } catch (e) { return; }
-    flashId = out.id;
-    const prev = pform[from.id] || {};
-    pform[out.id] = { text: prev.text !== undefined ? prev.text : DEFAULT_TEXT, instruct: "", verify: false };
-    notes[out.id] = { tone: "good", text: out.kind === "design"
-      ? `New design voice created${fromClone ? ` from ‘${from.source_voice.name}’` : ` as a copy of ${from.name}`}. Next: generate a preview, pick one you like, then Promote to stable narrator.`
-      : `New voice created as a copy of ${from.name}. Next: generate a preview to hear the new delivery.` };
-    await reload();
-  }
-
-  async function onClick(e) {
+  function onClick(e) {
     const tb = e.target.closest("[data-tab]");
     if (tb) {
       if (tab === "record" && tb.dataset.tab !== "record") lab.releaseMic();  // never leave the microphone on in the background
-      tab = tb.dataset.tab; paint(); const n = view.querySelector(`#tab-${tab}`); if (n) n.focus(); return; }
-    const b = e.target.closest("button[data-act]");
-    if (!b) return;
-    const act = b.dataset.act;
-    if (act === "archive") {
-      if (!(await confirmDialog("Archive voice?", "It will no longer be offered for new books. Existing books keep using it.", "Archive", true))) return;
-      await busy(b, () => post(`/api/voices/${b.dataset.id}/archive`), "Voice archived"); await reload();
-    } else if (act === "edit") {
-      await editVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
-    } else if (act === "duplicate") {
-      await duplicateVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
-    } else if (act === "retune") {
-      await retuneVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
-    } else if (act === "note-dismiss") {
-      delete notes[Number(b.dataset.id)]; paint();
-    } else if (act === "preview-now") {
-      const vid = Number(b.dataset.id);
-      delete notes[vid]; paint();
-      const nf = view.querySelector(`.preview-form[data-voice="${vid}"]`);
-      if (nf) { nf.scrollIntoView({ block: "center" }); nf.requestSubmit(); }
-    } else if (act === "bank-gen") {
-      const vid = Number(b.dataset.voice), bucket = b.dataset.bucket;
-      try {
-        const out = await busy(b, () => post(`/api/voices/${vid}/refs/candidates`, { bucket, n: 3 }), "Generating 3 candidates (they run between book segments)");
-        cands[vid] = [...out.jobs.map((j) => ({ job_id: j.id, bucket, status: j.status })), ...(cands[vid] || [])].slice(0, 12);
-        cands[vid].filter((c) => c.status === "queued").forEach((c) => pollCandidate(vid, c));
-        paintBank(vid);
-      } catch (e) { /* busy() already showed the error */ }
-    } else if (act === "bank-adopt-cand") {
-      await adoptRecording(Number(b.dataset.voice), b.dataset.bucket, b.dataset.rid, b.dataset.bucket, true);
-    } else if (act === "bank-adopt") {
-      const vid = Number(b.dataset.voice), bucket = b.dataset.bucket;
-      let recs;
-      try { recs = (await get("/api/recordings")).recordings.filter((r) => r.asr_check && r.asr_check.matches); } catch (e) { toastError(e); return; }
-      if (!recs.length) { toast("No recordings have passed the Whisper check yet. Record or generate one, then run the transcript check in the Record tab.", "warn", 9000); return; }
-      const res = await dialog({ title: `Adopt a recording for ${b.dataset.label}`, form: true, buttons: [{ label: "Continue", value: "ok", kind: "primary" }],
-        body: html`<label>Checked recording <select name="rid">${recs.map((r) => html`<option value="${r.id}">${r.label || r.script_title} · ${r.duration_s}s · ${fmtDate(r.created_at)}</option>`)}</select></label>
-          <p class="small muted">Only recordings whose transcript matched the Whisper check are listed. Audition them in the Record tab.</p>` });
-      if (!res) return;
-      await adoptRecording(vid, bucket, res.data.rid, b.dataset.label, false);
-    } else if (act === "bank-remove") {
-      if (!(await confirmDialog("Remove reference clip?", `The ${b.dataset.label} clip is deleted. Takes already made with it keep their audio; new takes use the base reference.`, "Remove", true))) return;
-      const vid = Number(b.dataset.voice);
-      try { banks[vid] = await api("DELETE", `/api/voices/${vid}/refs/${b.dataset.ref}`); toast("Reference clip removed", "success"); } catch (e) { toastError(e); }
-      paintBank(vid);
-    } else if (act === "promote") {
-      const res = await dialog({ title: "Promote preview to a stable narrator", form: true, buttons: [{ label: "Create narrator", value: "ok", kind: "primary" }],
-        body: html`<p>This preview becomes the reference clip of a new cloned narrator, so every segment uses the same voice.</p>
-          <label>Name <input name="name" required maxlength="80" value="${b.dataset.name} (stable)"></label>` });
-      if (!res) return;
-      await busy(b, () => post("/api/voices/promote", { job_id: Number(b.dataset.job), name: res.data.name }), "Stable narrator created");
-      await reload();
+      tab = tb.dataset.tab; paintCreate(); const n = shell.querySelector(`#tab-${tab}`); if (n) n.focus(); return;
     }
+    const b = e.target.closest("button[data-act=play]");
+    if (b) play(b);
   }
+  const onToggle = (e) => { if (e.target.id === "add-narrator") { addOpen = e.target.open; if (!addOpen) lab.releaseMic(); } };
 
-  // remember what is typed in each card's preview form, so a repaint (tab switch, reload after an edit) never resets it
-  const rememberPreviewForm = (e) => {
-    const f = e.target.closest && e.target.closest(".preview-form");
-    if (!f) return;
-    const fd = new FormData(f);
-    pform[Number(f.dataset.voice)] = { text: fd.get("text") || "", instruct: fd.get("instruct") || "", verify: fd.get("verify") === "on" };
-  };
-  view.addEventListener("input", rememberPreviewForm);
-  view.addEventListener("change", rememberPreviewForm);
-  view.addEventListener("click", onClick);
-  paint();
+  paintGrid();
+  paintCreate();
   lab.init();
-  Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
-  Object.entries(cands).forEach(([vid, cs]) => cs.filter((c) => ["queued", "running"].includes(c.status)).forEach((c) => pollCandidate(Number(vid), c)));
-  return () => { view.removeEventListener("click", onClick); view.removeEventListener("input", rememberPreviewForm); view.removeEventListener("change", rememberPreviewForm); timers.forEach(clearInterval); lab.destroy(); };
+  view.addEventListener("click", onClick);
+  view.addEventListener("toggle", onToggle, true);
+  const off = onState(() => refresh(), 2000);
+  return () => {
+    disposed = true; off(); audio.pause(); audio.removeAttribute("src");
+    view.removeEventListener("click", onClick); view.removeEventListener("toggle", onToggle, true); lab.destroy();
+  };
 }
-__STUDIO_EOF_53fefa529ac6__
+__STUDIO_EOF_b0a202c010e6__
 cat > "$DEST/studio/web/update_api.py" <<'__STUDIO_EOF_ddf237e18d69__'
 """HTTP API for the Update Center. State-changing routes are administrator-only (auth.ADMIN_RULES) and pass the same-origin /
 CSRF checks as every other mutating route. No endpoint accepts a URL or a command: the repository comes from validated
@@ -28899,7 +29642,7 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
         ctx.save_settings(s)
         return manager.status()
 __STUDIO_EOF_ddf237e18d69__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_3eebcc79e151__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_78d2b071403e__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -28912,6 +29655,7 @@ cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_3eebcc79e151__'
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import platform
@@ -29242,8 +29986,15 @@ class Worker:
             raise ValueError("voice not found for preview")
         self._set(state="previewing", job=job["id"], sid=None, message=f"Preview: {v['name']}")
         spec = VoiceSpec.from_rows(v, vv)
+        if p.get("ref_override"):  # an emotion take made from one of the clone's adopted clips ("intensify")
+            with self.ctx.db.session() as conn:
+                ref = row(conn, "SELECT * FROM voice_refs WHERE id=? AND voice_id=?", (p["ref_override"], v["id"]))
+            if not ref:
+                raise ValueError("the reference clip to intensify was removed")
+            spec = dataclasses.replace(spec, ref_audio_path=ref["ref_audio_path"], ref_text=ref["ref_text"])
         text = p["text"]
-        params = SynthParams(seed=int(p.get("seed", 1234)), temperature=p.get("temperature"), max_tokens=max_tokens_for(text), instruct=p.get("instruct"))
+        params = SynthParams(seed=int(p.get("seed", 1234)), temperature=p.get("temperature"), max_tokens=max_tokens_for(text), instruct=p.get("instruct"),
+                             directable_model=self.ctx.settings().models.custom_voice_model if p.get("directable") and v["kind"] == "clone" else None)
         res = self.tts.synthesize(spec, text, params)
         out = self.ctx.previews_dir() / f"preview-{job['id']}.wav"
         A.write_wav(out, res.audio, res.sample_rate)
@@ -29258,6 +30009,16 @@ class Worker:
             result["note"] = "Mock engine: synthetic test tones, not speech."
         if p.get("to_lab"):
             result.update(self._candidate_to_lab(job, p, v, out, res, text))
+        if p.get("tile"):  # the narrator's kept sample: one per voice version, outside the pruned previews folder
+            from . import services as SV
+
+            dst = SV.sample_path(self.ctx, v["uid"], vv["id"])
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            A.write_wav(dst, res.audio, res.sample_rate)
+            for old in dst.parent.glob("sample-v*.wav"):
+                if old != dst:
+                    old.unlink(missing_ok=True)
+            result["sample_path"] = str(dst)
         with self.ctx.db.tx() as conn:
             conn.execute("UPDATE jobs SET status='completed', result_json=?, finished_at=?, updated_at=? WHERE id=?", (dumps(result), now(), now(), job["id"]))
         self._cleanup_previews()
@@ -29270,13 +30031,15 @@ class Worker:
         from .narrative import voicecheck as VC
 
         mock = res.engine == "mock"
-        label = f"{p.get('bucket', 'emotion')} candidate {p.get('candidate', '')} from {voice['name']}".strip()[:70] + (" [mock]" if mock else "")
+        how = {"clone": "read by", "intensify": "intensified by", "directable": "directed take of", "design": "from"}.get(p.get("source") or "design", "from")
+        label = f"{p.get('bucket', 'emotion')} take {p.get('candidate', '')} {how} {voice['name']}".strip()[:70] + (" [mock]" if mock else "")
         meta = SV.create_recording(self.ctx, "candidate.wav", wav.read_bytes(), p.get("script_id") or "", text, label)
         rid = meta["id"]
         rdir = self.ctx.data_dir / "recordings" / rid
         # provenance next to the converted clip (the mock ASR reads its transcript from here; real Whisper ignores it)
         atomic_write_text(str(rdir / "reference-24k.wav.json"), dumps({"engine": res.engine, "model_id": res.model_id, "meta": res.meta}))
         extra = {"source": "synthetic", "source_voice_id": voice["id"], "source_voice_name": voice["name"], "bucket": p.get("bucket"),
+                 "target_voice_id": p.get("target_voice_id"), "candidate_source": p.get("source") or "design", "ref_override": p.get("ref_override"),
                  "engine": res.engine, "model_id": res.model_id, "seed": p.get("seed"), "emotion_instruct": p.get("instruct")}
         if mock:
             extra["note"] = "Mock engine: synthetic test tones, not speech."
@@ -29285,9 +30048,11 @@ class Worker:
             ev = evaluate(text, tr["text"], tr.get("words"), meta.get("duration_s"), 1, 1)
             errors = [i for i in ev["issues"] if i["severity"] == "error"]
             extra["asr_check"] = {"matches": ev["wer"] <= 0.08 and not errors, "wer": ev["wer"], "asr_text": tr["text"], "engine": tr.get("engine"), "checked_at": now()}
+        vv = None
         try:  # drift vs the clone this candidate is meant for
             with self.ctx.db.session() as conn:
-                vv = row(conn, "SELECT vv.ref_audio_path FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id WHERE v.id=?", (p.get("target_voice_id"),))
+                vv = row(conn, "SELECT vv.ref_audio_path, vv.model_id FROM voices v JOIN voice_versions vv ON vv.id=v.current_version_id WHERE v.id=?",
+                         (p.get("target_voice_id"),))
             if vv and vv["ref_audio_path"]:
                 base, bsr = A.read_wav(Path(vv["ref_audio_path"]))
                 cand, csr = A.read_wav(rdir / "reference-24k.wav")
@@ -29298,8 +30063,17 @@ class Worker:
                                   "centroid_delta_hz": round(cen - cenb, 1)}
         except Exception as exc:  # advisory only
             extra["drift"] = {"error": str(exc)[:200]}
+        try:  # does it still sound like the narrator? (the Base model's speaker encoder; the mock engine only imitates it)
+            sim_fn = getattr(self.tts, "speaker_similarity", None)
+            if sim_fn and vv and vv["ref_audio_path"]:
+                sim = sim_fn(rdir / "reference-24k.wav", Path(vv["ref_audio_path"]), vv["model_id"])
+                extra["similarity"] = round(sim, 4) if sim is not None else None
+        except Exception as exc:  # advisory: adoption then shows "not measured"
+            log.warning("speaker similarity failed for %s: %s", rid, exc)
+            extra["similarity_error"] = str(exc)[:200]
         SV.update_recording_meta(self.ctx, rid, **extra)
-        return {"recording_id": rid, "to_lab": True, "bucket": p.get("bucket"), "asr_check": extra.get("asr_check"), "drift": extra.get("drift")}
+        return {"recording_id": rid, "to_lab": True, "bucket": p.get("bucket"), "asr_check": extra.get("asr_check"), "drift": extra.get("drift"),
+                "similarity": extra.get("similarity")}
 
     def _run_segment_preview(self, job: dict, p: dict) -> None:
         """Preview one segment exactly as production would render it: its character voice, its delivery
@@ -29313,7 +30087,7 @@ class Worker:
             raise ValueError("segment not found for preview")
         self._set(state="previewing", job=job["id"], sid=seg["sid"], message=f"Preview of {seg['sid']}")
         text = plan.text
-        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct)
+        params = SynthParams(seed=int(p.get("seed", 1234)), max_tokens=max_tokens_for(text), instruct=plan.instruct, directable_model=plan.directable_model)
         res = self.tts.synthesize(plan.voice, text, params, sid=None)
         audio = A.to_mono_float(res.audio)
         if abs(plan.pace - 1.0) > 1e-6:  # the same pitch-preserving stretch production applies, so A/B previews match real takes
@@ -29532,7 +30306,7 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_3eebcc79e151__
+__STUDIO_EOF_78d2b071403e__
   mkdir -p "$DEST/tests"
 cat > "$DEST/tests/book_synth.py" <<'__STUDIO_EOF_6ab6dab062ff__'
 """Synthetic books for performance and equivalence tests: segments, takes and chapter masters are written straight to SQLite and to
@@ -29852,6 +30626,66 @@ def make_speechlike_wav(seconds: float = 10.0, sr: int = 24000, amp: float = 0.2
     return buf.getvalue()
 __STUDIO_EOF_c99a7b0d46fa__
   mkdir -p "$DEST/tests/js"
+cat > "$DEST/tests/js/narrator_model.test.mjs" <<'__STUDIO_EOF_cd90eedf1001__'
+// Unit tests for static/js/views/narrator-model.js. Run: node tests/js/narrator_model.test.mjs (also run by pytest).
+import assert from "node:assert/strict";
+
+const M = await import("../../studio/web/static/js/views/narrator-model.js");
+
+let failed = 0;
+function test(name, fn) {
+  try { fn(); console.log("ok   " + name); } catch (e) { failed++; console.log("FAIL " + name + "\n" + (e && e.stack || e)); }
+}
+
+test("tileState: generate, wait, ready, playing, blocked autoplay", () => {
+  assert.equal(M.tileState({ status: "none" }).state, "none");
+  assert.equal(M.tileState(undefined).state, "none");
+  const q = M.tileState({ status: "queued", job_id: 4 });
+  assert.equal(q.state, "queued"); assert.equal(q.busy, true);
+  assert.equal(M.tileState({ status: "running" }).busy, true);
+  assert.equal(M.tileState({ status: "ready", url: "/x" }).state, "ready");
+  assert.equal(M.tileState({ status: "ready", url: "/x" }, { playing: true }).state, "playing");
+  assert.equal(M.tileState({ status: "ready", url: "/x" }, { blocked: true }).state, "blocked");
+  assert.equal(M.tileState({ status: "queued" }, { playing: true }).icon, "■");   // stop always wins
+});
+
+test("similarityVerdict bands, the adoption limit and mock labelling", () => {
+  assert.equal(M.similarityVerdict(null).text, "similarity not measured");
+  assert.equal(M.similarityVerdict(0.99).tone, "good");
+  assert.equal(M.similarityVerdict(0.975).tone, "warn");
+  assert.equal(M.similarityVerdict(0.95).tone, "bad");
+  assert.match(M.similarityVerdict(0.975, 0.98).text, /below the adoption limit 0\.980/);
+  const mock = M.similarityVerdict(0.5, 0.98, true);
+  assert.equal(mock.tone, "neutral"); assert.match(mock.text, /mock engine/);
+});
+
+test("byFamily groups emotions in a stable family order and keeps unknown families", () => {
+  const g = M.byFamily([{ bucket: "anger", family: "hot" }, { bucket: "joy", family: "warm" }, { bucket: "grief", family: "low" },
+    { bucket: "humor", family: "warm" }, { bucket: "odd", family: "strange" }]);
+  assert.deepEqual(g.map((x) => x.family), ["warm", "low", "hot", "strange"]);
+  assert.deepEqual(g[0].buckets.map((b) => b.bucket), ["joy", "humor"]);
+  assert.equal(g[0].label, "Warm");
+});
+
+test("tabOf: emotions only for clones, unknown tabs fall back to the overview", () => {
+  const q = (t) => new URLSearchParams(t ? `tab=${t}` : "");
+  assert.equal(M.tabOf(q("emotions"), "clone"), "emotions");
+  assert.equal(M.tabOf(q("emotions"), "preset"), "overview");
+  assert.equal(M.tabOf(q("tools"), "design"), "tools");
+  assert.equal(M.tabOf(q("bogus"), "clone"), "overview");
+  assert.equal(M.tabOf(q(""), "clone"), "overview");
+});
+
+test("clipLine and every source has a label and a hint", () => {
+  assert.equal(M.clipLine(null), "");
+  assert.equal(M.clipLine({ duration_s: 8.2, source: "recording" }), "8.2s · recorded");
+  assert.equal(M.clipLine({ duration_s: 9, source: "synthetic", metrics: { candidate_source: "clone" } }), "9s · Read by the narrator");
+  for (const k of ["clone", "intensify", "directable", "design"]) assert.ok(M.SOURCES[k].label && M.SOURCES[k].hint, k);
+});
+
+console.log(`\n${5 - failed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
+__STUDIO_EOF_cd90eedf1001__
 cat > "$DEST/tests/js/runtime_fmt.test.mjs" <<'__STUDIO_EOF_82e548f7564e__'
 // Unit tests for static/js/runtime.js (fmtSpan / fmtClock / fmtRuntime). Run: node tests/js/runtime_fmt.test.mjs (also run by pytest).
 import assert from "node:assert/strict";
@@ -31495,7 +32329,7 @@ def test_placeholder_cover_is_skipped_without_pillow():
         expected = False
     assert chapters.placeholder_cover_available() is expected
 __STUDIO_EOF_8ff8a34089b1__
-cat > "$DEST/tests/test_delivery_audio.py" <<'__STUDIO_EOF_749a0258640c__'
+cat > "$DEST/tests/test_delivery_audio.py" <<'__STUDIO_EOF_7ea5ccf6fa33__'
 """Direction made audible for cloned voices: pace and pauses from the Director's direction, and the emotion reference bank.
 MOCK engine only (synthetic test tones, not speech, and no MLX/GPU inference): nothing here proves how a real Base model reacts to a clip."""
 from __future__ import annotations
@@ -31767,20 +32601,28 @@ def test_every_emotion_maps_to_a_bucket_or_the_base_reference():
     for e in V.EMOTIONS:
         assert RB.bucket_for(e) in (None, *RB.BUCKETS), e
     assert RB.bucket_for("neutral") is None and RB.bucket_for("calm") is None
-    assert RB.bucket_for("fear") == "tense" == RB.bucket_for("anger") == RB.bucket_for("anxiety")
-    assert RB.bucket_for("sadness") == "sorrow" == RB.bucket_for("grief")
-    assert RB.bucket_for("tenderness") == "tender" and RB.bucket_for("joy") == "tender"
-    assert RB.bucket_for("excitement") == "bright"
+    # one clip per emotion the Review page and the Director can ask for (everything but neutral / calm)
+    assert set(RB.BUCKETS) == set(V.EMOTIONS) - {"neutral", "calm"} and len(RB.BUCKETS) == 13
+    assert all(RB.bucket_for(e) == e for e in RB.BUCKETS) and RB.bucket_for("ANGER") == "anger"
     assert RB.bucket_for("unheard-of") is None and RB.bucket_for(None) is None
-    assert set(RB.BUCKETS) == {"tense", "tender", "sorrow", "bright"}
+    for b, nb in RB.NEIGHBOURS.items():                                                      # neighbours are real emotions
+        assert b in RB.BUCKETS and set(nb) <= set(RB.BUCKETS) and b not in nb
+    from studio import reference as R
+    assert all(R.script_by_id(RB.BUCKET_INFO[b]["script_id"]) for b in RB.BUCKETS)        # every emotion has a script
+    assert set(RB.LEGACY_BUCKETS.values()) <= set(RB.BUCKETS)
 
 
 def test_choose_rules():
     on = NarrativeSettings(delivery={"clone": "reference_bank", "bank_min_intensity": 3})
     off = NarrativeSettings()
-    refs = {"tense": {"id": 7, "bucket": "tense"}}
+    refs = {"fear": {"id": 7, "bucket": "fear"}}
     fear4 = {"emotion": "fear", "intensity": 4}
     assert RB.choose(on, fear4, "clone", refs)["id"] == 7
+    assert "'fear' → 'fear'" in RB.select(on, fear4, "clone", refs)[1]
+    # an emotion without its own clip borrows a related one, and says so
+    got, why = RB.select(on, {"emotion": "anxiety", "intensity": 4}, "clone", refs)
+    assert got["id"] == 7 and "related 'fear'" in why
+    assert RB.choose(on, {"emotion": "anger", "intensity": 4}, "clone", refs) is None             # fear is not related to anger
     assert RB.choose(on, {"emotion": "fear", "intensity": 3}, "clone", refs)["id"] == 7        # threshold is inclusive
     assert RB.choose(on, {"emotion": "fear", "intensity": 2}, "clone", refs) is None             # below the threshold
     assert RB.choose(off, fear4, "clone", refs) is None                                          # setting off
@@ -31806,13 +32648,13 @@ def test_plan_swaps_the_reference_only_when_a_clip_is_chosen(client, ctx):
     assert no_clip.gen_key == base.gen_key and no_clip.ref_id is None                          # bank on, nothing adopted: identical key
     assert no_clip.delivery_applied is False and "no adopted reference clip" in no_clip.delivery_reason
     rid = lab_recording(client, ctx, w)
-    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True, "statement": "Recorded by the speaker for this project."})
+    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid, "owner_attest": True, "statement": "Recorded by the speaker for this project."})
     assert r.status_code == 200, r.text
     with ctx.db.session() as conn:
         ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (clone["id"],))
     p = plan_of(ctx, seg["id"])
-    assert p.ref_id == ref["id"] and p.ref_bucket == "tense" and p.voice.ref_audio_path == ref["ref_audio_path"] and p.voice.ref_text == ref["ref_text"]
-    assert p.delivery_applied is True and "'fear' → 'tense'" in p.delivery_reason
+    assert p.ref_id == ref["id"] and p.ref_bucket == "fear" and p.voice.ref_audio_path == ref["ref_audio_path"] and p.voice.ref_text == ref["ref_text"]
+    assert p.delivery_applied is True and "'fear' → 'fear'" in p.delivery_reason
     assert p.gen_key != base.gen_key
     delivery(client, clone="off")
     assert plan_of(ctx, seg["id"]).gen_key == base.gen_key and plan_of(ctx, seg["id"]).voice.ref_audio_path != ref["ref_audio_path"]
@@ -31824,7 +32666,7 @@ def test_plan_swaps_the_reference_only_when_a_clip_is_chosen(client, ctx):
     assert insp["ref_id"] is None and "pace" in insp
     direct(client, seg["id"], emotion="fear", intensity=4)
     insp = client.get(f"/api/segments/{seg['id']}/inspect").json()["delivery"]
-    assert insp["ref_id"] == ref["id"] and insp["ref_bucket"] == "tense" and insp["applied"] is True
+    assert insp["ref_id"] == ref["id"] and insp["ref_bucket"] == "fear" and insp["applied"] is True
 
 
 @needs_ffmpeg
@@ -31832,7 +32674,7 @@ def test_clone_narrator_end_to_end_uses_the_bank_clip(client, ctx):
     bid, clone, toms, eng, w = clone_book(client, ctx, delivery={"clone": "reference_bank"})
     seg = toms[0]
     rid = lab_recording(client, ctx, w)
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True,
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid, "owner_attest": True,
                                                                      "statement": "Recorded by the speaker for this project."}).status_code == 200
     direct(client, seg["id"], emotion="fear", intensity=4)
     eng.log.clear()
@@ -31858,7 +32700,7 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     clone = make_clone(client)
     cid = clone["id"]
     good = {"owner_attest": True, "statement": "Recorded by the speaker for this project."}
-    adopt = lambda rid, bucket="tense", **kw: client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": bucket, "recording_id": rid, **kw})  # noqa: E731
+    adopt = lambda rid, bucket="fear", **kw: client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": bucket, "recording_id": rid, **kw})  # noqa: E731
     # never checked
     r = client.post("/api/recordings", data={"script_id": "range-tense", "ref_text": TEXT}, files={"file": ("rec.wav", make_speechlike_wav(10.0), "audio/wav")})
     unchecked = r.json()["id"]
@@ -31876,14 +32718,14 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     first = adopt(ok, **good)
     assert first.status_code == 200, first.text
     b = {x["bucket"]: x for x in first.json()["buckets"]}
-    assert b["tense"]["ref"]["source"] == "recording" and b["tense"]["ref"]["duration_s"] > 3
-    assert {"f0_delta_hz", "centroid_delta_hz", "gain_db", "wer"} <= set(b["tense"]["ref"]["metrics"]) and b["sorrow"]["ref"] is None
+    assert len(b) == 13 and b["fear"]["ref"]["source"] == "recording" and b["fear"]["ref"]["duration_s"] > 3
+    assert {"f0_delta_hz", "centroid_delta_hz", "gain_db", "wer"} <= set(b["fear"]["ref"]["metrics"]) and b["sadness"]["ref"] is None
     with ctx.db.session() as conn:
         ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=?", (cid,))
         consent = json.loads(ref["consent_json"])
         base_path = row(conn, "SELECT ref_audio_path FROM voice_versions WHERE voice_id=?", (cid,))["ref_audio_path"]
     assert consent["owner_attest"] is True and "project" in consent["statement"]
-    assert ref["ref_audio_path"].replace("\\", "/").endswith("/refs/tense.wav") and base_path != ref["ref_audio_path"]
+    assert ref["ref_audio_path"].replace("\\", "/").endswith("/refs/fear.wav") and base_path != ref["ref_audio_path"]
     assert client.get(f"/media/voice/{cid}/ref/{ref['id']}").status_code == 200
     assert client.get(f"/media/voice/{cid}/ref/9999").status_code == 404
     # replacing a bucket keeps exactly one row and gives the new clip its own id
@@ -31896,9 +32738,10 @@ def test_adopt_refuses_unchecked_mismatched_and_unconsented_clips_and_replaces_b
     # presets have no bank
     preset = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
     assert client.get(f"/api/voices/{preset['id']}/refs").status_code == 422
-    assert client.post(f"/api/voices/{preset['id']}/refs/candidates", json={"bucket": "tense"}).status_code == 422
-    # candidates need a designed source voice: a human clone has none
-    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "tense"}).status_code == 422
+    assert client.post(f"/api/voices/{preset['id']}/refs/candidates", json={"bucket": "fear"}).status_code == 422
+    # design takes need a designed source voice: a human clone has none (it can make takes itself: see the clone-take test)
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "fear", "source": "design"}).status_code == 422
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "fear", "source": "bogus"}).status_code == 422
     # removal deletes the row and the files
     rm = client.delete(f"/api/voices/{cid}/refs/{refs[0]['id']}")
     assert rm.status_code == 200 and all(x["ref"] is None for x in rm.json()["buckets"])
@@ -31921,35 +32764,42 @@ def test_synthetic_clone_candidates_become_labelled_lab_recordings_and_can_be_ad
     assert info["synthetic"] is True and info["source_voice"]["id"] == d["id"]
     # a designed source may even be archived by now
     client.post(f"/api/voices/{d['id']}/archive")
-    out = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "tense", "n": 3})
+    out = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "fear", "source": "design"})
     assert out.status_code == 200, out.text
-    jobs = out.json()["jobs"]
-    assert len(jobs) == 3 and len({j["payload"]["seed"] for j in jobs}) == 3
-    assert all(j["payload"]["to_lab"] and j["payload"]["voice_id"] == d["id"] and "tense, urgent, strained" in j["payload"]["instruct"] for j in jobs)
+    jobs = [out.json()["job"]]                                                                  # one take at a time
+    j0 = jobs[0]["payload"]
+    assert j0["to_lab"] and j0["voice_id"] == d["id"] and "fearfully" in j0["instruct"] and j0["source"] == "design"
+    assert j0["seed"] == pj["payload"]["seed"]                                                  # the seed that made the clone's base clip
+    again = client.post(f"/api/voices/{clone['id']}/refs/candidates", json={"bucket": "fear", "source": "design"})
+    assert again.status_code == 409                                                             # one take per emotion in flight
+    pending = {x["bucket"]: x for x in client.get(f"/api/voices/{clone['id']}/refs").json()["buckets"]}["fear"]["pending"]
+    assert pending and pending["job_id"] == jobs[0]["id"] and pending["source"] == "design"
     w.run_until_idle()
     results = [client.get(f"/api/jobs/{j['id']}").json() for j in jobs]
     assert all(r["status"] == "completed" and r["result"]["recording_id"] for r in results), [r.get("error") for r in results]
     rid = results[0]["result"]["recording_id"]
     meta = client.get("/api/recordings").json()["recordings"]
     rec = next(m for m in meta if m["id"] == rid)
-    assert rec["source"] == "synthetic" and rec["source_voice_id"] == d["id"] and rec["bucket"] == "tense"
+    assert rec["source"] == "synthetic" and rec["source_voice_id"] == d["id"] and rec["bucket"] == "fear" and rec["target_voice_id"] == clone["id"]
     assert rec["engine"] == "mock" and "not speech" in rec["note"] and "[mock]" in rec["label"]       # honestly labelled
     assert rec["asr_check"]["matches"] is True and "f0_delta_hz" in rec["drift"] and "centroid_delta_hz" in rec["drift"]
     assert results[0]["result"]["note"].startswith("Mock engine")
     # adopting needs no human consent for a synthetic clone, but only for candidates this clone's own source voice made
-    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid})
+    cands = {x["bucket"]: x for x in client.get(f"/api/voices/{clone['id']}/refs").json()["buckets"]}["fear"]["candidates"]
+    assert [c["id"] for c in cands] == [rid] and cands[0]["source"] == "design" and cands[0]["mock"] is True
+    r = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "fear", "recording_id": rid})
     assert r.status_code == 200, r.text
-    ref = next(x for x in r.json()["buckets"] if x["bucket"] == "tense")["ref"]
+    ref = next(x for x in r.json()["buckets"] if x["bucket"] == "fear")["ref"]
     assert ref["source"] == "synthetic" and ref["mock"] is True
     human = lab_recording(client, ctx, w)
-    refused = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tender", "recording_id": human, "owner_attest": True, "statement": "Recorded by the speaker."})
+    refused = client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tenderness", "recording_id": human, "owner_attest": True, "statement": "Recorded by the speaker."})
     assert refused.status_code == 422 and "synthetic" in refused.json()["error"]
     # another designed voice's candidate is refused too
     d2 = client.post("/api/voices/design", json={"name": "Soft nurse", "description": "A soft younger female voice, gentle and warm."}).json()
-    other = SV.enqueue_preview(ctx, d2["id"], "x " * 20, "gentle", True, 5, {"to_lab": True, "bucket": "tender", "script_id": "range-warm", "target_voice_id": clone["id"]})
+    other = SV.enqueue_preview(ctx, d2["id"], "x " * 20, "gentle", True, 5, {"to_lab": True, "bucket": "tenderness", "script_id": "emotion-tenderness", "target_voice_id": clone["id"]})
     w.run_until_idle()
     orid = client.get(f"/api/jobs/{other['id']}").json()["result"]["recording_id"]
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tender", "recording_id": orid}).status_code == 422
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tenderness", "recording_id": orid}).status_code == 422
     # a clone promoted before v0.7.1 only names its source in rights_holder: still found
     with ctx.db.tx() as conn:
         vv = row(conn, "SELECT id, consent_json FROM voice_versions WHERE id=?", (clone["version"]["id"],))
@@ -31990,7 +32840,7 @@ def test_disk_usage_counts_bank_clips(client, ctx, tmp_path):
         conn.execute("INSERT INTO voice_refs(voice_id,bucket,ref_audio_path,ref_text,ref_sha256,source,consent_json,created_at) VALUES (?,?,?,?,?,?,?,1)",
                      (voice["id"], "tense", str(f), "t", "x", "recording", "{}"))
     assert diskmgmt.usage(ctx)["other"]["voices"] == before + 4096
-__STUDIO_EOF_749a0258640c__
+__STUDIO_EOF_7ea5ccf6fa33__
 cat > "$DEST/tests/test_director_v2.py" <<'__STUDIO_EOF_9d70d6a6f3b9__'
 """Director v2: the chapter beat sheet (one thinking request per chapter) and scene-batched direction (one request per window of
 segments). Everything here runs against stub replies (httpx.MockTransport or a local HTTP stub): no real model behaviour is tested."""
@@ -33131,7 +33981,249 @@ def test_disk_routes_are_admin_only(ctx):
         assert c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"}).status_code == 200
         assert c.get("/api/disk/usage").status_code == 200
 __STUDIO_EOF_f0e734ac28d0__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_507d582deda5__'
+cat > "$DEST/tests/test_emotion_takes.py" <<'__STUDIO_EOF_ea04b48616d9__'
+"""v0.9.0 emotion takes for cloned narrators: one take at a time, made by the clone itself (or from an adopted clip, or directed
+through the CustomVoice model with the clone's speaker vector), judged by Whisper and speaker similarity, discarded or adopted.
+Also: the per-emotion bank migration, narrator samples, and the "directable" clone delivery. Mock engine only: similarities are
+labelled mock and are not measurements."""
+from __future__ import annotations
+
+import json
+import sqlite3
+
+import pytest
+
+from conftest import make_wav_bytes, needs_ffmpeg
+from studio import db as DB
+from studio import services as SV
+from studio.db import row
+from test_delivery_audio import clone_book, delivery, direct, make_clone, plan_of
+from test_narrative import RecordingEngine, worker_with
+
+
+def refs(client, vid):
+    r = client.get(f"/api/voices/{vid}/refs")
+    assert r.status_code == 200, r.text
+    return {x["bucket"]: x for x in r.json()["buckets"]}
+
+
+def take(client, vid, bucket="anger", source="clone"):
+    r = client.post(f"/api/voices/{vid}/refs/candidates", json={"bucket": bucket, "source": source})
+    assert r.status_code == 200, r.text
+    return r.json()["job"]
+
+
+@needs_ffmpeg
+def test_a_clone_makes_its_own_takes_one_at_a_time_and_adopts_them_without_new_consent(client, ctx, make_worker):
+    w = make_worker()
+    clone = make_clone(client)                                  # a clone of a HUMAN voice: takes made by the clone itself are allowed
+    cid = clone["id"]
+    info = client.get(f"/api/voices/{cid}/refs").json()
+    assert info["sources"][:2] == ["clone", "intensify"] and "design" not in info["sources"]
+    j = take(client, cid)
+    p = j["payload"]
+    assert p["voice_id"] == cid and p["source"] == "clone" and p["instruct"] is None and p["target_voice_id"] == cid
+    assert "How dare you" in p["text"]                          # the emotion is in the words
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "anger"}).status_code == 409
+    assert refs(client, cid)["anger"]["pending"]["job_id"] == j["id"]
+    take(client, cid, "joy")                                    # another emotion is independent
+    w.run_until_idle()
+    res = client.get(f"/api/jobs/{j['id']}").json()
+    assert res["status"] == "completed", res.get("error")
+    rid = res["result"]["recording_id"]
+    b = refs(client, cid)["anger"]
+    assert b["pending"] is None and [c["id"] for c in b["candidates"]] == [rid]
+    c = b["candidates"][0]
+    assert c["source"] == "clone" and c["mock"] is True and isinstance(c["similarity"], float) and c["asr_check"]["matches"]
+    meta = SV.get_recording(ctx, rid)
+    assert meta["label"].startswith("anger take 1 read by CloneTest") and meta["target_voice_id"] == cid
+    # adopted without an attestation: the voice is the clone's own
+    r = client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": "anger", "recording_id": rid})
+    assert r.status_code == 200, r.text
+    with ctx.db.session() as conn:
+        ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=? AND bucket='anger'", (cid,))
+    assert json.loads(ref["consent_json"])["type"] == "self" and json.loads(ref["metrics_json"])["candidate_source"] == "clone"
+    # a second take numbers on, from a new seed
+    j2 = take(client, cid)
+    assert j2["payload"]["candidate"] == 2 and j2["payload"]["seed"] != p["seed"]
+
+
+@needs_ffmpeg
+def test_intensify_uses_the_adopted_clip_and_directable_reaches_the_custom_voice_model(client, ctx):
+    eng = RecordingEngine()
+    w = worker_with(ctx, eng)
+    clone = make_clone(client)
+    cid = clone["id"]
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "fear", "source": "intensify"}).status_code == 422  # nothing adopted yet
+    j = take(client, cid, "fear")
+    w.run_until_idle()
+    rid = client.get(f"/api/jobs/{j['id']}").json()["result"]["recording_id"]
+    assert client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": "fear", "recording_id": rid}).status_code == 200
+    with ctx.db.session() as conn:
+        ref = row(conn, "SELECT * FROM voice_refs WHERE voice_id=? AND bucket='fear'", (cid,))
+    ji = take(client, cid, "fear", "intensify")
+    assert ji["payload"]["ref_override"] == ref["id"]
+    eng.log.clear()
+    w.run_until_idle()
+    assert eng.log[-1]["ref_audio_path"] == ref["ref_audio_path"] and eng.log[-1]["ref_text"] == ref["ref_text"]
+    jd = take(client, cid, "sadness", "directable")
+    assert jd["payload"]["directable"] is True and jd["payload"]["instruct"] == "Speak with sadness."
+    eng.log.clear()
+    w.run_until_idle()
+    call = eng.log[-1]
+    assert call["kind"] == "clone" and call["directable_model"] == ctx.settings().models.custom_voice_model and call["instruct"] == "Speak with sadness."
+    res = client.get(f"/api/jobs/{jd['id']}").json()["result"]
+    assert "CustomVoice" in res["model_id"]
+    # switched off in Settings: refused
+    assert client.put("/api/settings", json={"models": {"directable_clones": False}}).status_code == 200
+    assert client.post(f"/api/voices/{cid}/refs/candidates", json={"bucket": "joy", "source": "directable"}).status_code == 422
+    assert "directable" not in client.get(f"/api/voices/{cid}/refs").json()["sources"]
+
+
+@needs_ffmpeg
+def test_takes_can_be_discarded_one_by_one_or_all_at_once(client, ctx, make_worker):
+    w = make_worker()
+    cid = make_clone(client)["id"]
+    jobs = []
+    for _ in range(2):
+        jobs.append(take(client, cid, "grief"))
+        w.run_until_idle()
+    rids = [client.get(f"/api/jobs/{j['id']}").json()["result"]["recording_id"] for j in jobs]
+    assert len(refs(client, cid)["grief"]["candidates"]) == 2
+    other = make_clone(client, "Somebody else")
+    assert client.delete(f"/api/voices/{other['id']}/refs/candidates/{rids[0]}").status_code == 404     # not this narrator's take
+    r = client.delete(f"/api/voices/{cid}/refs/candidates/{rids[0]}")
+    assert r.status_code == 200 and [c["id"] for c in {x["bucket"]: x for x in r.json()["buckets"]}["grief"]["candidates"]] == [rids[1]]
+    assert client.get("/api/recordings").json()["recordings"] and all(m["id"] != rids[0] for m in client.get("/api/recordings").json()["recordings"])
+    queued = take(client, cid, "grief")                                                               # still waiting for the worker
+    r = client.delete(f"/api/voices/{cid}/refs/candidates", params={"bucket": "grief"})
+    assert r.status_code == 200 and r.json()["discarded"] == 2
+    g = {x["bucket"]: x for x in r.json()["buckets"]}["grief"]
+    assert g["candidates"] == [] and g["pending"] is None
+    assert client.get(f"/api/jobs/{queued['id']}").json()["status"] == "cancelled"
+    assert client.delete(f"/api/voices/{cid}/refs/candidates", params={"bucket": "furious"}).status_code == 422
+    # discarding takes is not an admin-only action (removing an adopted clip is)
+    from studio.web.auth import is_admin_only
+    assert not is_admin_only("DELETE", f"/api/voices/{cid}/refs/candidates/{rids[1]}") and not is_admin_only("DELETE", f"/api/voices/{cid}/refs/candidates")
+
+
+@needs_ffmpeg
+def test_the_similarity_gate_refuses_a_take_that_sounds_like_someone_else(client, ctx, make_worker):
+    w = make_worker()
+    cid = make_clone(client)["id"]
+    j = take(client, cid, "joy")
+    w.run_until_idle()
+    rid = client.get(f"/api/jobs/{j['id']}").json()["result"]["recording_id"]
+    assert client.put("/api/settings", json={"narrative": {"delivery": {"bank_min_similarity": 0.97}}}).status_code == 200
+    SV.update_recording_meta(ctx, rid, similarity=0.93, engine="mlx-qwen3-tts")      # what a real measurement of another voice looks like
+    r = client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": "joy", "recording_id": rid})
+    assert r.status_code == 422 and "does not sound enough like" in r.json()["error"]
+    SV.update_recording_meta(ctx, rid, similarity=0.99)
+    assert client.post(f"/api/voices/{cid}/refs/adopt", json={"bucket": "joy", "recording_id": rid}).status_code == 200
+
+
+def test_legacy_family_buckets_migrate_to_emotions(tmp_path):
+    path = tmp_path / "old.db"
+    d = DB.Database(path)
+    with d.session() as c:  # a v6 database with the four pre-v0.9 buckets
+        c.execute("PRAGMA foreign_keys = OFF")
+        for version, sql in DB.MIGRATIONS:
+            if version > 6:
+                break
+            for stmt in DB._split_sql(sql):
+                c.execute(stmt)
+            c.execute(f"PRAGMA user_version = {version}")
+        c.execute("INSERT INTO voices(id, uid, name, kind, created_at, updated_at) VALUES (1,'u','V','clone',1,1)")
+        for i, b in enumerate(("tense", "tender", "sorrow", "bright"), 1):
+            c.execute("INSERT INTO voice_refs(id,voice_id,bucket,ref_audio_path,ref_text,ref_sha256,source,consent_json,created_at) VALUES (?,1,?,?,'t','x','recording','{}',1)",
+                      (i, b, f"/refs/{b}.wav"))
+    assert d.migrate() == (6, DB.LATEST_VERSION)
+    with sqlite3.connect(path) as c:
+        got = dict(c.execute("SELECT bucket, ref_audio_path FROM voice_refs").fetchall())
+    assert got == {"fear": "/refs/tense.wav", "tenderness": "/refs/tender.wav", "sadness": "/refs/sorrow.wav", "joy": "/refs/bright.wav"}
+
+
+@needs_ffmpeg
+def test_narrator_sample_is_generated_once_and_kept(client, ctx, make_worker):
+    w = make_worker()
+    ryan = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    assert ryan["sample"] == {"status": "none"}
+    assert client.get(f"/media/voice/{ryan['id']}/sample").status_code == 404
+    first = client.post(f"/api/voices/{ryan['id']}/sample").json()
+    assert first["status"] == "queued" and client.post(f"/api/voices/{ryan['id']}/sample").json()["job_id"] == first["job_id"]   # deduplicated
+    assert next(v for v in client.get("/api/voices").json()["voices"] if v["id"] == ryan["id"])["sample"]["status"] == "queued"
+    w.run_until_idle()
+    st = client.get(f"/api/voices/{ryan['id']}/sample").json()
+    assert st["status"] == "ready" and st["url"].startswith(f"/media/voice/{ryan['id']}/sample")
+    assert client.get(f"/media/voice/{ryan['id']}/sample").status_code == 200
+    assert client.post(f"/api/voices/{ryan['id']}/sample").json()["status"] == "ready"                       # just plays
+    w._cleanup_previews(keep=0)                                                                               # the previews folder is pruned...
+    assert client.get(f"/media/voice/{ryan['id']}/sample").status_code == 200                                 # ...the sample is not
+    # a new version of the voice needs a new sample (and the old one is cleaned up when it is made)
+    assert client.patch(f"/api/voices/{ryan['id']}", json={"instruct": "Brisk, bright and cheerful narration."}).status_code == 200
+    assert client.get(f"/api/voices/{ryan['id']}/sample").json()["status"] == "none"
+    client.post(f"/api/voices/{ryan['id']}/sample")
+    w.run_until_idle()
+    with ctx.db.session() as conn:
+        v = row(conn, "SELECT uid FROM voices WHERE id=?", (ryan["id"],))
+    files = list(SV.sample_path(ctx, v["uid"], 1).parent.glob("sample-v*.wav"))
+    assert len(files) == 1
+
+
+@needs_ffmpeg
+def test_directable_clone_delivery_sends_the_instruction_through_the_custom_voice_model(client, ctx):
+    bid, clone, toms, eng, w = clone_book(client, ctx)
+    seg = toms[0]
+    direct(client, seg["id"], emotion="anger", intensity=4)
+    base = plan_of(ctx, seg["id"])
+    assert base.directable_model is None and base.instruct is None
+    delivery(client, clone="directable")
+    p = plan_of(ctx, seg["id"])
+    assert p.directable_model == ctx.settings().models.custom_voice_model and p.delivery_applied is True
+    assert p.instruct and "angry" in p.instruct and p.gen_key != base.gen_key and "directable clone" in p.delivery_reason
+    pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
+    assert pv["applied"] is True and "Directable clone" in " ".join(pv["notes"])
+    direct(client, seg["id"], emotion="anger", intensity=2)                                        # weak direction: the clone narrates as usual
+    low = plan_of(ctx, seg["id"])
+    assert low.directable_model is None and low.gen_key == base.gen_key and "threshold" in low.delivery_reason
+    direct(client, seg["id"], emotion="anger", intensity=4)
+    eng.log.clear()
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    mine = [c for c in eng.log if c["sid"] == seg["sid"]]
+    assert mine and mine[-1]["directable_model"] == ctx.settings().models.custom_voice_model and "angry" in (mine[-1]["instruct"] or "")
+    others = [c for c in eng.log if c["kind"] == "clone" and c["sid"] != seg["sid"]]
+    assert others and all(c["directable_model"] is None for c in others)
+    assert client.put("/api/settings", json={"models": {"directable_clones": False}}).status_code == 200
+    off = plan_of(ctx, seg["id"])
+    assert off.directable_model is None and "switched off" in off.delivery_reason
+
+
+def test_cosine_and_mock_speaker_vectors(tmp_path):
+    from studio.engines import MockEngine, cosine
+
+    assert cosine([1, 0], [1, 0]) == pytest.approx(1.0) and cosine([1, 0], [0, 1]) == pytest.approx(0.0)
+    assert cosine(None, [1]) is None and cosine([1, 2], [1]) is None
+    a = tmp_path / "a.wav"
+    a.write_bytes(make_wav_bytes(3.0))
+    sim = MockEngine().speaker_similarity(a, a, "m")
+    assert sim == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None, reason="node is not installed")
+def test_narrator_model_node_suite():
+    import subprocess
+    from pathlib import Path
+
+    r = subprocess.run(["node", str(Path(__file__).parent / "js" / "narrator_model.test.mjs")], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_narrator_pages_are_served(client):
+    for p in ("/static/js/views/narrator.js", "/static/js/views/narrator-common.js", "/static/js/views/narrator-model.js", "/static/js/views/voices.js"):
+        assert client.get(p).status_code == 200, p
+__STUDIO_EOF_ea04b48616d9__
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_cba454b5fb88__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -33516,14 +34608,14 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.8.2" and st["version_label"] == "v0.8.2"
+    assert st["version"] == "0.9.0" and st["version_label"] == "v0.9.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.8.2" and "stage" not in a
+    assert a["version_label"] == "v0.9.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_507d582deda5__
-cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
+__STUDIO_EOF_cba454b5fb88__
+cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_31cc500ed28e__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
 from __future__ import annotations
@@ -33543,7 +34635,7 @@ def test_scripts_have_good_reference_length_and_variety():
     for s in R.SCRIPTS:
         assert 24 <= R.word_count(s["text"]) <= 62, s["id"]
         assert 9 <= R.estimated_seconds(s["text"]) <= 20, s["id"]  # fits the 8-15 s ideal (+ slack)
-        assert s["tier"] in ("core", "range") and s["purpose"] and s["title"]
+        assert s["tier"] in ("core", "range", "emotion") and s["purpose"] and s["title"]
     core = [s for s in R.SCRIPTS if s["tier"] == "core"]
     assert len(core) >= 5 and any("?" in s["text"] for s in core)  # dialogue/questions
     assert any(any(ch.isdigit() for ch in s["text"]) or "nineteen" in s["text"] for s in core)  # numbers
@@ -33701,7 +34793,7 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     bn = next(c for c in qc["checks"] if c["name"] == "Background noise")
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
-__STUDIO_EOF_1c0cca55ee5a__
+__STUDIO_EOF_31cc500ed28e__
 cat > "$DEST/tests/test_lab_compare.py" <<'__STUDIO_EOF_00a2eb991424__'
 """Multi-take comparison in the reference lab. Mock engine (not real speech)."""
 from __future__ import annotations
@@ -34103,7 +35195,7 @@ def test_connection_test_flags_a_model_that_only_thinks():
     r = _client(handler).test_connection()
     assert not r["ok"] and "reasoning" in r["checks"][-1]["detail"]
 __STUDIO_EOF_26f35306b0eb__
-cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_5718c9f53962__'
+cat > "$DEST/tests/test_narrative.py" <<'__STUDIO_EOF_95802213dc20__'
 """Semantic segmentation, speaker attribution, Narrative Director, continuity and their integration
 with the queue. Pure-logic tests run on the fixture manuscripts in ``narrative_fixtures``; integration
 tests use the real worker/scheduler/SQLite with the MOCK engine (synthetic tones, not speech).
@@ -34615,7 +35707,7 @@ class RecordingEngine(MockEngine):
 
     def synthesize(self, voice, text, params, sid=None):
         self.log.append({"sid": sid, "text": text, "instruct": params.instruct, "kind": voice.kind, "speaker": voice.speaker, "model": voice.model_id,
-                         "ref_audio_path": voice.ref_audio_path, "ref_text": voice.ref_text})
+                         "ref_audio_path": voice.ref_audio_path, "ref_text": voice.ref_text, "directable_model": params.directable_model})
         return super().synthesize(voice, text, params, sid)
 
 
@@ -35304,7 +36396,7 @@ def test_redirect_reruns_the_director_for_that_segment_through_the_cache(client,
         assert row(conn, "SELECT stale FROM directions WHERE segment_id=?", (seg["id"],))["stale"] == 0
         assert scalar(conn, "SELECT COALESCE(SUM(hits),0) FROM director_cache", (), 0) > hits0
         assert len(rows(conn, "SELECT id FROM direction_log WHERE segment_id=?", (seg["id"],))) >= 2
-__STUDIO_EOF_5718c9f53962__
+__STUDIO_EOF_95802213dc20__
 cat > "$DEST/tests/test_narrator_versions.py" <<'__STUDIO_EOF_f3f382c26c8b__'
 """Narrator versions (v0.7.0): one manuscript narrated by several narrators, each version kept intact; admin-only delete of a version or of the
 whole book. MOCK engine only (synthetic tones)."""
@@ -35908,7 +37000,7 @@ def test_voice_pace_validation_and_staleness(client, ctx, make_worker):
     assert done and all(d["duration_s"] for d in done)
     assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1}).json()["stale_segments"] == 0   # unchanged: no-op
 __STUDIO_EOF_abcfa3cf215e__
-cat > "$DEST/tests/test_regen_direction.py" <<'__STUDIO_EOF_0843a886b192__'
+cat > "$DEST/tests/test_regen_direction.py" <<'__STUDIO_EOF_2719a668d3e1__'
 """Regenerate with direction: a user's own direction (emotion / intensity / pacing / delivery note) reaches the voice even when the Director is off
 or the book is a classic one, the delivery summary and the read-only preview say honestly what is sent, and the regenerate API takes an optional
 direction. MOCK engine only (synthetic test tones): nothing here proves how a real model reacts to an instruction or a reference clip."""
@@ -36018,9 +37110,9 @@ def test_clone_pace_from_a_user_direction_and_honest_summary(client, ctx):
     assert p.instruct is None and p.delivery_applied is False                      # a clone takes no written instruction
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
     assert pv["voice_kind"] == "clone" and pv["applied"] is False and pv["instruct"] is None and pv["pace"] == pytest.approx(1.08)
-    assert pv["source"] == "you" and pv["bank_clip"] is None and pv["bank_bucket"] == "tense" and pv["bank_enabled"] is False
+    assert pv["source"] == "you" and pv["bank_clip"] is None and pv["bank_bucket"] == "anger" and pv["bank_enabled"] is False
     text = " ".join(pv["notes"])
-    assert "cannot take written instructions" in text and "reference bank is switched off" in text and "Speed x1.08" in text
+    assert "takes no written instructions" in text and "reference bank is switched off" in text and "Speed x1.08" in text
     assert pv["user_direction"]["emotion"] == "anger"
 
 
@@ -36038,16 +37130,16 @@ def test_clone_bank_clip_is_chosen_for_a_user_direction_and_missing_clip_is_repo
     assert "no adopted reference clip" in no_clip.delivery_reason and no_clip.delivery_reason.startswith("direction set by you")
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
     assert pv["applied"] is False and pv["bank_enabled"] is True and pv["bank_clip"] is None
-    assert "No 'tense' reference clip" in " ".join(pv["notes"]) and "differs only by chance" in " ".join(pv["notes"])
+    assert "No 'anger' reference clip" in " ".join(pv["notes"]) and "differs only by chance" in " ".join(pv["notes"])
     # adopt a clip for the bucket: the user's direction now selects it
     w = worker_with(ctx, RecordingEngine())
     rid = lab_recording(client, ctx, w)
-    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True,
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "anger", "recording_id": rid, "owner_attest": True,
                                                                      "statement": "Recorded by the speaker for this project."}).status_code == 200
     p = plan_of(ctx, seg["id"])
-    assert p.ref_id and p.ref_bucket == "tense" and p.delivery_applied is True and p.gen_key != base.gen_key
+    assert p.ref_id and p.ref_bucket == "anger" and p.delivery_applied is True and p.gen_key != base.gen_key
     pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
-    assert pv["applied"] is True and pv["bank_clip"] == "tense" and "Uses the 'tense' reference clip" in " ".join(pv["notes"])
+    assert pv["applied"] is True and pv["bank_clip"] == "anger" and "Uses the 'anger' reference clip" in " ".join(pv["notes"])
 
 
 def test_segments_without_a_user_direction_keep_their_keys(client, ctx):
@@ -36218,7 +37310,7 @@ def test_segment_detail_timing_comes_from_the_chapter_map(client, ctx):
         assert SV.segment_detail(ctx, s["id"])["chapter_timing"] == entries[i]
     other = next(s for s in all_segments(ctx, bid) if s["ch_idx"] == 2)
     assert SV.segment_detail(ctx, other["id"])["chapter_timing"] is None
-__STUDIO_EOF_0843a886b192__
+__STUDIO_EOF_2719a668d3e1__
 cat > "$DEST/tests/test_release_notes.py" <<'__STUDIO_EOF_da1f20542ebb__'
 """Release notes come from CHANGELOG.md (tools/release_notes.py), and every release must have an entry."""
 from __future__ import annotations
@@ -37529,7 +38621,7 @@ def test_end_to_end_against_a_stub_http_endpoint(client, ctx):
     finally:
         srv.shutdown()
 __STUDIO_EOF_6fbd27e147d7__
-cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_979af4709f02__'
+cat > "$DEST/tests/test_update_core.py" <<'__STUDIO_EOF_98f6eaec7a27__'
 """Update building blocks: signatures, release selection, hardened network and archive handling, release store, runtime provisioning,
 platform services, provider/storage interfaces. All local; no network, no macOS."""
 from __future__ import annotations
@@ -37942,7 +39034,7 @@ def test_launchd_agent_is_per_user_and_safe(tmp_path):
     assert any(c.startswith("/bin/launchctl bootstrap gui/501 ") for c in flat)
     assert not any("sudo" in c or "/Library/LaunchDaemons" in c or "system" in c.split() for c in flat)
     rec.calls.clear()
-    svc.stop(spec.label)
+    svc.stop(spec.label, timeout=0)                  # this fake never unloads; the wait itself is tested below
     svc.restart(spec.label)
     svc.start(spec.label)
     flat = [" ".join(c) for c in rec.calls]
@@ -37951,6 +39043,56 @@ def test_launchd_agent_is_per_user_and_safe(tmp_path):
     assert svc.is_running(spec.label) is True
     svc.uninstall_service(spec.label)
     assert not (tmp_path / "LaunchAgents" / "com.audiobookstudio.app.plist").exists()
+
+
+class AsyncLaunchd:
+    """Fake launchctl whose bootout returns while the job is still being torn down (as on the Mac when the server takes a few seconds
+    to stop), and whose kickstart of an unloaded job fails."""
+
+    def __init__(self, teardown_prints=3):
+        self.loaded, self.pending, self.teardown, self.calls, self.started = True, 0, teardown_prints, [], 0
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        rc = 0
+        if argv[1] == "print" and argv[2] != "gui/501":
+            if self.pending:
+                self.pending -= 1
+                if not self.pending:
+                    self.loaded = False
+            rc = 0 if self.loaded else 113
+        elif argv[1] == "bootout":
+            self.pending = self.teardown           # still "loaded" for a few more prints
+        elif argv[1] == "bootstrap":
+            self.loaded, self.pending = True, 0
+            self.started += 1                      # RunAtLoad
+        elif argv[1] == "kickstart":
+            if self.pending:                       # the teardown also progresses while we act
+                self.pending -= 1
+                if not self.pending:
+                    self.loaded = False
+            rc = 0 if self.loaded else 113
+            self.started += 1 if self.loaded else 0
+        return type("R", (), {"returncode": rc, "stdout": "state = running\n", "stderr": ""})()
+
+
+def test_stop_waits_for_launchd_to_unload_so_start_really_starts_the_new_version(tmp_path):
+    from studio.platform_services import MacPlatformService
+
+    fake = AsyncLaunchd()
+    svc = MacPlatformService(runner=fake, agents_dir=tmp_path / "la", uid=501)
+    svc.stop("com.audiobookstudio.app", poll=0)
+    assert fake.loaded is False                                                    # stop() returned only once the job was gone
+    fake.started = 0
+    svc.start("com.audiobookstudio.app")
+    assert fake.loaded is True and fake.started >= 1 and any(c[1] == "bootstrap" for c in fake.calls)
+    # a job that disappears between the loaded-check and the kickstart is loaded again
+    fake2 = AsyncLaunchd(teardown_prints=1)
+    svc2 = MacPlatformService(runner=fake2, agents_dir=tmp_path / "la", uid=501)
+    fake2.pending = 2                                                              # "loaded" at the check, gone by the kickstart
+    fake2.started = 0
+    svc2.start("com.audiobookstudio.app")
+    assert fake2.loaded is True and [c[1] for c in fake2.calls if c[1] in ("kickstart", "bootstrap")] == ["kickstart", "bootstrap"]
 
 
 def test_launch_detached_uses_a_separate_one_shot_job(tmp_path):
@@ -38039,7 +39181,7 @@ def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monke
     monkeypatch.delenv("AUDIOBOOK_STUDIO_ROOT", raising=False)
     create_app(ctx, start_worker=False)
     assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
-__STUDIO_EOF_979af4709f02__
+__STUDIO_EOF_98f6eaec7a27__
 cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_33292f3453a6__'
 """Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
 queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
@@ -39813,20 +40955,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_0ee8953f607f__'
-20261029213603-12b25fb0
-__STUDIO_EOF_0ee8953f607f__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_4058f3c61c28__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_0e1f9969832a__'
+20261029222442-6ee54454
+__STUDIO_EOF_0e1f9969832a__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_699830436ec3__'
 {
-  "version": "0.8.2",
-  "schema_version": 6,
+  "version": "0.9.0",
+  "schema_version": 7,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029213603-12b25fb0",
+  "build": "20261029222442-6ee54454",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_4058f3c61c28__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_f7d58280a412__'
+__STUDIO_EOF_699830436ec3__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_47ca144bcc45__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -39835,13 +40977,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-ce1eca550f59cf214403fd03221755d2c7c882014ed8d4f4652cd42d0d8ca381  CHANGELOG.md
+c95b132444d7d359a8bb0802adcda975003467565c66ae89c2f6d1cfa7ffd7e8  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
 c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-0eee46beefec4b195d717a42ea694823dc7c4ca437598797ce3cb22a82795661  studio/__init__.py
+d492d7e7ba6394f7badf4420c2d4efe2313dcc7661c893639fe407cd60852c3a  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 299f26b31f565f52ff70bd75c1ebdf74384f06c52eb261edab89e03fb2789463  studio/assembly.py
@@ -39849,12 +40991,12 @@ c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.p
 2a0318ca98f9cabde638206f6927cd63a8887a4dfd7a3ffb1f02673f5cadc014  studio/chapters.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 ec66838fd57f07591bd7202ff68bb8e78197335150a357e5ae0d829b2d112d06  studio/cli.py
-6bbd6b9329b1f6eb5204c88b6eee48c7b131ec3dcaaa9418fc28cb1ef9bd1bda  studio/config.py
+0a21bd28da99cc3f7738667965c0a591ee914270c1e4c8ddaa93d57dbd72085b  studio/config.py
 2e4a2a1622bec236742d8176c974eee9c7a28e73af3b9258a307e9a37eea0fb3  studio/context.py
-24b4e17cea10cc9c89a53b35f58927de4b20d101ee6befac37878f3c5be9ffb9  studio/db.py
+44bb83939ab09b314f85dea7173ad7f020bae0df1cd35a66459ab09339b25971  studio/db.py
 fd0c1bcdbab55433b968686e3282a6d2e5aaea56efeb109c2cfc5a50bbdaca5e  studio/diskmgmt.py
 5385954828543ca6765fd4a0dd1ae525d4c9aea182833fa6324e5153462b4ccf  studio/doctor.py
-5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
+b515925c35e51f1eac2178d0ae092e635e39020a3fb6b4c20e81cc3cf68fbdfa  studio/engines.py
 bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
 b799e30827000692564e06be6b625527b617e24f96fa01579dafc9d547a259ad  studio/legacy.py
 4215ca34ace545959aedcd951e7a1e2bad4359dc16893f8d6666fd0ca44bf374  studio/lifecycle_cli.py
@@ -39867,25 +41009,25 @@ cf297e52cdeb4f7dfbb91f1f6ef7bee0b6c352fc6e3e896ea173c84e27da6c0a  studio/narrati
 59834c5893c2f18c62fa3087974cb28d761b76fc49a3882ba94542c0a1871f44  studio/narrative/delivery.py
 b83144da5fc80ec2d036cd71325ed9e2fd1ae376ed225b9d11405f1839d2d8af  studio/narrative/director.py
 cf75d2f25c335bd22bab6b54b588cab556e42cbe13ccde6ad3b1952dfefc0b4c  studio/narrative/llm.py
-b46b73a672a446a5354f3d690dd03a5b2b93dd40ff7289b544031d97656c950d  studio/narrative/refbank.py
+7bbab537cf96180d5320c80cd877e44f4cd4ee15ad429a15051ed72de237bf0c  studio/narrative/refbank.py
 42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
-73fa3ac164bea0c96f8b5f67faf451803aec7c7887c63e3ec444c9b3979caf89  studio/narrative/store.py
+3ef2c3aba6e018cf9c809496d6bfe9f1740a259290a5c5d97ad01be7afcbbeaf  studio/narrative/store.py
 e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
 7443afaba3bf1e77c6b6cb5af09210f66a24fd4df2c92efeb92da31f3b12e138  studio/narrative/vocab.py
 ff0ba18f5d275560e3f5b6896a1ab001bff592b04d91aec3f90d787288d51c10  studio/narrative/voicecheck.py
 35783594c7c72f8bffe54f9273f776fc90a838d32b8fff6cf3544d6484574fc8  studio/narrative/windows.py
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
-a6ca514a20fac5ed916fe771f134f22762f47a3d60d05134621000afcc1aa69b  studio/pipeline.py
-6d7f7e457f3bf31ce81d47c85a78dfb3d4d1fbdb056bb7da323ffaec25985ce8  studio/platform_services.py
+6c1061bfdc9aabf0b6bb53d38d8d19c72985057ed9e0f592da33e65350657950  studio/pipeline.py
+b58e5937fbea3135033cb2524dc97addc0701cf472e95a740d3baa1d8abcf8dd  studio/platform_services.py
 8b16a5d5b9c0e5e3f126b3f00886e484fabbc9adf032616e54aa7809fe37a91a  studio/pronunciation.py
 c422f9cf89b9df531cc97fb99a83afcc0870f36a3815fdd9542c055f2c6a1293  studio/providers.py
-b80b30d1c5e825456acd899ebf71ef17084a11128417d6f76f7edc7223a06015  studio/reference.py
+a9955f73ee454402967729d54b0e8826a612e06c23bdb921cd18a339bf8aad4e  studio/reference.py
 d7c04f37b6d59389946fc6a9bd2d8748b8b0138048f7566720e794e61615ab11  studio/reports.py
 5313c147b6af4f62ebde16db670e6dbda015db5c54880e2503334220be95de4f  studio/runtime.py
 0827980c61c8e0042744e7e80b349249e729b05eb6a2c12d97b75d7836bf75e7  studio/scheduler.py
 ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets_store.py
-909689d4ec7477d499c60ff94f7de3dfa5d8b0e1766c45e31bf32bda2dc8fcfc  studio/services.py
+3c50270d2b98ace136b498d3bca5db7f2633ba49443bb51f10e5effd0f9ab1e8  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 7f184566b98f1c5680a9787c1971442f2db3aa5f6d7ad4b8c8d545d80a72594d  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
@@ -39907,16 +41049,16 @@ b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 533aecc73aba7cf5e51108b08ba15627f1f98e0d180448b38d38dabedeefa9d3  studio/versions.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-99a2b45eba5a5a2e90244022bf52a6c1be9d6a5e365dcccdfa74b0bbe22cb03e  studio/web/app.py
+261c264c3565c651218058e52600dcddd987c3928529df2fba070a7654081a84  studio/web/app.py
 b70b0c22eb95341222d1460280ec65458da12c16a9d89b48f5085caf20e04ab8  studio/web/auth.py
 b57b21a1c5f74de22c1b95e64673fa5815a4ab5658bd315b9145847a2dc19bd2  studio/web/disk_api.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
 f7c4345f4ed1d327bf15739f5ff493beb219985118566069585717ef312c184d  studio/web/narrative_api.py
 ecfd1a5469712d833cc0a847438aab7dced29c7548a1b164d68f9c3eee127fc7  studio/web/pronunciation_api.py
 5cd414f9fcb139e0fb321d20da123d12a21413a2ea97ac516355282309b3af53  studio/web/security.py
-2958c3f33d55bb146e8488d7c78f9ed2c56e721132492ede67af131a93da3e76  studio/web/static/app.css
+eee72cf83c93d720017c15df5461eaa98b807c2aad5096cf52de9404a5991f21  studio/web/static/app.css
 31fd707206f2d4d289afc1f44ee88b1e0a67c5d23ff8fe767e71f6eb7d3f59c2  studio/web/static/index.html
-e343455cc84d96771acf625a4ac26cea0a665dbcd36d07d8e1ca80b9d2e94542  studio/web/static/js/app.js
+d221a110f98068f68a26e0f369d918406d757c4633fb0b17e2c99944177b0c88  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
 8f54ce1707961c5c0e0c32694a5dc900afa415cf361b0f17f854ff83e110a421  studio/web/static/js/runtime.js
@@ -39926,21 +41068,25 @@ dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/sta
 f9e11f538729fa1ee26d318079bcc9cfc3d9ebb0a2a56a6efb42de10efef2196  studio/web/static/js/views/disk.js
 0c9d9bb96dec493a1b94e0b0162ce84732fca262ede4048807dc7224198f9f10  studio/web/static/js/views/inspector.js
 5bbecfb1b732210e3b3e6cc0277c1f4630ce608a9c8342f173a87d7623c20ba3  studio/web/static/js/views/library.js
-12ce0cfe4f36133debdfcaeb6efc8830bae924c2ee68f8a0b44f55d15c736b6c  studio/web/static/js/views/narrative-fields.js
+94c29e42bd76bf78834a02d6f1caf189bace0ce732c72adec6a14e1209d2adda  studio/web/static/js/views/narrative-fields.js
 f6fd8b4c43b806272652e1ec0734d9edea2269c76f1dec69e369060f4cf9966a  studio/web/static/js/views/narrative.js
+afd9d3ebfa9d2e1175753df5cdb4c4c338b4420af2ad1b911baf78c4b6f1ce0b  studio/web/static/js/views/narrator-common.js
+81aaf29be129fc0604928979bf11b0c70c1f7f13b88fe46fd2c70c61109b78e5  studio/web/static/js/views/narrator-model.js
+afdb97fdb4378dbc8543a051f1391be8995040fe9c0322f31050f2340176f185  studio/web/static/js/views/narrator.js
 260731b18809827a6ba6a18060bcb31509671ec34fc6d8d0f25ef38fc954df97  studio/web/static/js/views/overview.js
 1117069bc8e7985f64aa55a362faeb39d20d03cd6a2288320946736b707f76be  studio/web/static/js/views/pronunciation.js
 1f5660b40274821a84362fa6c91cfbeb8d6bd6dac8c04b3ba75cb49bc5d9f72b  studio/web/static/js/views/queue.js
 413afc59d42d98da5c90716abf1eda080c27da228b0965a629935c04ae2570f9  studio/web/static/js/views/review.js
-7a7b7b9d201b1dfc3ec9b1754bda84658e9287c2d80b525402c1c071602ce38a  studio/web/static/js/views/settings-model.js
-cfa28686e9726031ad5cec6505c085ffe8c6939717eb690a60813eefe8304878  studio/web/static/js/views/settings.js
+88e8f423f57b2b4e5baa425ef6c64da199b7cc7465cbf4e3541a2f767c368afd  studio/web/static/js/views/settings-model.js
+4242fa6c19e718cab22fa7681e4ebb7b58e10e61b45ed0b8793f742681756217  studio/web/static/js/views/settings.js
 6c3b9a5b5df79ceb1ff60b14e91c0c1db229f22cd339b3d62329070c2423ff39  studio/web/static/js/views/updates.js
-8d720d0b065e549aa5a20b6a15e15b88b8f3480e52789788dd9771a14c3f5703  studio/web/static/js/views/voicelab.js
-53fefa529ac61867ad682e50ebe7bc2173a91924d6bd3e340c47754559dfec6c  studio/web/static/js/views/voices.js
+95bbfa0e4da26e2c0e812947f6ed614c2df89ee757ba5a68301ac506445cc075  studio/web/static/js/views/voicelab.js
+b0a202c010e6606f894ca85495831a20138248955e7d71bb235550df4550e8f1  studio/web/static/js/views/voices.js
 ddf237e18d6974e7d46409fa759f8b74184a0831782c5b96fe62a84c6649909a  studio/web/update_api.py
-3eebcc79e151f558dfadb4989b3d07148b6df43fae86bccdb32c89d6cbf55d11  studio/worker.py
+78d2b071403e88ec1150a4cc5ba96815709ed8efb371dca06dd5dee12c3ddee4  studio/worker.py
 6ab6dab062ff8b357f362d45abb7b84068166406f490dbf10ff82afa802091b8  tests/book_synth.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
+cd90eedf1001455d0688799c0128d94bdb93e9552c863dfd5b42e03154c67b8e  tests/js/narrator_model.test.mjs
 82e548f7564e639f01c7f1782cfb5331003f83dfd5bf06bc448bbedc61a54764  tests/js/runtime_fmt.test.mjs
 173851e87a7e31a16aabebcb12229205baabdc81bac038e7eb791fae06d47086  tests/js/settings_model.test.mjs
 315b9574b3d02742fbf2582b885a695ea1933005e377d73390f9f0f48bbfd30c  tests/js/ui_helpers.test.mjs
@@ -39951,37 +41097,38 @@ fbdadcf974b84711c6f3d786c73426bbdd9531acd6f58ee7f5cc5220756ddbef  tests/test_att
 a06f481d9cb56f104f988cb4cc454ec7ff4146efd14cfd59cb24f2bae56a51d2  tests/test_auth.py
 c946f5c7d8645c72518bb50a170ef5cf3124a9bdea814f79f55e183995a44455  tests/test_book_perf.py
 8ff8a34089b11e9a539c3c1c6099b7e75d8463a8f06472ef6d6326c97ab4cdef  tests/test_chapter_tools.py
-749a0258640cb849a923606c2eef26e406799d597753c8f86e77f425efa0166e  tests/test_delivery_audio.py
+7ea5ccf6fa33b764579981dbb98f8c6283e9a0be278601523c3d8f93a581dfb8  tests/test_delivery_audio.py
 9d70d6a6f3b95b4b3434e534cf8caab7d1b74112a8cd6c1c288e0e78b6df0ee0  tests/test_director_v2.py
 efe8a88feba27ce3f303dd292d210481ec12c61be030c1dab44e71b3158174e3  tests/test_disk_cache.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
-507d582deda5337c9b5b6f2eff3c1b802cbd8b51c01d5428e51d9c73636f928a  tests/test_integration.py
-1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
+ea04b48616d90752892780fbf2bdba8603d31599b36989dcb621417853596a94  tests/test_emotion_takes.py
+cba454b5fb8854cd8bfa43c80c7f951e442af527554e81628091303b5e70896e  tests/test_integration.py
+31cc500ed28ef19e463c183be28384e482ed27da389113c1807233415b039551  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
 53f9aa6c2b4761245977f33bf2122be88d24e6c3596402ed6406e49a397dd8f5  tests/test_live_foundation.py
 811fdb836aac5fe1933f5bc19a12a1806b9fea7924647169b9437fb112a2ec36  tests/test_llm_test_connection.py
 26f35306b0eb46a32cc4d636fc09983fda871576a4734475f1ffa10839373743  tests/test_llm_thinking.py
-5718c9f539626d695c34652ce1e46bc54a4385a77a28499611d3af0bba2576ba  tests/test_narrative.py
+95802213dc209ca8d52095cb06742729cef3b1060e0360accd94c6fe443c30a6  tests/test_narrative.py
 f3f382c26c8b3e9b980837d2557e5f4072b1d2f9a062401cfb60d4eb10ea7762  tests/test_narrator_versions.py
 fdc9fd72ee280fccec193686bbffc97bfcbd9cb8659ca8220e4903344335d48b  tests/test_overview_runtime.py
 f0a48a3252bc31fe005eaa918869f11a9440d0da69a0a6f93a8172cbeed97aa4  tests/test_plumbing_v5.py
 abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pronunciation.py
-0843a886b1920b7ad042811941eab41699cd9c437dfbf6abf07c5243bb750aa1  tests/test_regen_direction.py
+2719a668d3e10ddeaf52d7087638381b3ca317dc15579b8122b72b975362c128  tests/test_regen_direction.py
 da1f20542ebbc368b461fa2350611d942b9aee185fe3d924e0315d79ff76a5e3  tests/test_release_notes.py
 a063bb59fbd7a52469a99b42c915b282f444d27cd79adcdb821f3814d421cd91  tests/test_runtime.py
 27eceefd664d0a111abd03d3de7c88d560efc9342696fc614943aefb76db8675  tests/test_scrub_check.py
 e04250ee81e8837f2a8cfec6a027db380408d9192fcdbe4a34bdb9e6ed140a60  tests/test_settings_ui.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 6fbd27e147d787b2c120410b522e472ac6007c39a032549fe504f032e483ad4d  tests/test_translator.py
-979af4709f02bedbf538248cc0706afb7f75e1fde7157def5095f7570addde5a  tests/test_update_core.py
+98f6eaec7a27d024ce78bea56cd1f40e5289b18a94d9ee0ecc217f764f6e0d1a  tests/test_update_core.py
 33292f3453a6479888a9163546ab9ceb2a03292c85697f393976477fa6bf97c5  tests/test_update_flow.py
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
 40a1a402b9a485f9a072a397f0388a826b14de7f29b0a475f6200f325e37e192  tests/test_voice_retune.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-0ee8953f607f0a047c2f8b88f90a550e4d39dbb966d170ea40948f883d0236c7  BUILD
-4058f3c61c281ad3c8a6b8f42e7421e126c2d0dbcda0322022d1f2ac289ba9d3  release.json
-__STUDIO_EOF_f7d58280a412__
+0e1f9969832a76261d2de0e0b08bf281c62a447726ca224e2e189289d3571d48  BUILD
+699830436ec3f765fc4f9d7abd484847bf4a5a8eb3011745aebaf35a0fda640f  release.json
+__STUDIO_EOF_47ca144bcc45__
 }
 
 verify_manifest() {

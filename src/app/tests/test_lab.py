@@ -17,7 +17,7 @@ def test_scripts_have_good_reference_length_and_variety():
     for s in R.SCRIPTS:
         assert 24 <= R.word_count(s["text"]) <= 62, s["id"]
         assert 9 <= R.estimated_seconds(s["text"]) <= 20, s["id"]  # fits the 8-15 s ideal (+ slack)
-        assert s["tier"] in ("core", "range") and s["purpose"] and s["title"]
+        assert s["tier"] in ("core", "range", "emotion") and s["purpose"] and s["title"]
     core = [s for s in R.SCRIPTS if s["tier"] == "core"]
     assert len(core) >= 5 and any("?" in s["text"] for s in core)  # dialogue/questions
     assert any(any(ch.isdigit() for ch in s["text"]) or "nineteen" in s["text"] for s in core)  # numbers

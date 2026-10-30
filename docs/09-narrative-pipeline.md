@@ -153,6 +153,9 @@ that always uses the book's narrator voice. Summaries are extractive; an LLM sum
 Per-model switches: `narrative.delivery.custom_voice (instruct|off)`, `voice_design (append|off)`; the Base row has no instruction switch. `delivery.build_instruct` returns why guidance was
 not applied, shown in the inspector and stored on each attempt (`instruct_used`, `delivery_applied`).
 
+**v0.9.0: one clip per emotion, takes that keep the narrator's voice, and directable clones.** See the section *Directable clones and emotion takes (v0.9.0)* below; it
+supersedes the four buckets described next (the migration to schema 7 renamed tense -> fear, tender -> tenderness, sorrow -> sadness, bright -> joy).
+
 **Why a reference bank rather than an instruction for clones.** The Base model cannot be told how to sound; it imitates its reference clip (the reference-emotion experiment, doc 7: the clone's pitch
 variation followed the reference's). Before v0.7.0 a clone narrator therefore ignored the Director completely: on the owner's test book all 370 takes of the clone narrator had `delivery_applied = 0`.
 The bank (`narrative/refbank.py`, table `voice_refs`) gives the clone up to four extra clips of the same voice, one per bucket, and `refbank.select` picks one per segment:
@@ -269,3 +272,48 @@ v0.7.0 additions (all measured with the mock engine and stub LLM servers only; n
 - The bank is only as good as its clips: a clip that changes the voice's timbre makes the clone sound like another narrator (the A/B "another narrator" flag exists for that). Candidates for a human-voice clone cannot be generated; they must be recorded and Whisper-checked.
 - Beat sheets and scene windows need an LLM; with the rules engine the pause hint is always `none` and beats are absent.
 - Mock-engine A/B rounds and mock bank clips are test tones; votes from them say nothing about narration.
+
+## Directable clones and emotion takes (v0.9.0)
+
+**What went wrong before.** Emotion candidates for a promoted clone were rendered by its *designed* source voice (VoiceDesign) with an emotion instruction and a
+new seed. VoiceDesign keeps no speaker identity: every call samples a voice from the description, so each candidate was effectively another person, and the
+Base model then copied that person's timbre into every segment that used the clip.
+
+**Why a clone cannot take instructions.** Qwen3-TTS Base was trained only for in-context cloning: its prompt is the speaker vector (from its speaker encoder),
+the reference clip's codes and transcript, then the text. There is no instruction slot, and it copies the reference's delivery. Only CustomVoice (fixed speakers)
+and VoiceDesign (no fixed speaker) were trained to follow instructions. A clone does follow what the *words* call for (quotes, exclamations), which is why
+narration already shifts for dialogue.
+
+**What the studio does now.**
+- One clip per emotion (`refbank.BUCKETS` = the 13 non-flat emotions); a missing clip falls back to a related emotion (`refbank.NEIGHBOURS`), else the base clip.
+- Takes are generated **one at a time** and listed under their emotion until adopted or discarded (`DELETE .../refs/candidates/...`).
+- Take sources: `clone` (default: the clone reads an emotionally written script, `reference.py` tier `emotion`; identity is kept by construction),
+  `intensify` (the same from the emotion's adopted clip), `directable` (below), `design` (the old route, with the base clip's seed and instruction).
+- Every take gets a **speaker similarity**: cosine of the Base model's speaker-encoder vectors of the take and the clone's base reference
+  (`MlxQwenEngine.speaker_similarity`). `delivery.bank_min_similarity` (default unset) refuses adoption below a limit. The mock engine's value is a spectrum
+  stand-in, labelled and never enforced.
+
+**Directable clones.** In mlx-audio, a CustomVoice speaker is one row of the talker's codec embedding table (`talker_config.spk_id`), inserted at the same prompt
+position where the Base model inserts its speaker-encoder vector, and both are 2048-wide in the 1.7B models; Qwen's own single-speaker fine-tuning recipe writes
+a speaker-encoder vector into row 3000 of a CustomVoice-format model. The engine writes the clone's vector into the CustomVoice model's spare row 3000 (in memory
+only; `engines.DIRECTABLE_ROW`) and calls `generate_custom_voice` with an instruction. It is used for `directable` takes and, opt-in, for narration
+(`delivery.clone = "directable"`: segments directed at or above `bank_min_intensity` are read this way; others narrate with the Base clone as before;
+`models.directable_clones` switches the route off).
+
+**Measured on the Mac** (`tools/e2e/clone_instruct_experiment.py`, `docs/clone_instruct_experiment.json`; narrator "Dalinar (stable)", 2 seeds x 6 emotions,
+real Qwen3-TTS 1.7B and Whisper; 2026-10-29). Speaker similarity to the narrator's reference:
+
+| variant | similarity | WER | delivery change (median pitch vs neutral) |
+|---|---|---|---|
+| Base clone, same neutral text (today's narration) | 0.996 | 0% | none |
+| Base clone reading the emotion scripts (`clone` takes) | 0.989-0.995 | 0% | strong: anger 130 Hz, joy 137, tenderness 149 (neutral 98) |
+| CustomVoice + clone vector + instruction (`directable`) | 0.982-0.993 | 2.6% | moderate and seed-dependent |
+| the same with the emotion scripts | 0.972-0.989 | 0% | strongest: anger 156 Hz, joy 146, fear 135 |
+| CustomVoice preset speakers (different people) | 0.934-0.965 | | |
+
+Through the running v0.9.0 studio on the Mac (`tools/e2e/emotion_takes_real.py`, same narrator): clone takes 0.993 (anger) and 0.995 (joy), directable
+takes 0.989 (sadness) and 0.977 (fear), a design take 0.968 (tenderness), all with Whisper WER 0%.
+Each preset's own row is closer to the encoder vector of its own speech (0.95-0.98) than to the other presets' speech (0.91-0.94), so the speaker table is in
+the encoder's space. Every transplanted take scored above every different person. **Not yet verified:** a blind listening test by the owner (does a
+directable take sound like the same narrator?), more than one narrator, and directable narration of a whole chapter (consistency between directed and
+undirected segments). The similarity bands shown in the UI (>= 0.985 same voice, 0.97-0.985 close, < 0.97 likely different) come from this one run.

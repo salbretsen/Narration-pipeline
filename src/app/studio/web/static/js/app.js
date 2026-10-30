@@ -4,6 +4,7 @@ import * as overview from "./views/overview.js";
 import * as library from "./views/library.js";
 import * as queue from "./views/queue.js";
 import * as voices from "./views/voices.js";
+import * as narrator from "./views/narrator.js";
 import * as review from "./views/review.js";
 import * as book from "./views/book.js";
 import * as settings from "./views/settings.js";
@@ -14,7 +15,7 @@ import * as updates from "./views/updates.js";
 import * as disk from "./views/disk.js";
 import * as pronunciation from "./views/pronunciation.js";
 
-const ROUTES = { overview, library, queue, voices, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
+const ROUTES = { overview, library, queue, voices, narrator, review, book, settings, about, narrative, inspect: inspector, updates, disk, pronunciation };
 let cleanup = null;
 let currentKey = "";
 
@@ -59,7 +60,7 @@ async function route() {
   navAbort = new AbortController();
   const nav = { signal: navAbort.signal, isCurrent: () => token === navToken };
   document.querySelectorAll("[data-nav]").forEach((a) => {
-    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
+    const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review") || (name === "narrator" && a.dataset.nav === "voices");
     a.classList.toggle("active", active);
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });

@@ -261,6 +261,7 @@ def process_segment(ctx, tts, asr, segment_id: int, job_id: int | None = None, o
                 break
             attempt_no = seg["attempts_used"] + 1
             params = attempt_params(snapshot, seg["sid"], seg["round"], attempt_no, text, plan.instruct or "")
+            params.directable_model = plan.directable_model
             cur = conn.execute(
                 """INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id,
                        fingerprint, seed, temperature, text_spoken, created_at, gen_key, instruct_used, delivery_applied, voice_id_used, asr_skipped,

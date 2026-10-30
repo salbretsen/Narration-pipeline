@@ -509,7 +509,7 @@ class RecordingEngine(MockEngine):
 
     def synthesize(self, voice, text, params, sid=None):
         self.log.append({"sid": sid, "text": text, "instruct": params.instruct, "kind": voice.kind, "speaker": voice.speaker, "model": voice.model_id,
-                         "ref_audio_path": voice.ref_audio_path, "ref_text": voice.ref_text})
+                         "ref_audio_path": voice.ref_audio_path, "ref_text": voice.ref_text, "directable_model": params.directable_model})
         return super().synthesize(voice, text, params, sid)
 
 

@@ -1,31 +1,57 @@
 """Emotion reference bank for cloned voices.
 
 A cloned (Qwen3-TTS Base) voice has no instruction input: how it sounds is steered only by its
-reference clip. The bank lets a clone carry a few short clips of the *same voice* in different
-emotional registers (one adopted clip per bucket). When a segment's direction is strong enough and
-its emotion maps to a bucket that has a clip, that clip replaces the base reference for that
-segment. Everything here is pure: no database, no engine, no network.
+reference clip. The bank lets a clone carry short clips of the *same voice* in different
+emotional registers, one adopted clip per emotion the Director and the Review page can ask for
+(every emotion in ``vocab.EMOTIONS`` except neutral and calm, which the base reference already
+serves). When a segment's direction is strong enough, the clip for its emotion replaces the base
+reference for that segment; without one, a related emotion's clip is used, else the base reference.
+Everything here is pure: no database, no engine, no network.
 """
 from __future__ import annotations
 
 from . import vocab as V
 
-# bucket -> (label, phrase used to ask a VoiceDesign voice for that register, lab script id)
+# emotions the base reference already serves
+BASE_EMOTIONS = ("neutral", "calm")
+
+# emotion -> label, phrase used to ask a VoiceDesign voice for that register, and its emotion script (reference.py)
 BUCKET_INFO: dict[str, dict] = {
-    "tense": {"label": "Tense / urgent", "emotion_text": "tense, urgent, strained", "script_id": "range-tense"},
-    "tender": {"label": "Tender / warm", "emotion_text": "tender, warm, gentle", "script_id": "range-warm"},
-    "sorrow": {"label": "Sorrowful / heavy", "emotion_text": "sorrowful, heavy, subdued", "script_id": "range-sad"},
-    "bright": {"label": "Bright / lively", "emotion_text": "bright, joyful, lively", "script_id": "range-joy"},
+    e: {"label": e.capitalize(), "family": V.FAMILIES[e], "emotion_text": V.EMOTION_PHRASES[e], "script_id": f"emotion-{e}"}
+    for e in V.EMOTIONS if e not in BASE_EMOTIONS
 }
 BUCKETS = tuple(BUCKET_INFO)
 
-# emotion family (vocab.FAMILIES) -> bucket; None = the voice's base reference is already right
-_FAMILY_BUCKET = {"flat": None, "low": "sorrow", "warm": "tender", "high": "bright", "hot": "tense", "tense": "tense"}
+# when an emotion has no clip of its own: the closest emotions to try, in order
+NEIGHBOURS: dict[str, tuple[str, ...]] = {
+    "anger": ("disgust", "determination"),
+    "disgust": ("anger",),
+    "determination": ("anger", "excitement"),
+    "fear": ("anxiety", "surprise"),
+    "anxiety": ("fear",),
+    "sadness": ("grief", "resignation"),
+    "grief": ("sadness", "resignation"),
+    "resignation": ("sadness", "grief"),
+    "joy": ("excitement", "humor", "tenderness"),
+    "excitement": ("joy", "surprise"),
+    "surprise": ("excitement", "fear"),
+    "tenderness": ("joy",),
+    "humor": ("joy",),
+}
+
+# bucket names before v0.9.0 (one clip served a whole emotion family) -> the emotion their clip was written for
+LEGACY_BUCKETS = {"tense": "fear", "tender": "tenderness", "sorrow": "sadness", "bright": "joy"}
 
 
 def bucket_for(emotion: str | None) -> str | None:
-    """Which bank bucket serves an emotion. ``None`` means the base reference (neutral / calm / unknown)."""
-    return _FAMILY_BUCKET.get(V.FAMILIES.get(str(emotion or "").lower(), "flat"))
+    """Which bank clip serves an emotion. ``None`` means the base reference (neutral / calm / unknown)."""
+    e = str(emotion or "").lower()
+    return e if e in BUCKET_INFO else None
+
+
+def fallback_chain(bucket: str) -> tuple[str, ...]:
+    """The emotion itself, then its neighbours."""
+    return (bucket, *NEIGHBOURS.get(bucket, ()))
 
 
 def select(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, dict]) -> tuple[dict | None, str]:
@@ -47,10 +73,13 @@ def select(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, di
         return None, f"emotion '{emotion}' is served by the base reference"
     if intensity < cfg.bank_min_intensity:
         return None, f"intensity {intensity} is below the reference-bank threshold ({cfg.bank_min_intensity}); using the base reference"
-    ref = (refs_by_bucket or {}).get(bucket)
-    if not ref:
-        return None, f"emotion '{emotion}' maps to the '{bucket}' bucket, which has no adopted reference clip; using the base reference"
-    return ref, f"emotion '{emotion}' → '{bucket}' reference clip"
+    refs = refs_by_bucket or {}
+    for b in fallback_chain(bucket):
+        if refs.get(b):
+            if b == bucket:
+                return refs[b], f"emotion '{emotion}' → '{b}' reference clip"
+            return refs[b], f"emotion '{emotion}' has no clip of its own → the related '{b}' reference clip"
+    return None, f"emotion '{emotion}' has no adopted reference clip (nor a related one); using the base reference"
 
 
 def choose(ns, final: dict | None, voice_kind: str, refs_by_bucket: dict[str, dict]) -> dict | None:

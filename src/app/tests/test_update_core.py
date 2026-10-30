@@ -410,7 +410,7 @@ def test_launchd_agent_is_per_user_and_safe(tmp_path):
     assert any(c.startswith("/bin/launchctl bootstrap gui/501 ") for c in flat)
     assert not any("sudo" in c or "/Library/LaunchDaemons" in c or "system" in c.split() for c in flat)
     rec.calls.clear()
-    svc.stop(spec.label)
+    svc.stop(spec.label, timeout=0)                  # this fake never unloads; the wait itself is tested below
     svc.restart(spec.label)
     svc.start(spec.label)
     flat = [" ".join(c) for c in rec.calls]
@@ -419,6 +419,56 @@ def test_launchd_agent_is_per_user_and_safe(tmp_path):
     assert svc.is_running(spec.label) is True
     svc.uninstall_service(spec.label)
     assert not (tmp_path / "LaunchAgents" / "com.audiobookstudio.app.plist").exists()
+
+
+class AsyncLaunchd:
+    """Fake launchctl whose bootout returns while the job is still being torn down (as on the Mac when the server takes a few seconds
+    to stop), and whose kickstart of an unloaded job fails."""
+
+    def __init__(self, teardown_prints=3):
+        self.loaded, self.pending, self.teardown, self.calls, self.started = True, 0, teardown_prints, [], 0
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        rc = 0
+        if argv[1] == "print" and argv[2] != "gui/501":
+            if self.pending:
+                self.pending -= 1
+                if not self.pending:
+                    self.loaded = False
+            rc = 0 if self.loaded else 113
+        elif argv[1] == "bootout":
+            self.pending = self.teardown           # still "loaded" for a few more prints
+        elif argv[1] == "bootstrap":
+            self.loaded, self.pending = True, 0
+            self.started += 1                      # RunAtLoad
+        elif argv[1] == "kickstart":
+            if self.pending:                       # the teardown also progresses while we act
+                self.pending -= 1
+                if not self.pending:
+                    self.loaded = False
+            rc = 0 if self.loaded else 113
+            self.started += 1 if self.loaded else 0
+        return type("R", (), {"returncode": rc, "stdout": "state = running\n", "stderr": ""})()
+
+
+def test_stop_waits_for_launchd_to_unload_so_start_really_starts_the_new_version(tmp_path):
+    from studio.platform_services import MacPlatformService
+
+    fake = AsyncLaunchd()
+    svc = MacPlatformService(runner=fake, agents_dir=tmp_path / "la", uid=501)
+    svc.stop("com.audiobookstudio.app", poll=0)
+    assert fake.loaded is False                                                    # stop() returned only once the job was gone
+    fake.started = 0
+    svc.start("com.audiobookstudio.app")
+    assert fake.loaded is True and fake.started >= 1 and any(c[1] == "bootstrap" for c in fake.calls)
+    # a job that disappears between the loaded-check and the kickstart is loaded again
+    fake2 = AsyncLaunchd(teardown_prints=1)
+    svc2 = MacPlatformService(runner=fake2, agents_dir=tmp_path / "la", uid=501)
+    fake2.pending = 2                                                              # "loaded" at the check, gone by the kickstart
+    fake2.started = 0
+    svc2.start("com.audiobookstudio.app")
+    assert fake2.loaded is True and [c[1] for c in fake2.calls if c[1] in ("kickstart", "bootstrap")] == ["kickstart", "bootstrap"]
 
 
 def test_launch_detached_uses_a_separate_one_shot_job(tmp_path):

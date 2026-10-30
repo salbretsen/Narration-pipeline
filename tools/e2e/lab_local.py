@@ -25,7 +25,9 @@ with sync_playwright() as p:
     if USER:
         pg.wait_for_selector("#login-form"); pg.fill("input[name=username]", USER); pg.fill("input[name=password]", PW); pg.click("#login-form button[type=submit]")
     pg.wait_for_selector(".stats", timeout=20000)
-    pg.goto(BASE + "/#/voices"); pg.wait_for_selector("#tab-record", timeout=20000)
+    pg.goto(BASE + "/#/voices"); pg.wait_for_selector("#add-narrator > summary", timeout=20000)
+    if not pg.locator("#add-narrator").evaluate("d => d.open"): pg.click("#add-narrator > summary")
+    pg.wait_for_selector("#tab-record", timeout=20000)
     tabs = pg.locator(".tabs .tab").all_inner_texts(); chk("Record tab is right of Clone tab in the Add a narrator card", tabs[-2:] == ["Clone an authorised voice", "Record a reference voice"], tabs)
     pg.click("#tab-record"); pg.wait_for_selector("#lab-h", timeout=20000)
     time.sleep(1.5)

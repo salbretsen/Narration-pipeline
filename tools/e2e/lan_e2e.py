@@ -115,8 +115,9 @@ with sync_playwright() as p:
     chk("progress advanced over time", len(set(progress_samples)) > 2, progress_samples[:12])
 
     # ---------------------------------------------------------------- real voice preview + streaming + download
-    pg.goto(BASE + "/#/voices"); pg.wait_for_selector(".preview-form")
-    pg.locator(".preview-form").first.locator("button[type=submit]").click()
+    pg.goto(BASE + "/#/voices"); pg.wait_for_selector(".narrator-tile a.tile-link")
+    pg.goto(BASE + "/" + pg.locator(".narrator-tile a.tile-link").first.get_attribute("href") + "?tab=preview"); pg.wait_for_selector("#nr-preview-form")
+    pg.locator("#nr-preview-form button[type=submit]").click()
     try:
         pg.wait_for_selector(".preview-result audio", timeout=180000)
         src = pg.locator(".preview-result audio").first.get_attribute("src")
@@ -134,6 +135,8 @@ with sync_playwright() as p:
 
     # ---------------------------------------------------------------- reference voice upload (clone) through the UI
     try:
+        pg.goto(BASE + "/#/voices"); pg.wait_for_selector("#add-narrator > summary")
+        pg.click("#add-narrator > summary")
         pg.click("#tab-clone")
         pg.fill("#f-clone input[name=name]", "LAN synthetic clone")
         pg.fill("#f-clone input[name=rights_holder]", "Synthetic Ryan preset (generated locally for this test)")
@@ -141,7 +144,7 @@ with sync_playwright() as p:
         pg.fill("#f-clone textarea[name=ref_text]", "Chapter One. The rain had stopped by the time Eleanor reached the harbour, and the lamps along the quay were reflected in long, trembling lines on the black water.")
         pg.check("#f-clone input[name=owner_attest]")
         pg.click("#f-clone button[type=submit]")
-        pg.wait_for_selector("article:has-text('LAN synthetic clone')", timeout=60000)
+        pg.wait_for_selector("h1:text-is('LAN synthetic clone')", timeout=60000)   # the new narrator's page opens
         chk("reference voice uploaded with consent and listed", True)
         v = [x for x in api_get("/api/voices")["voices"] if x["name"] == "LAN synthetic clone"][0]
         chk("clone stored as Base model, no speaker, consent recorded", v["version"]["model_id"].endswith("Base-bf16") and not v["version"]["speaker"] and v["version"]["consent"]["owner_attest"], v["version"]["model_id"])
@@ -152,8 +155,9 @@ with sync_playwright() as p:
                                             "file": {"name": "a.wav", "mimeType": "audio/wav", "buffer": b"RIFF0000WAVEnope" + b"\0" * 64}}, headers={"X-Studio-Request": "1"})
         chk("invalid audio file rejected", bad.status == 422, bad.status)
         # preview the cloned voice
-        pg.locator("article:has-text('LAN synthetic clone') .preview-form button[type=submit]").click()
-        pg.wait_for_selector("article:has-text('LAN synthetic clone') .preview-result audio", timeout=240000)
+        pg.click("a.tab:has-text('Preview')"); pg.wait_for_selector("#nr-preview-form")
+        pg.locator("#nr-preview-form button[type=submit]").click()
+        pg.wait_for_selector("#nr-pv .preview-result audio", timeout=240000)
         chk("cloned voice preview generated (Base model ref_audio/ref_text)", True)
     except Exception as e:
         chk("reference voice flow", False, e)
