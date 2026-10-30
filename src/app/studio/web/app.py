@@ -119,6 +119,18 @@ class VoicePatchReq(_Req):
     description: Optional[str] = Field(None, max_length=300)
 
 
+class VoiceDuplicateReq(_Req):
+    name: str = Field(min_length=1, max_length=80)
+    instruct: Optional[str] = Field(None, max_length=1000)
+    speaker: Optional[str] = Field(None, max_length=40)
+    description: Optional[str] = Field(None, max_length=300)
+
+
+class VoiceRetuneReq(_Req):
+    name: str = Field(min_length=1, max_length=80)
+    instruct: Optional[str] = Field(None, max_length=1000)
+
+
 class PreviewReq(_Req):
     text: str = Field(min_length=3, max_length=600)
     instruct: Optional[str] = Field(None, max_length=1000)
@@ -133,6 +145,19 @@ class PromoteReq(_Req):
 
 class NoteReq(_Req):
     note: Optional[str] = Field(None, max_length=2000)
+
+
+class DirectionReq(_Req):
+    """Editor-supplied direction for one segment; a field sent as null is cleared."""
+    emotion: Optional[str] = Field(None, max_length=20)
+    intensity: Optional[int] = Field(None, ge=1, le=5)
+    pacing: Optional[str] = Field(None, max_length=20)
+    tension: Optional[int] = Field(None, ge=1, le=5)
+    delivery: Optional[str] = Field(None, max_length=240)
+
+
+class RegenReq(NoteReq):
+    direction: Optional[DirectionReq] = None
 
 
 class OverrideReq(_Req):
@@ -569,7 +594,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         return {"books": S.list_books(ctx, include_archived=archived)}
 
     @app.get("/api/books/{book_id}")
-    def api_book(book_id: int):
+    def api_book(book_id: int, view: str = ""):
+        # ?view=review -> light payload for the Review page (no readiness, release check, exports, logs, narrative; see services.get_book_review)
+        if view == "review":
+            return S.get_book_review(ctx, book_id)
         return S.get_book(ctx, book_id)
 
     @app.patch("/api/books/{book_id}")
@@ -645,8 +673,9 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     # ------------------------------------------------------------------ queue
     @app.get("/api/queue")
-    def api_queue():
-        return S.list_queue(ctx)
+    def api_queue(finished_offset: int = Query(0, ge=0), finished_limit: int = Query(10, ge=1, le=50),
+                  utility_offset: int = Query(0, ge=0), utility_limit: int = Query(10, ge=1, le=50)):
+        return S.list_queue(ctx, finished_offset, finished_limit, utility_offset, utility_limit)
 
     @app.post("/api/queue")
     def api_enqueue(req: EnqueueReq):
@@ -700,6 +729,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     @app.patch("/api/voices/{voice_id}")
     def api_voice_patch(voice_id: int, req: VoicePatchReq):
         return S.update_voice(ctx, voice_id, req.instruct, req.speaker, req.name, req.description)
+
+    @app.post("/api/voices/{voice_id}/duplicate")
+    def api_voice_duplicate(voice_id: int, req: VoiceDuplicateReq):
+        return S.duplicate_voice(ctx, voice_id, req.name, req.instruct, req.speaker, req.description)
+
+    @app.post("/api/voices/{voice_id}/retune")
+    def api_voice_retune(voice_id: int, req: VoiceRetuneReq):
+        return S.retune_from_design(ctx, voice_id, req.name, req.instruct)
 
     @app.post("/api/voices/{voice_id}/archive")
     def api_voice_archive(voice_id: int):
@@ -793,7 +830,9 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         return S.approve_segment(ctx, segment_id, req.note)
 
     @app.post("/api/segments/{segment_id}/regenerate")
-    def api_seg_regen(segment_id: int, req: NoteReq):
+    def api_seg_regen(segment_id: int, req: RegenReq):
+        if req.direction is not None:
+            return S.regenerate_with_direction(ctx, segment_id, req.direction.model_dump(exclude_unset=True), req.note)
         return S.regenerate_segment(ctx, segment_id, req.note)
 
     @app.post("/api/segments/{segment_id}/override")

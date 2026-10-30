@@ -18,11 +18,46 @@ const ROUTES = { overview, library, queue, voices, review, book, settings, about
 let cleanup = null;
 let currentKey = "";
 
+// ---- router ----------------------------------------------------------------------------------------------------------
+// Contract for views: `render(host, parts, query, nav)` fills `host` (use it like the old #view element) and may return a cleanup
+// function. `nav.signal` is an AbortSignal that fires when the user navigates away (pass it to GET requests that need cancelling;
+// do not use it for writes) and `nav.isCurrent()` says whether this navigation is still the latest.
+// Each navigation renders into its OWN host element, kept hidden beside the old page and swapped in only when render() resolves,
+// so a slow or superseded render can never paint over a newer page (its host is simply thrown away) and the old page stays
+// visible but dimmed (#view.view-stale) with a "Loading…" status (.view-loading) if the wait is longer than LOADING_MS.
+const LOADING_MS = 120;
+let navToken = 0;          // incremented by every route(); a render whose token is no longer current is stale
+let navAbort = null;       // AbortController for the render in flight
+let pendingNav = null;     // { host, timer } of the render in flight
+let paintedRouteId = null; // route string ("#/book/12", no query) of the page currently on screen
+
+function endLoading(view) {
+  if (pendingNav) { clearTimeout(pendingNav.timer); pendingNav = null; }
+  view.querySelectorAll(":scope > .view-loading").forEach((n) => n.remove());
+  view.classList.remove("view-stale");
+  view.removeAttribute("aria-busy");
+}
+
+function showLoading(view) {
+  if (view.querySelector(":scope > .view-loading")) return;
+  const el = document.createElement("div");
+  el.className = "view-loading";
+  el.setAttribute("role", "status");
+  el.setAttribute("aria-live", "polite");
+  el.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading…</span>';
+  view.appendChild(el);
+}
+
 async function route() {
+  const token = ++navToken;
   const { parts, query } = parseHash();
   const name = ROUTES[parts[0]] ? parts[0] : "overview";
   const key = location.hash;
+  const routeId = key.split("?")[0];
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
+  if (navAbort) navAbort.abort();
+  navAbort = new AbortController();
+  const nav = { signal: navAbort.signal, isCurrent: () => token === navToken };
   document.querySelectorAll("[data-nav]").forEach((a) => {
     const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
     a.classList.toggle("active", active);
@@ -30,19 +65,39 @@ async function route() {
   });
   closeNav();
   const view = document.getElementById("view");
-  const sameView = currentKey.split("?")[0].split("/")[1] === key.split("?")[0].split("/")[1];
   currentKey = key;
+  if (pendingNav) { clearTimeout(pendingNav.timer); pendingNav.host.remove(); pendingNav = null; } // a superseded render's page is discarded
+  const host = document.createElement("div");
+  host.className = "view-page view-pending";
+  view.prepend(host); // first in document order, so document.getElementById finds the new page's ids before the old page's
+  view.classList.add("view-stale");
+  view.setAttribute("aria-busy", "true");
+  pendingNav = { host, timer: setTimeout(() => { if (token === navToken) showLoading(view); }, LOADING_MS) };
+  let result = null;
   try {
-    cleanup = (await ROUTES[name].render(view, parts.slice(1), query)) || null;
+    result = (await ROUTES[name].render(host, parts.slice(1), query, nav)) || null;
   } catch (e) {
-    console.error(e);
-    setHTML(view, html`<div class="card error-card"><h1>Something went wrong</h1><p>${e.message || e}</p>
-      <p><a href="#/overview">Back to overview</a></p></div>`);
+    if (token === navToken) {
+      console.error(e);
+      setHTML(host, html`<div class="card error-card"><h1>Something went wrong</h1><p>${e.message || e}</p>
+        <p><a href="#/overview">Back to overview</a></p></div>`);
+    }
   }
-  if (!sameView) {
-    const h1 = view.querySelector("h1");
-    if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus({ preventScroll: false }); }
+  if (token !== navToken) { // the user moved on while this was rendering: release what it set up, and leave #view alone
+    if (typeof result === "function") { try { result(); } catch (e) { console.error(e); } }
+    return;
+  }
+  host.classList.remove("view-pending");
+  for (const n of Array.from(view.children)) if (n !== host) n.remove();
+  endLoading(view);
+  cleanup = typeof result === "function" ? result : null;
+  const routeChanged = routeId !== paintedRouteId;
+  paintedRouteId = routeId;
+  if (routeChanged) {
+    const h1 = host.querySelector("h1");
+    if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus({ preventScroll: true }); }
     document.title = (h1 ? h1.textContent.trim() + " · " : "") + "Audiobook Studio";
+    window.scrollTo(0, 0);
   }
 }
 
@@ -97,7 +152,10 @@ function updateWorkerPill(w) {
   pill.className = "topbar-status " + (w.online ? (w.state === "idle" ? "st-idle" : "st-busy") : "st-off");
   const label = w.online ? (w.state === "idle" ? "GPU worker idle" : `Working: ${w.message || w.state}`) : "GPU worker offline";
   pill.querySelector(".label").textContent = label;
-  pill.title = w.online ? `Worker pid ${w.pid}, heartbeat ${w.heartbeat_age_s}s ago` : "No worker heartbeat. Restart it from System & Licenses.";
+  // The live digest carries no heartbeat age (it would change every second); /api/worker and the overview do. Prefer the server's own
+  // age (no clock skew), else derive it from heartbeat_at, else omit the seconds.
+  const age = typeof w.heartbeat_age_s === "number" ? w.heartbeat_age_s : (typeof w.heartbeat_at === "number" ? Math.max(0, Math.round(Date.now() / 1000 - w.heartbeat_at)) : null);
+  pill.title = w.online ? `Worker pid ${w.pid}${age === null ? "" : `, heartbeat ${age}s ago`}` : "No worker heartbeat. Restart it from System & Licenses.";
   const eb = document.getElementById("engine-badge");
   if (w.engine === "mock") { eb.hidden = false; eb.textContent = "MOCK ENGINE – test tones, not narration"; }
   else eb.hidden = true;
@@ -116,6 +174,7 @@ function stopStream() { if (es) { es.close(); es = null; } stopPolling(); }
 
 function showLogin(message) {
   stopStream();
+  navToken++; endLoading(document.getElementById("view")); // any render still in flight is now stale and must not paint over the sign-in card
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   document.body.classList.add("signed-out");
   document.getElementById("user-box").hidden = true;
@@ -141,6 +200,7 @@ function showLogin(message) {
 
 function showForcedPasswordChange() {
   stopStream();
+  navToken++; endLoading(document.getElementById("view"));
   document.body.classList.add("signed-out");
   document.getElementById("user-box").hidden = true;
   document.getElementById("worker-pill").hidden = true;

@@ -1,6 +1,8 @@
 // Disk & Backups (administrators): usage per book and category, free space, purge/delete with typed confirmation, backup and restore.
 // Every destructive call is first sent WITHOUT confirm (the server answers 409 with a preview), then repeated with confirm:true after the user agrees.
-import { get, post, html, setHTML, dialog, confirmDialog, toast, toastError, fmtBytes, fmtDate } from "../ui.js";
+// The page paints at once with "Measuring disk usage…" cards: /api/disk/usage walks every file of every book, so it (and the quick backup
+// list) are fetched in parallel after the first paint and each fills its own cards when it answers.
+import { get, post, html, setHTML, patchRegions, dialog, confirmDialog, toast, toastError, fmtBytes, fmtDate } from "../ui.js";
 
 const CATS = ["manuscripts", "segments", "alternates", "reports", "masters", "exports"];
 const OTHER = { voices: "Voices", recordings: "Recordings", previews: "Previews", imports: "Import copies", database: "Database", backups: "Backups", logs: "Logs", model_cache: "Model cache" };
@@ -40,66 +42,129 @@ async function ask(path, body, previewText, okLabel) {
   return {};
 }
 
-function draw(view, u) {
-  const labels = u.category_labels || {};
-  setHTML(view, html`
-  <div class="page-head"><h1>Disk &amp; Backups</h1><div class="head-actions">
-    <button class="btn" data-act="refresh">Refresh</button>
-    <button class="btn" data-act="dbbackup">Back up database</button></div></div>
-  <section class="card" aria-labelledby="free-h"><h2 id="free-h">Free space</h2>
+const placeholder = (what) => html`<p class="muted" role="status"><span class="spinner" aria-hidden="true"></span> Measuring disk usage… ${what}</p>`;
+
+function freeTpl(u) {
+  if (!u) return html`<h2 id="free-h">Free space</h2>${placeholder("Free space and the library total appear in a moment.")}`;
+  return html`<h2 id="free-h">Free space</h2>
     <dl class="about-facts">${freeLine("Library volume", u.free.library)}${freeLine("Model cache", u.free.model_cache)}${freeLine("Backups folder", u.free.backups)}
-      <div><dt>Library total</dt><dd>${fmtBytes(u.library_bytes)}</dd></div></dl>
-  </section>
-  <section class="card" aria-labelledby="books-h"><h2 id="books-h">Books</h2>
+      <div><dt>Library total</dt><dd>${fmtBytes(u.library_bytes)}</dd></div></dl>`;
+}
+
+function booksTpl(u) {
+  if (!u) return html`<h2 id="books-h">Books</h2>${placeholder("Counting every book's files; large libraries take a few seconds.")}`;
+  const labels = u.category_labels || {};
+  return html`<h2 id="books-h">Books</h2>
     ${u.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Book</th>
       ${CATS.map((c) => html`<th scope="col" title="${labels[c] || c}">${labels[c] || c}</th>`)}<th scope="col">Total</th><th scope="col">Actions</th></tr></thead><tbody>
       ${u.books.map((b) => html`<tr><td>${b.display_title}${b.archived ? html` <span class="badge tone-neutral">archived</span>` : ""}${b.busy ? html` <span class="badge tone-warn">in queue</span>` : ""}</td>
         ${CATS.map((c) => html`<td>${fmtBytes(b.categories[c] || 0)}</td>`)}<td><strong>${fmtBytes(b.total_bytes)}</strong></td>
         <td class="actions">
-          <button class="btn small" data-act="backup" data-id="${b.id}">Back up</button>
-          <button class="btn small" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
-          <button class="btn small" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
-          <button class="btn small" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
-          <button class="btn small danger" data-act="delete" data-id="${b.id}" data-title="${b.display_title}" ${b.busy ? "disabled" : ""}>Delete</button></td></tr>`)}
+          <button class="btn small" id="dk-backup-${b.id}" data-act="backup" data-id="${b.id}">Back up</button>
+          <button class="btn small" id="dk-purge-takes-${b.id}" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
+          <button class="btn small" id="dk-purge-exports-${b.id}" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
+          <button class="btn small" id="dk-purge-masters-${b.id}" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
+          <button class="btn small danger" id="dk-delete-${b.id}" data-act="delete" data-id="${b.id}" data-title="${b.display_title}" ${b.busy ? "disabled" : ""}>Delete</button></td></tr>`)}
       <tr><th scope="row">All books</th>${CATS.map((c) => html`<td>${fmtBytes(u.category_totals[c] || 0)}</td>`)}<td><strong>${fmtBytes(u.library_bytes)}</strong></td><td></td></tr>
       </tbody></table></div>
       <p class="small muted">Books that are queued, rendering or paused cannot be purged or deleted; cancel their job first. Purging takes keeps every selected (and therefore every approved) take.</p>`
-      : html`<p class="muted">No books yet.</p>`}
-  </section>
-  <section class="card" aria-labelledby="other-h"><h2 id="other-h">Everything else</h2>
-    <dl class="about-facts">${Object.entries(OTHER).map(([k, l]) => html`<div><dt>${l}</dt><dd>${fmtBytes(u.other[k] || 0)}</dd></div>`)}</dl>
-    <p class="small muted">Model cache <code>${u.paths.model_cache}</code> · Library <code>${u.paths.library}</code></p>
-  </section>
-  <section class="card" aria-labelledby="bk-h"><h2 id="bk-h">Backups</h2>
-    <p class="small muted">Book backups are single zip files (database rows plus all audio and documents) in <code>${u.paths.backups}/books</code>. Restoring always creates a NEW book; the original is never touched.</p>
-    ${u.backups.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">File</th><th scope="col">Book</th><th scope="col">Size</th><th scope="col">Made</th><th scope="col">Actions</th></tr></thead><tbody>
-      ${u.backups.books.map((x) => html`<tr><td><code>${x.name}</code></td><td>${x.title || "(unreadable)"}</td><td>${fmtBytes(x.size_bytes)}</td><td>${fmtDate(x.modified)}</td>
-        <td class="actions"><button class="btn small" data-act="restore" data-name="${x.name}" ${x.invalid ? "disabled" : ""}>Restore as new book</button>
-        <button class="btn small danger" data-act="delbackup" data-name="${x.name}">Delete</button></td></tr>`)}</tbody></table></div>`
-      : html`<p class="muted">No book backups yet.</p>`}
-    <h3>Database backups</h3>
-    ${u.backups.databases.length ? html`<ul class="small">${u.backups.databases.map((x) => html`<li><code>${x.name}</code> · ${fmtBytes(x.size_bytes)} · ${fmtDate(x.modified)}</li>`)}</ul>`
-      : html`<p class="muted">None yet.</p>`}
-  </section>`);
+      : html`<p class="muted">No books yet.</p>`}`;
 }
 
-export async function render(view) {
-  let u;
-  try { u = await get("/api/disk/usage"); }
-  catch (e) {
-    setHTML(view, html`<div class="page-head"><h1>Disk &amp; Backups</h1></div><div class="callout info" role="status">${e.status === 403 ? "Disk management is available to administrators only." : e.message}</div>`);
-    return;
+function otherTpl(u) {
+  if (!u) return html`<h2 id="other-h">Everything else</h2>${placeholder("")}`;
+  return html`<h2 id="other-h">Everything else</h2>
+    <dl class="about-facts">${Object.entries(OTHER).map(([k, l]) => html`<div><dt>${l}</dt><dd>${fmtBytes(u.other[k] || 0)}</dd></div>`)}</dl>
+    <p class="small muted">Model cache <code>${u.paths.model_cache}</code> · Library <code>${u.paths.library}</code></p>`;
+}
+
+function backupsTpl(bk, paths) {
+  if (!bk) return html`<h2 id="bk-h">Backups</h2><p class="muted" role="status"><span class="spinner" aria-hidden="true"></span> Reading backups…</p>`;
+  return html`<h2 id="bk-h">Backups</h2>
+    <p class="small muted">Book backups are single zip files (database rows plus all audio and documents) in <code>${paths ? paths.backups : "the backups folder"}/books</code>. Restoring always creates a NEW book; the original is never touched.</p>
+    ${bk.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">File</th><th scope="col">Book</th><th scope="col">Size</th><th scope="col">Made</th><th scope="col">Actions</th></tr></thead><tbody>
+      ${bk.books.map((x, i) => html`<tr><td><code>${x.name}</code></td><td>${x.title || "(unreadable)"}</td><td>${fmtBytes(x.size_bytes)}</td><td>${fmtDate(x.modified)}</td>
+        <td class="actions"><button class="btn small" id="dk-restore-${i}" data-act="restore" data-name="${x.name}" ${x.invalid ? "disabled" : ""}>Restore as new book</button>
+        <button class="btn small danger" id="dk-delbackup-${i}" data-act="delbackup" data-name="${x.name}">Delete</button></td></tr>`)}</tbody></table></div>`
+      : html`<p class="muted">No book backups yet.</p>`}
+    <h3>Database backups</h3>
+    ${bk.databases.length ? html`<ul class="small">${bk.databases.map((x) => html`<li><code>${x.name}</code> · ${fmtBytes(x.size_bytes)} · ${fmtDate(x.modified)}</li>`)}</ul>`
+      : html`<p class="muted">None yet.</p>`}`;
+}
+
+const ageText = (u, measuring, since) => {
+  if (measuring) return "Measuring…";
+  if (!u) return "";
+  const s = Math.max(0, Math.round((Date.now() - since) / 1000));   // `since`: when the measurement was taken, from the server's own age_s (no clock skew)
+  return s < 5 ? "Measured just now" : s < 90 ? `Measured ${s} s ago` : `Measured ${Math.round(s / 60)} min ago`;
+};
+
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  let u = null, bk = null, fatal = null, measuring = true, disposed = false, seq = 0, since = Date.now();
+
+  setHTML(view, html`
+  <div class="page-head"><h1>Disk &amp; Backups</h1><div class="head-actions">
+    <span class="small muted" id="dk-age" role="status"></span>
+    <button class="btn" id="dk-refresh" data-act="refresh">Refresh</button>
+    <button class="btn" id="dk-dbbackup" data-act="dbbackup">Back up database</button></div></div>
+  <div id="dk-fatal"></div>
+  <section class="card" id="dk-free" aria-labelledby="free-h"></section>
+  <section class="card" id="dk-books" aria-labelledby="books-h"></section>
+  <section class="card" id="dk-other" aria-labelledby="other-h"></section>
+  <section class="card" id="dk-backups" aria-labelledby="bk-h"></section>`);
+  const $ = (s) => view.querySelector(s);
+
+  function paint() {
+    if (disposed) return;
+    patchRegions(view, {
+      "#dk-fatal": () => (fatal ? html`<div class="callout info" role="status">${fatal}</div>` : ""),
+      "#dk-free": () => (fatal ? "" : freeTpl(u)),
+      "#dk-books": () => (fatal ? "" : booksTpl(u)),
+      "#dk-other": () => (fatal ? "" : otherTpl(u)),
+      "#dk-backups": () => (fatal ? "" : backupsTpl(bk, u && u.paths)),
+    });
+    ["#dk-free", "#dk-books", "#dk-other", "#dk-backups"].forEach((s) => { const el = $(s); if (el) el.hidden = !!fatal; });
+    const age = $("#dk-age"); if (age) age.textContent = ageText(u, measuring, since);
+    const rb = $("#dk-refresh"); if (rb) { rb.disabled = measuring; rb.hidden = !!fatal; }
+    const db = $("#dk-dbbackup"); if (db) db.hidden = !!fatal;
   }
-  draw(view, u);
-  const reload = async () => { draw(view, await get("/api/disk/usage")); };
+
+  /** Fetch usage (slow: walks the library) and the backup list (quick) in parallel; each fills its own cards as it arrives. */
+  async function load(force) {
+    const mine = ++seq;
+    measuring = true; paint();
+    const usageP = get("/api/disk/usage" + (force ? "?refresh=1" : ""), { signal });
+    const backupsP = get("/api/disk/backups", { signal });
+    backupsP.then((d) => { if (!disposed && mine === seq) { bk = d; paint(); } }, () => {});
+    try {
+      const data = await usageP;
+      if (disposed || mine !== seq) return;
+      u = data; since = Date.now() - (Number(data.age_s) || 0) * 1000;
+      if (!bk) bk = data.backups;   // the usage payload carries the backup list too
+      fatal = null;
+    } catch (e) {
+      if (disposed || (e && e.name === "AbortError") || mine !== seq) return;
+      if (e.status === 403) fatal = "Disk management is available to administrators only.";
+      else if (!u) fatal = e.message;
+      else toastError(e);
+    }
+    measuring = false; paint();
+  }
+
+  const reload = () => load(false);   // disk-changing actions drop the server cache themselves, so this re-measures
+  paint();
+  load(false);
+  const tick = setInterval(() => { const age = $("#dk-age"); if (age && !measuring) age.textContent = ageText(u, false, since); }, 5000);
+
   const onClick = async (ev) => {
     const btn = ev.target.closest("button[data-act]");
-    if (!btn) return;
+    if (!btn || !view.contains(btn)) return;
     const id = btn.dataset.id;
     try {
       switch (btn.dataset.act) {
-        case "refresh": await run(btn, reload); break;
-        case "dbbackup": { const r = await run(btn, () => post("/api/disk/db-backup"), "Database backed up"); await reload(); break; }
+        case "refresh": await load(true); break;
+        case "dbbackup": { await run(btn, () => post("/api/disk/db-backup"), "Database backed up"); await reload(); break; }
         case "backup": { await run(btn, () => post(`/api/disk/books/${id}/backup`), "Backup written to the backups folder"); await reload(); break; }
         case "purge-takes": case "purge-exports": case "purge-masters": {
           const scope = btn.dataset.act.slice(6);
@@ -134,5 +199,5 @@ export async function render(view) {
     } catch (e) { toastError(e); }
   };
   view.addEventListener("click", onClick);
-  return () => view.removeEventListener("click", onClick);
+  return () => { disposed = true; clearInterval(tick); view.removeEventListener("click", onClick); };
 }

@@ -12,12 +12,14 @@ Backup format ("audiobook-studio-book-backup", version 1) is documented in docs/
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -153,42 +155,120 @@ def _prune_empty(root: Path) -> None:
 
 # ------------------------------------------------------------------ usage
 
+USAGE_TTL_S = 60.0                      # how long GET /api/disk/usage may serve a measurement (refresh=1 forces a new one)
+_MEASURE_LOCK = threading.Lock()        # one measurement at a time; concurrent callers share its result
+_USAGE_CACHE: dict[str, tuple[float, dict]] = {}   # library key -> (measured_at, payload)
+_USAGE_GEN: dict[str, int] = {}         # bumped by invalidate_usage so an in-flight measurement cannot store a stale result
 
-def _purgeable(conn, book: dict, dirs: dict[str, Path]) -> dict:
+
+def _usage_key(ctx) -> str:
+    return str(ctx.data_dir)
+
+
+def invalidate_usage(ctx=None) -> None:
+    """Forget the cached usage measurement (all libraries when ``ctx`` is None). Called by every action that changes what is on disk."""
+    keys = set(_USAGE_CACHE) | set(_USAGE_GEN) if ctx is None else {_usage_key(ctx)}
+    for k in keys:
+        _USAGE_GEN[k] = _USAGE_GEN.get(k, 0) + 1
+        _USAGE_CACHE.pop(k, None)
+
+
+def invalidates_usage(fn):
+    """Decorator for actions that change disk contents (first argument is ctx): the usage cache is dropped once the action has run, whether
+    it succeeded or failed half way. A confirmation preview (NeedsConfirmation) changed nothing and leaves the cache alone."""
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        try:
+            result = fn(ctx, *args, **kwargs)
+        except NeedsConfirmation:
+            raise
+        except BaseException:
+            invalidate_usage(ctx)
+            raise
+        invalidate_usage(ctx)
+        return result
+    return wrapper
+
+
+def _walk_files(path: Path) -> tuple[int, dict[str, int]]:
+    """(total bytes, {file path: bytes}) of every file under ``path``: one lstat per file."""
+    total, sizes = 0, {}
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            full = os.path.join(root, f)
+            try:
+                n = os.lstat(full).st_size
+            except OSError:
+                continue
+            total += n
+            sizes[full] = n
+    return total, sizes
+
+
+def _purgeable(conn, book: dict, dirs: dict[str, Path], sizes: dict[str, int] | None = None) -> dict:
+    """Superseded takes of one book: count and bytes. ``sizes`` ({path: bytes}, from the segments/alternates walk) avoids a second stat
+    per file; takes that are not in it fall back to the old existence-checked lookup."""
     keep = {r["selected_attempt_id"] for r in rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (book["id"],))}
+    atts = rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],))
+    return _purgeable_from(book, atts, keep, sizes or {})
+
+
+def _purgeable_from(book: dict, atts: list[dict], keep: set, sizes: dict[str, int]) -> dict:
     n, size = 0, 0
-    for a in rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],)):
+    for a in atts:
         if a["id"] in keep:
             continue
         n += 1
         if a["wav_path"]:
-            t = resolve_take(book, a)
-            size += file_size(t)
+            hit = sizes.get(str(Path(a["wav_path"])))
+            size += hit if hit is not None else file_size(resolve_take(book, a))
     return {"takes": n, "takes_bytes": size}
 
 
-def usage(ctx) -> dict:
-    """Per-book and global disk usage plus free space of the library volume and model cache."""
+def usage(ctx, max_age: float = 0.0, refresh: bool = False) -> dict:
+    """Per-book and global disk usage plus free space of the library volume and model cache.
+
+    Walking every file is the slow part, so the result carries ``measured_at`` (epoch seconds), ``age_s`` and ``cached``. With the default
+    ``max_age=0`` it always measures; the HTTP route passes ``max_age=USAGE_TTL_S`` so repeated page views reuse the last measurement, and
+    ``refresh=True`` (``?refresh=1``) forces a new one. Disk-changing actions drop the cache (``invalidates_usage``)."""
+    key = _usage_key(ctx)
+    t_req = time.time()
+
+    def usable(hit) -> bool:
+        if hit is None:
+            return False
+        if hit[0] >= t_req:                    # measured after this call began (another caller's fresh result)
+            return True
+        return not refresh and max_age > 0 and (time.time() - hit[0]) <= max_age
+
+    hit = _USAGE_CACHE.get(key)
+    cached = usable(hit)
+    if not cached:
+        with _MEASURE_LOCK:
+            hit = _USAGE_CACHE.get(key)
+            cached = usable(hit)
+            if not cached:
+                gen = _USAGE_GEN.get(key, 0)
+                started = time.time()
+                payload = _measure(ctx)
+                hit = (started, payload)
+                if _USAGE_GEN.get(key, 0) == gen:
+                    _USAGE_CACHE[key] = hit
+    return {**hit[1], "measured_at": hit[0], "age_s": round(max(0.0, time.time() - hit[0]), 1), "cached": cached}
+
+
+def _measure(ctx) -> dict:
     s = ctx.settings()
     with ctx.db.session() as conn:
         books_rows = rows(conn, "SELECT * FROM books ORDER BY id")
-        books = []
-        totals = {c: 0 for c in STORAGE_CATEGORIES}
-        for b in books_rows:
-            dirs = book_dirs(b)
-            cats, total = {}, 0
-            for c in STORAGE_CATEGORIES:
-                size = dir_size(dirs[c]) if c in dirs and dirs[c].exists() else 0
-                cats[c] = size
-                totals[c] += size
-                total += size
-            purge = _purgeable(conn, b, dirs)
-            cats_exports = cats.get("exports", 0)
-            narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (b["voice_id"],)) or {}).get("name")
-            books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "narrator": narrator, "display_title": display_title(b["title"], narrator),
-                          "work_uid": work_key(b), "archived": bool(b["archived"]), "state": b["state"],
-                          "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats_exports, "masters_bytes": cats.get("masters", 0)},
-                          "busy": bool(row(conn, "SELECT id FROM jobs WHERE book_id=? AND status IN ('queued','running','paused')", (b["id"],)))})
+        voice_names = {r["id"]: r["name"] for r in rows(conn, "SELECT id, name FROM voices")}
+        busy_ids = {r["book_id"] for r in rows(conn, "SELECT DISTINCT book_id FROM jobs WHERE status IN ('queued','running','paused') AND book_id IS NOT NULL")}
+        keep_by: dict[int, set] = {}
+        for r in rows(conn, "SELECT book_id, selected_attempt_id FROM segments WHERE selected_attempt_id IS NOT NULL"):
+            keep_by.setdefault(r["book_id"], set()).add(r["selected_attempt_id"])
+        atts_by: dict[int, list] = {}
+        for r in rows(conn, "SELECT s.book_id, a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE a.status!='in_progress'"):
+            atts_by.setdefault(r["book_id"], []).append(r)
         vfiles = set()
         for v in rows(conn, "SELECT ref_audio_path, ref_original_path FROM voice_versions"):
             for k in ("ref_audio_path", "ref_original_path"):
@@ -198,19 +278,42 @@ def usage(ctx) -> dict:
             for k in ("ref_audio_path", "ref_original_path"):
                 if v[k]:
                     vfiles.add(v[k])
+    books = []
+    totals = {c: 0 for c in STORAGE_CATEGORIES}
+    for b in books_rows:
+        dirs = book_dirs(b)
+        cats, total = {}, 0
+        take_sizes: dict[str, int] = {}
+        for c in STORAGE_CATEGORIES:
+            if c not in dirs:
+                size = 0
+            elif c in ("segments", "alternates"):
+                size, files = _walk_files(dirs[c])   # the takes live here: keep the per-file sizes for the purgeable estimate
+                take_sizes.update(files)
+            else:
+                size = dir_size(dirs[c])
+            cats[c] = size
+            totals[c] += size
+            total += size
+        purge = _purgeable_from(b, atts_by.get(b["id"], []), keep_by.get(b["id"], set()), take_sizes)
+        narrator = voice_names.get(b["voice_id"])
+        books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "narrator": narrator, "display_title": display_title(b["title"], narrator),
+                      "work_uid": work_key(b), "archived": bool(b["archived"]), "state": b["state"],
+                      "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats.get("exports", 0), "masters_bytes": cats.get("masters", 0)},
+                      "busy": b["id"] in busy_ids})
     voices_bytes = sum(file_size(p) for p in vfiles)
     models = Path(s.models.cache_dir or os.environ.get("HF_HOME") or (ctx.cache_dir / "huggingface")).expanduser()
     db_bytes = sum(file_size(str(ctx.db.path) + suf) for suf in ("", "-wal", "-shm"))
     backups_dir = ctx.backups_dir
     other = {
         "voices": voices_bytes,
-        "recordings": dir_size(ctx.data_dir / "recordings") if (ctx.data_dir / "recordings").exists() else 0,
-        "previews": dir_size(ctx.data_dir / "previews") if (ctx.data_dir / "previews").exists() else 0,
-        "imports": dir_size(ctx.data_dir / "imports") if (ctx.data_dir / "imports").exists() else 0,
+        "recordings": dir_size(ctx.data_dir / "recordings"),
+        "previews": dir_size(ctx.data_dir / "previews"),
+        "imports": dir_size(ctx.data_dir / "imports"),
         "database": db_bytes,
-        "backups": dir_size(backups_dir) if backups_dir.exists() else 0,
-        "logs": dir_size(ctx.logs_dir) if ctx.logs_dir.exists() else 0,
-        "model_cache": dir_size(models) if models.exists() else 0,
+        "backups": dir_size(backups_dir),
+        "logs": dir_size(ctx.logs_dir),
+        "model_cache": dir_size(models),
     }
     return {
         "books": books,
@@ -252,6 +355,7 @@ _BOOK_DELETE_ORDER = [
 ]
 
 
+@invalidates_usage
 def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
     with ctx.db.session() as conn:
         b = _book(conn, book_id)
@@ -290,6 +394,7 @@ def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator
     return {"deleted": True, "title": b["title"], "freed_bytes": freed, "errors": errors}
 
 
+@invalidates_usage
 def delete_work(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
     """Remove a book entirely: every narrator version of its manuscript, with all audio, exports and history."""
     with ctx.db.session() as conn:
@@ -314,6 +419,7 @@ def delete_work(ctx, book_id: int, confirm: bool = False, actor: str = "operator
     return {"deleted": True, "title": b["title"], "versions_deleted": len(versions), "freed_bytes": freed, "errors": errors}
 
 
+@invalidates_usage
 def purge(ctx, book_id: int, scope: str, confirm: bool = False, actor: str = "operator") -> dict:
     if scope not in PURGE_SCOPES:
         raise ServiceError(f"scope must be one of {', '.join(PURGE_SCOPES)}", 422)
@@ -420,18 +526,40 @@ def _backup_path(ctx, name: str) -> Path:
     return p
 
 
-def list_backups(ctx) -> dict:
-    out = {"books": [], "databases": []}
-    root = backups_root(ctx)
-    for p in sorted(root.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
-        meta = {}
+_MANIFEST_CACHE: dict[tuple, dict] = {}   # (path, mtime_ns, size) -> manifest summary: a backup zip is opened once, not on every page view
+
+
+def _backup_meta(p: Path, key: tuple) -> dict:
+    meta = _MANIFEST_CACHE.get(key)
+    if meta is None:
         try:
             with zipfile.ZipFile(p) as zf:
                 m = json.loads(zf.read("manifest.json"))
                 meta = {"title": m.get("title"), "book_uid": m.get("book_uid"), "created_at": m.get("created_at"), "app_version": m.get("app_version")}
         except Exception:
             meta = {"title": None, "invalid": True}
-        out["books"].append({"name": p.name, "size_bytes": p.stat().st_size, "modified": p.stat().st_mtime, **meta})
+        _MANIFEST_CACHE[key] = meta
+    return dict(meta)
+
+
+def list_backups(ctx) -> dict:
+    out = {"books": [], "databases": []}
+    root = backups_root(ctx)
+    entries = []
+    for p in root.glob("*.zip"):
+        try:
+            entries.append((p, p.stat()))
+        except OSError:
+            continue    # vanished while listing
+    entries.sort(key=lambda e: e[1].st_mtime, reverse=True)
+    seen = set()
+    for p, st in entries:
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        seen.add(key)
+        out["books"].append({"name": p.name, "size_bytes": st.st_size, "modified": st.st_mtime, **_backup_meta(p, key)})
+    prefix = str(root)
+    for k in [k for k in _MANIFEST_CACHE if k[0].startswith(prefix) and k not in seen]:
+        _MANIFEST_CACHE.pop(k, None)
     dbdir = ctx.backups_dir / "db"
     if dbdir.is_dir():
         for p in sorted(dbdir.glob("*.db"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -439,6 +567,7 @@ def list_backups(ctx) -> dict:
     return out
 
 
+@invalidates_usage
 def backup_database(ctx, actor: str = "operator") -> dict:
     """Consistent copy of studio.db (SQLite online backup API) into backups/db, verified with integrity_check."""
     dbdir = ctx.backups_dir / "db"
@@ -467,6 +596,7 @@ def _sha(path: Path) -> str:
     return h.hexdigest()
 
 
+@invalidates_usage
 def backup_book(ctx, book_id: int, actor: str = "operator") -> dict:
     with ctx.db.session() as conn:
         b = _book(conn, book_id)
@@ -551,6 +681,7 @@ def backup_book(ctx, book_id: int, actor: str = "operator") -> dict:
     return {"name": name, "size_bytes": dest.stat().st_size, "files": len(files_meta), "media_bytes": total, "path": str(dest)}
 
 
+@invalidates_usage
 def delete_backup(ctx, name: str, confirm: bool = False, actor: str = "operator") -> dict:
     p = _backup_path(ctx, name)
     size = p.stat().st_size
@@ -575,6 +706,7 @@ def _clean_member(name: str) -> tuple[str, str] | None:
     raise ServiceError(f"Unexpected entry in backup: {name!r}", 422)
 
 
+@invalidates_usage
 def restore_book(ctx, name: str, actor: str = "operator") -> dict:
     """Restore a backup zip as a NEW book (new uid, new ids). The original book is never touched."""
     src = _backup_path(ctx, name)

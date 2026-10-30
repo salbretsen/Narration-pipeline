@@ -5,7 +5,7 @@ done until the same checks pass (plus new tests for the new behaviour).
 
 ## Automated suite (`src/app/tests`, mock engine, real FFmpeg, FastAPI TestClient)
 
-Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **451 passed** (about 2 min; 324 at v0.6.x, 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
+Run from `src/app`: `pytest -q -p no:cacheprovider tests` → expected **531 passed** (about 2 min; 451 at v0.7.0, 324 at v0.6.x, 162 at v0.4.0, 96 at v0.2.x). Tests needing ffmpeg are skipped
 without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per test), the mock engine, a worker you drive in-process
 (`make_worker(faults).run_until_idle()`), and builders for TXT, DOCX, EPUB and WAV fixtures.
 
@@ -23,7 +23,9 @@ without it. `conftest.py` provides isolated homes (`AUDIOBOOK_STUDIO_HOME` per t
 
 v0.7.0 added `test_plumbing_v5.py` (schema v5, settings defaults, `LLMClient.derive`, `resolve_models`, thinking mode, Test connection with extra models), `test_delivery_audio.py` (pace from direction, pause hints and digests, reference bank selection/adoption/consent/candidates, `calibrated_wpm`, preview stretch), `test_director_v2.py` (beat sheet validation and cache, scene windows, per-item validation and re-ask, rules fallback, `direct_scope`, no write lock across an LLM request), `test_translator.py` (translation validation and cache keys, `plan_for_segment` stays read-only, `translate_pending`, worker back-off) and `test_ab.py` (comparisons, blind rounds, vote and reveal, tally, `random_differing_segment`, apply-delivery with dry run and confirmation), plus the narrator-version, delete and import tests added earlier in the release. They all use the mock engine and HTTP stub LLM servers.
 
-Also (not in pytest): `python tools/e2e/updates_ui.py OUT chromium|webkit` (Update Center in a real browser, offline and phone-width included),
+v0.8.0 added 80 tests in eight files (451 to 531): `test_live_foundation.py` (11: stable SSE digest, schema v6 indexes and `jobs.active_seconds`, active-time accounting with a fake worker clock, `cover_version`, and the node suite `tests/js/ui_helpers.test.mjs` for `patchHTML`, `patchRegions`, `pager`, `onState` de-duplication), `test_book_perf.py` (10: `get_book` query count independent of segment count with synthetic books, batched readiness equal to the old per-segment result, `?view=review` is a subset), `test_disk_cache.py` (10: second `usage` call does not re-walk, `refresh`, invalidation by disk-changing actions, numbers equal the old implementation), `test_runtime.py` (22: rates and fallbacks, queue ordering, paused jobs, finished/legacy timing, the paginated grouped Queue API, and the node suite `tests/js/runtime_fmt.test.mjs`), `test_overview_runtime.py` (1: `runtime` reaches `/api/books` and `/api/overview`), `test_regen_direction.py` (13: a user direction reaches the voice with the Director off and on classic books, the delivery summary per voice kind, the read-only preview, regenerate with `direction`, the Director-on cascade queues its resets), `test_voice_retune.py` (12: duplicate, retune, lineage, description sync, constant query count of `GET /api/voices`) and `test_settings_ui.py` (1: the node suite `tests/js/settings_model.test.mjs`). The three node suites run through pytest wrappers and are **skipped when `node` is not installed**, so a machine without Node reports fewer than 531 passed. `test_background_download_endpoint_flow_and_busy_guard` now waits up to 20 s and reports the real state and error (it failed on a loaded machine). All use the mock engine, synthetic rows and tiny placeholder files.
+
+Also (not in pytest): browser scripts, each starting its own local MOCK-engine server (Edge via Playwright, headless): `python tools/e2e/foundation_ui.py OUT` (16 checks), `polish_book.py` (29), `polish_overview.py` (27), `polish_queue.py` (27), `polish_review.py` (20), `polish_settings.py` (85), `polish_voices.py` (24), plus the earlier `versions_ui.py` (29) and `delivery_ui.py` (13); purposes in `tools/e2e/README.md`. `python tools/e2e/updates_ui.py OUT chromium|webkit` (Update Center in a real browser, offline and phone-width included),
 `python tools/check_lock_wheels.py` (network), shellcheck on the generated Mac installer. Real Mac checks: doc 10 (M1-M10).
 
 What these cannot show: real speech quality, the GPU engine, a real browser's microphone, the LAN, macOS behaviour, launchd.
@@ -33,6 +35,26 @@ What these cannot show: real speech quality, the GPU engine, a real browser's mi
 New parsing/text logic → `test_text.py`; audio/DSP → `test_audio.py`; end-to-end HTTP behaviour → `test_integration.py`; auth/roles/storage
 admin → `test_auth.py`; recording lab/TLS → `test_lab.py`. Inject faults with `make_worker({"text:substring": ["drop","repeat","silence","babble","clip","quiet","error"]})`.
 Remember fault keys match the **spoken (normalised)** text, not the manuscript text ("3rd" becomes "third").
+
+## Verification status of v0.8.0
+
+Honest list of what ran where. **Nothing in this release has run on the Mac, with the real engine, or in real Safari.** Everything below ran on Windows with the mock engine (tones), HTTP stub servers and headless Edge.
+
+| Area | Ran | Where / how | Not run |
+|---|---|---|---|
+| Automated suite (531) | yes | Windows dev, mock engine, real FFmpeg, node for the three JS suites | the GPU engine, real Whisper, a real LLM |
+| SSE digest stability, `onState` de-duplication, router loading state and stale-render guard, Overview refetch rate | yes | `test_live_foundation.py`, `ui_helpers.test.mjs`, `foundation_ui.py` (16 checks) | real Safari, a real worker heartbeat on the Mac |
+| Book page live regions (typed fields survive, cover upload, mini-player) and Disk & Backups placeholders / Refresh | yes | `polish_book.py` (29 checks) with a worker rendering and a slow stub API | the Book page at 360 px wide (horizontal overflow from a nowrap table in `book.js`, known and unfixed); real playback |
+| `get_book` speed (6,523 to 30 queries, about 333 to about 104 ms at 4,000 segments), batched readiness, light review payload | yes | `test_book_perf.py` on synthetic rows and placeholder files | the Mac's real library (19+ books); real file-system timings |
+| Disk usage cache | yes | `test_disk_cache.py`, `polish_book.py` | how long a real measurement takes on the Mac |
+| Overview feed, attention list, Library narrator select | yes | `polish_overview.py` (27) | real Safari |
+| Queue grouping, pagination, log scroll | yes | `test_runtime.py`, `polish_queue.py` (27) | drag-to-reorder in a browser |
+| **Processing-time estimates** | formatting, fallbacks, ordering, paused handling | unit tests with synthetic rows and a fake clock; `polish_overview.py` injects a test-only runtime shim to check the rendered text | **never compared with real timings**; accuracy of the rates, the Director term and "starts about" on the M3 Max is unknown |
+| Regenerate with direction | the plumbing and the explanation | `test_regen_direction.py`, `polish_review.py` (20) | whether a real model sounds different for an instruction; a bank clip on a real clone |
+| Settings tabs, one Save, unsaved dots, leave warning, widths | yes | `settings_model.test.mjs`, `polish_settings.py` (85) | the folder browser and Finder picker; API key *Save* and *Test connection* clicks |
+| Narrator Studio edit dialog, duplicate, retune | yes | `test_voice_retune.py`, `polish_voices.py` (24) | audio quality of a retuned voice |
+| Schema v6 migration | mock databases | `migrate()` in tests | the Mac's real database (a pre-migration backup is written automatically) |
+| Installer, updater, signing | not touched | no code change (generated installers not rebuilt by this documentation change) | M1-M10 (doc 10) for the release itself |
 
 ## Verification status of v0.7.0
 

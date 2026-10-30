@@ -289,11 +289,12 @@ def test_background_download_endpoint_flow_and_busy_guard(env):
     env.publish("0.5.1")
     env.mgr.check()
     env.mgr.download(background=True)
-    for _ in range(200):
-        if env.mgr.status()["state"] == "staged":
+    for _ in range(1000):  # a loaded machine (parallel test runs, browser scripts) can need seconds, not milliseconds
+        if env.mgr.status()["state"] in ("staged", "failed", "offline"):
             break
         time.sleep(0.02)
-    assert env.mgr.status()["state"] == "staged" and env.mgr.status()["busy"] is None
+    st = env.mgr.status()
+    assert st["state"] == "staged" and st["busy"] is None, f"download ended in state {st['state']!r}: {st.get('error') or st.get('message')}"
 
 
 def test_request_install_needs_staged_and_explicit_version(env):

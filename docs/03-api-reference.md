@@ -33,8 +33,8 @@ and each `review_actions[].actor`. No schema change.
 | GET | `/api/doctor` | admin: environment checks |
 | GET | `/api/worker` | worker status (online, state, message, pid, heartbeat age, supervisor restarts) |
 | POST | `/api/worker/restart` | admin: restart the worker process |
-| GET | `/api/events` | SSE: `state` events carrying a digest `{events, segments, jobs, attempts, worker, active, progress}`; `?once=1` for tests |
-| GET | `/api/overview` | dashboard cards, segment lifecycle counts, recent books, flags, events, failed jobs, worker |
+| GET | `/api/events` | SSE: `state` events carrying a digest `{events, segments, jobs, attempts, worker, active, progress, worker_message}`; `?once=1` for tests. **v0.8.0:** the digest is a pure function of stored state and carries no clock-dependent value (`worker` omits `heartbeat_age_s` and `heartbeat_at`; `online` still flips when the heartbeat goes stale), so an idle studio emits no events. The exact heartbeat age is in `GET /api/worker` |
+| GET | `/api/overview` | dashboard cards, segment lifecycle counts, recent books (each with `runtime`), flags, events, failed jobs, worker |
 
 ## Imports, books, queue
 
@@ -43,8 +43,8 @@ and each `review_actions[].actor`. No schema change.
 | POST | `/api/imports` | multipart `file`; returns a preview (chapters, words, segments, read/not-read manifest, warnings, SHA-256, token) |
 | GET | `/api/imports/{token}` | re-read a preview (kept 48 h) |
 | POST | `/api/imports/{token}/confirm` | `{title, author, narrator_credit, publisher, year, description, genre, language, voice_id, instructions, include[], queue}`; idempotent |
-| GET | `/api/books` | summaries (`?archived=true` to include archived) |
-| GET/PATCH | `/api/books/{id}` | full detail (chapters, renders, exports, release check, logs) / edit metadata |
+| GET | `/api/books` | summaries (`?archived=true` to include archived). **v0.8.0:** each summary carries `runtime` (processing-time estimate or actual, below) |
+| GET/PATCH | `/api/books/{id}` | full detail (chapters, renders, exports, release check, logs) / edit metadata. **v0.8.0:** the query count no longer grows with the segment count (4,000 synthetic segments: 30 queries); adds `cover_version` (cover file mtime, the cache key for `/media/cover/{id}`) and `runtime`. `?view=review` returns the **light** payload for the Review page: the summary fields plus `chapters[]` (`id, index, title, words, segments, title_overridden, original_title, est_duration_s, status_counts`) and no readiness, `release_check`, exports, logs, utility jobs, narrative status, manifest or per-chapter `missing_audio`/`render_current`/`renders`. Any other `view` value returns the full payload |
 | POST | `/api/books/{id}/narrator` | replace THIS version's narrator: `{voice_id, instructions, confirm_invalidate}`; `409` with `rendered_segments` until confirmed (regenerates this version) |
 | POST | `/api/books/{id}/versions` | **narrate the same manuscript with another voice** as a NEW book (v0.7.0): `{voice_id, instructions?, queue?}`. Copies manuscript, chapters, characters, attribution, Director guidance and text edits; every segment starts pending; the source book is untouched. `409` if that voice+instructions already has a version, or the source is rendering. Book payloads carry `work_uid`, `narrator`, `display_title` (`Title - Narrator`), `version_count`; `GET /api/books/{id}` also has `versions[]` |
 | POST | `/api/books/{id}/resnapshot` | apply current global settings; `{confirm_invalidate}` |
@@ -60,12 +60,20 @@ and each `review_actions[].actor`. No schema change.
 | POST | `/api/books/{id}/archive` | admin: `{archived}`; `409` while a job is active |
 | GET | `/api/books/{id}/segments` | `?chapter_id&filter&after&limit&q`; filters `all issues flagged generated passed approved pending overridden noted`; keyset paging (`next`) |
 | GET | `/api/books/{id}/logs` | project log |
-| GET | `/api/queue` | active/finished book jobs, utility jobs, throughput (ETA only after ≥ 20 measured segments) |
+| GET | `/api/queue` | `?finished_offset=0&finished_limit=10&utility_offset=0&utility_limit=10` (limits 1-50). Reply: `active` (queued/running/paused book jobs), `finished` (**one entry per book**, its latest finished run in the last `window_days` = 30, with `latest_run` and `earlier_runs[]` of `{id, status, finished_at, segments_rendered, active_seconds, kind_hint "full pass"|"touch-up"}`, at most 20), `finished_total` (books), `utility` (assemble/export/preview/analyze jobs, newest first) with `utility_total`, the offsets and limits echoed back, `jobs` (= `active` + `finished`, kept for older callers) and `throughput` (global median seconds per segment). Every book job carries `runtime`, `active_seconds`, and the older `eta_s` / `eta_finish_s` (now derived from the same estimate) |
 | POST | `/api/queue` | `{book_id, front}`; **idempotent** (`created:false` when already queued) |
 | POST | `/api/queue/reorder` | `{job_ids[]}` |
 | POST | `/api/jobs/{id}/move` | `{direction: up|down|top|bottom}` |
 | POST | `/api/jobs/{id}/{pause|resume|retry|cancel}` | pause/cancel take effect between segments |
 | GET | `/api/jobs/{id}`, `/api/jobs/{id}/log` | job and its log |
+
+**Processing-time `runtime` object (v0.8.0, `studio/runtime.py`).** Carried by book summaries (`/api/books`, `/api/overview`, `/api/books/{id}`) and by every book job in `/api/queue`:
+`{state running|queued|finished|idle, processing_s, remaining_s, finish_at, starts_at, total_est_s, estimated, basis}`. All times are **processing** seconds / epoch seconds, never audio length (`est_duration_s` and
+`audio_duration_s` are separate fields). `finished`: `processing_s` = sum of `jobs.active_seconds` over all the book's book jobs (jobs from before v0.8.0 fall back to `finished_at - started_at`), `estimated: false`; a finished queue entry that is not the latest completed run of a fully rendered book (failed, cancelled, touch-up) shows that run's own time instead.
+`running`: `remaining_s`, `finish_at`. `queued`: `total_est_s`, `starts_at` (null when the job is paused or something ahead has no estimate; paused jobs do not advance the queue). `idle`: `total_est_s` for the pending part.
+Rate (seconds per segment): for a running job, its own pace once >= 10 of its segments are done (`active_seconds` / segments, which includes Director time); else the median for the book's TTS model over the 200 most recent segments (>= 20 samples); else the global median (same minimum);
+else every estimate is null and `basis` reads "estimate after N more segments". The Director's measured seconds per directed segment are added for undirected pending segments when it has run, except for an observed job rate.
+`basis` is one plain sentence on where the number comes from; the UI shows it as a tooltip.
 
 ## Segments (review)
 
@@ -73,7 +81,7 @@ and each `review_actions[].actor`. No schema change.
 |---|---|---|
 | GET | `/api/segments/{id}`, `/api/segments/by-sid/{sid}` | detail: attempts (ASR diff, issues, acoustics, versions), reviews, prev/next, chapter timing |
 | POST | `/api/segments/{id}/approve` | `{note}`; needs a selected take with the book's fingerprint |
-| POST | `/api/segments/{id}/regenerate` | `{note}`; resets the budget, enqueues the book at the front, revokes release |
+| POST | `/api/segments/{id}/regenerate` | `{note, direction?}`; resets the budget, enqueues the book at the front, revokes release. **v0.8.0:** `direction` is `{emotion?, intensity? 1-5, pacing?, tension? 1-5, delivery? (<= 240 chars)}`; it is stored as the segment's own user direction (the same record `PATCH /api/segments/{id}/narrative` writes, no one-shot mode), fields left out keep their stored value, a field sent as `null` is cleared, an emotion without an intensity means 3, bad vocabulary is `422`. A user direction reaches the voice even when the book's Director is off and on classic books. If the direction change already put the segment back to `pending`, the book is queued without a second reset. The reply gains `delivery` (see `delivery-preview`) |
 | POST | `/api/segments/{id}/override` | `{text, regenerate}`; the manuscript text is never changed |
 | POST | `/api/segments/{id}/select-take` | `{attempt_id}`; only takes with the current fingerprint |
 | POST | `/api/segments/{id}/note` | `{note}` |
@@ -96,6 +104,7 @@ and each `review_actions[].actor`. No schema change.
 | GET | `/api/segments/{id}/inspect` | context windows, spans with evidence, speaker, voice, direction (raw/smoothed/user/final), neighbours, instruction + spoken text sent to the engine, history, attempts with `gen_key` match |
 | PATCH | `/api/segments/{id}/narrative` | `character_id, voice_id, emotion, intensity, tension, pacing, delivery`; regenerates only this segment |
 | POST | `/api/segments/{id}/boundary` | `{op: split|merge_next|move_end, offset}` |
+| GET | `/api/segments/{id}/delivery-preview` | **v0.8.0** `?emotion&intensity&pacing&tension&delivery`: what would reach the voice, saving nothing and never calling the LLM. An absent parameter keeps the stored user direction, an empty one clears it. Reply: `{segment_id, voice_kind preset|design|clone, voice {id, name}, model_id, applied (the emotion itself reaches the voice), instruct, pace, pace_reason, bank_clip, bank_bucket, bank_enabled, reason, source you|director|none, direction, user_direction, notes[]}`; for a clone the notes say it cannot take written instructions and whether a reference-bank clip would be used. `409` when the book has no narrator, `422` on bad vocabulary |
 | POST | `/api/segments/{id}/preview` | queues a preview with the segment's own voice and delivery (not saved as a take) |
 | POST | `/api/segments/{id}/redirect` | marks the direction stale and queues a Director run |
 | POST | `/api/books/{id}/narrative/apply-delivery` | **v0.7.0** `{confirm=false, include_approved=false}`: bring already rendered takes in line with the delivery settings now in force. Without `confirm` a `409` (NeedsConfirmation) with `details {segments, approved, chapters, approved_included}` and nothing changes; with it, only segments whose selected take's `gen_key` differs from the current plan are reset (approved ones only with `include_approved`), release approval is revoked, the book is queued first. Returns `{segments, reset, queued, job_id, approved, chapters}` (`reset: 0`, `message` when nothing differs). Old takes stay as history |
@@ -113,8 +122,10 @@ List filters added: `speaker_review`, `direction_review`. Attempts in `GET /api/
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/voices` | voices, supported speakers (`Ryan Aiden` English; others are Chinese-native) |
-| GET/PATCH | `/api/voices/{id}` | detail with versions / edit (sound-affecting edits create a new version) |
+| GET | `/api/voices` | voices, supported speakers (`Ryan Aiden` English; others are Chinese-native). **v0.8.0:** constant number of queries however many voices exist; each voice carries `derived_from` (lineage or `null`) and clones carry `source_voice {id, name, archived}` (or `null`) |
+| GET/PATCH | `/api/voices/{id}` | detail with versions / edit (sound-affecting edits create a new version; a name-only edit does not). The reply carries `books_on_older_version [{id, title, voice_version}]`. **v0.8.0:** editing a designed voice's description keeps `voices.description` in sync |
+| POST | `/api/voices/{id}/duplicate` | **v0.8.0** `{name, instruct?, speaker?, description?}`: copy a **preset or designed** voice (built-ins included) into a new, non-built-in voice at version 1 from the source's current version, optionally with another instruction / speaker (presets only) / description. The source is untouched. `422` for a clone, a bad speaker, an unusable name or a design description outside 10-1000 characters. Reply: the new voice, with `derived_from {relation "copy", voice_id, voice_name, version}` |
+| POST | `/api/voices/{id}/retune` | **v0.8.0** `{name, instruct?}` on a **promoted clone**: creates a new designed voice from the clone's source design voice (its current description, or `instruct`), ready for new previews and another promotion. `422` if the voice is not a clone or no source design voice is recorded. Reply: the new voice, `derived_from {relation "retune", ..., clone_voice_id, clone_name}` and `source {id, name, archived}` |
 | POST | `/api/voices/preset` and `/api/voices/design` | create preset `{name, speaker, instruct}` / designed `{name, description}` |
 | POST | `/api/voices/clone` | multipart upload: `file, name, ref_text, rights_holder, owner_attest, statement`; consent is mandatory |
 | POST | `/api/voices/{id}/preview` | `{text, instruct, verify, seed}` enqueues a preview job (real synthesis) |
@@ -173,7 +184,7 @@ transaction, keep the old copy).
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/disk/usage` | per book and per category sizes (manuscripts, segments = selected takes, alternates = other takes/attempts, reports, masters, exports; plus a `purgeable` estimate), global items (voices, recordings, previews, import copies, database, backups, logs, model cache), free space of the library volume, model cache and backups folder, and the backup list |
+| GET | `/api/disk/usage` | **v0.8.0:** served from a 60 s cache (`?refresh=1` forces a new measurement; one measurement at a time, concurrent callers share it; delete, purge, backup and restore drop the cache). The reply adds `measured_at` (epoch s), `age_s` and `cached`. Per book and per category sizes (manuscripts, segments = selected takes, alternates = other takes/attempts, reports, masters, exports; plus a `purgeable` estimate), global items (voices, recordings, previews, import copies, database, backups, logs, model cache), free space of the library volume, model cache and backups folder, and the backup list |
 | GET | `/api/disk/backups` | `{books: [...zip files in backups/books], databases: [...files in backups/db]}` |
 | POST | `/api/disk/books/{id}/delete` | `{confirm: true}`: delete the book (database rows, its storage folders, its import copy). Audited. Moved-away old copies are not touched |
 | POST | `/api/disk/books/{id}/delete-all-versions` | `{confirm: true}`: remove the book entirely, i.e. every narrator version of its manuscript (v0.7.0). All-or-nothing: refused with `409` if any version is queued, rendering or paused. Admin only; `409` + preview (versions, bytes) until confirmed. Audited. `/delete` above removes just one version |

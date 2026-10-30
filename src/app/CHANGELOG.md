@@ -3,6 +3,94 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.8.0
+Feature release (polish batch). **Tested only with the mock engine, HTTP stub servers, 531 pytest tests and headless Edge scripts on Windows (`tools/e2e/foundation_ui.py`, `polish_*.py`). Nothing in
+this release has been run on the Mac, with the real engine, or in real Safari; processing-time estimates were never compared with real timings.** See *Not verified* at the end.
+
+**Live updates and repainting**
+- **The live-update storm is fixed.** The SSE state digest (`services.state_digest`) no longer contains the worker heartbeat age or time (they changed every second, so the stream pushed an event
+  every second and every page repainted). The digest is now a pure function of stored state; `/api/worker` and the Overview still return the exact heartbeat age, and the top-bar pill
+  derives it from `heartbeat_at` when the digest has none. `onState` (`ui.js`) skips a payload equal to the last one it delivered to that subscriber (`sameState`); polled-fallback payloads
+  are always delivered.
+- **Views repaint live regions only.** New `patchHTML` / `patchRegions` (`ui.js`) repaint a region in place only when its markup changed and keep scroll positions, keyboard focus, text selection
+  and `<details id>` open state. Overview, Library, Queue, Book, Disk and Review are now a fixed shell plus live regions (Settings and Narrator Studio keep their forms and previews across redraws instead). Visible results: the Overview activity feed no longer jumps to the top
+  (a "N new events - back to top" hint appears instead), "Needs attention" is capped at 5 rows with *Show all (N)* and lists a book once, a Library narrator dropdown keeps its selection and focus.
+- **Book page forms are drawn once.** Metadata, cover, release sign-off (approved by, notes, attestation) and delivery-instruction fields are never touched by a live update, so typed values survive; the
+  stats, chapters, exports and log regions update in place. A playing chapter mini-player is not re-created. The cover is no longer re-downloaded on every repaint: `GET /api/books/{id}` carries
+  `cover_version` (the cover file's mtime) as the cache key.
+
+**Navigation and performance**
+- **Router.** Each navigation renders into its own host element with a stale-render guard (a superseded or slow render can never paint over a newer page); the old page stays visible but dimmed and a
+  "Loading..." status appears after 120 ms. Views receive `nav` (`nav.signal`, `nav.isCurrent()`) as a fourth argument and fetch in parallel. Focus moves to the new page's `<h1>` and the page scrolls to the top only when
+  the route actually changed.
+- **`get_book` no longer grows with the number of segments**: chapter readiness, take lookups and release check are batched (one file-existence check per path). 4,000 synthetic segments: 6,523 queries
+  down to 30, about 333 ms down to about 104 ms. Equivalence with the old per-segment implementation is tested. `GET /api/books/{id}?view=review` returns a light payload (summary plus chapter
+  rows, no readiness, release check, exports, logs or narrative status) for the Review page; the segment-detail chapter timing is looked up with `json_each` instead of decoding the whole map.
+- **Disk & Backups paints at once** with "Measuring disk usage..." placeholders and measures in the background. `GET /api/disk/usage` serves a 60 s cache (one measurement at a time, one `lstat` per file) and
+  returns `measured_at`, `age_s` and `cached`; `?refresh=1` (the *Refresh* button) forces a new measurement. Delete, purge, backup and restore drop the cache.
+- **Schema v6** (migration applied automatically, keeps all data): indexes `ix_segments_updated`, `ix_jobs_updated`, `ix_jobs_book` and the column `jobs.active_seconds REAL NOT NULL DEFAULT 0`.
+
+**Review & QA**
+- **Regenerate with direction...** (Review panel): emotion, intensity, pacing and a delivery note, with a read-only **Preview** that explains, per voice kind, what actually reaches the voice
+  (`GET /api/segments/{id}/delivery-preview`): preset and designed voices receive a written instruction; a cloned voice cannot take instructions, so only an emotion reference-bank clip (if enabled and present)
+  and pace can change the take, and the panel says so. `POST /api/segments/{id}/regenerate` now accepts `direction`.
+- **A user direction takes effect even when the book's Director is off and on classic (non-semantic) books** (`plan_for_segment` builds the direction from the user's fields alone); it is always stored as the
+  segment's own user direction, visible and clearable in Inspect.
+- **Fix: the Director-on cascade now queues the segments it resets.** Setting a direction with the Director on reset dependent segments to pending but did not enqueue them; they are now queued
+  (`regenerating` in the reply refers to this segment).
+- **Fix (found during integration): the Review list no longer jumps to the selected segment on a live refresh**; it scrolls to the selection only for an explicit pick (click, J/K, deep link).
+
+**Queue**
+- **One "recently finished" row per book**, with a "+N earlier runs" disclosure (touch-ups from segment regenerates are folded in; each run shows segments rendered, processing time and "full pass" or "touch-up"),
+  a Book column, and a 30-day window (was 7 days).
+- **Pagination, 10 per page**, for *Recently finished* and for *Assembly, export, preview & analysis jobs* (`ui.js` `pager` / `wirePager`).
+
+**Processing time** (`studio/runtime.py`, `js/runtime.js`; shown on Overview, Library and Queue)
+- Running: "about ... left · done about HH:MM". Queued: "about ... processing · starts about HH:MM". Finished: "processed in ...". Paused jobs show "paused" and do not advance the queue estimate.
+- The rate is a running job's own pace once at least 10 of its segments are done, else the median for the book's TTS model over the last 200 segments (at least 20 samples), else the global median, else
+  "estimate after N more segments". Director (LLM) seconds are added for undirected pending segments, except for an observed job rate (which already includes them).
+- Actual time is `jobs.active_seconds`, accumulated by the worker per step (queued waits, pauses and restarts are not counted; `updated_at` is left alone so it does not wake the live digest). Jobs
+  finished before v0.8.0 fall back to `finished_at - started_at`.
+- Always labelled and tooltipped as **processing time, not audio length**; the audio length is shown separately.
+- `GET /api/overview`, `/api/books`, `/api/books/{id}` and `/api/queue` entries carry a `runtime` object (`state`, `processing_s`, `remaining_s`, `finish_at`, `starts_at`, `total_est_s`, `estimated`, `basis`).
+
+**Settings & Storage**
+- **Seven tabs** over one form and one Save: Storage, Production, Quality & verification, Voices & models, Narrative, Local LLM, Server & advanced (`#/settings/<tab>`; arrow keys, Home and End navigate). Unsaved-change dots per tab,
+  Discard, a warning when leaving with unsaved edits, and drafts survive a back/forward. **The saved payload is unchanged** (same sections and keys; a hidden tab or dependent field never drops a key).
+- **Wide-screen layout**: page content is a centred column capped at 1440 px (Review 1680 px); stat, voice, take and Overview grids cap their column counts. No horizontal scroll at 360 or 768 px on Overview, Library, Queue and Settings (the Book page is the known exception, below).
+
+**Narrator Studio**
+- The edit dialog says honestly what can change for each voice kind (built-in presets: delivery instruction only; presets: speaker and instruction; designed: description; clones: name only), the version
+  number a save will create, and which books still use an older version (`books_on_older_version` now carries `voice_version`).
+- `voices.description` stays in sync for designed voices when their description is edited.
+- **Duplicate & retune...** (`POST /api/voices/{id}/duplicate`) copies a preset or designed voice (built-ins included) into a new editable voice with different delivery; **Retune from '<source>'...**
+  (`POST /api/voices/{id}/retune`) makes a designed copy of the voice a promoted clone came from. Voices carry `derived_from` (lineage, stored in the new voice's consent JSON) and the card shows it; clones carry `source_voice`.
+- `GET /api/voices` runs a constant number of queries however many voices exist. Preview form text survives redraws and a trip to the Record tab.
+
+**API and schema summary**
+- Schema v6: see above. No setting changed.
+- `GET /api/queue?finished_offset&finished_limit&utility_offset&utility_limit` (limits 1-50, default 10); the reply gains `active`, `finished` (one entry per book with `latest_run`, `earlier_runs`), `finished_total`,
+  `utility_total`, the offsets/limits and `window_days`; `jobs` (active plus finished entries) and `throughput` stay.
+- `POST /api/segments/{id}/regenerate` accepts `direction {emotion, intensity, pacing, tension, delivery}` and returns `delivery` (what the voice will be given).
+- `GET /api/segments/{id}/delivery-preview?emotion&intensity&pacing&tension&delivery` (absent = stored value, empty = cleared; nothing is saved).
+- `GET /api/disk/usage?refresh=1`; `GET /api/books/{id}?view=review`; `POST /api/voices/{id}/duplicate`; `POST /api/voices/{id}/retune`. See doc 3.
+
+**Housekeeping**
+- `test_background_download_endpoint_flow_and_busy_guard` (update flow) no longer fails on a loaded machine: it waits up to 20 s and reports the real state and error.
+- 80 new pytest tests (451 to 531): `test_live_foundation`, `test_book_perf`, `test_disk_cache`, `test_runtime`, `test_overview_runtime`, `test_regen_direction`, `test_voice_retune`, `test_settings_ui`; three node unit suites
+  in `tests/js/` run through pytest wrappers. New browser scripts in `tools/e2e/`: `foundation_ui.py`, `polish_book.py`, `polish_overview.py`, `polish_queue.py`, `polish_review.py`, `polish_settings.py`, `polish_voices.py`.
+
+**Not verified**
+- Everything ran on Windows against the mock engine (tones), HTTP stub servers and headless Edge. **Nothing of v0.8.0 ran on the Mac, with the real engine, or in real Safari.**
+- Browser scripts (headless Edge, mock engine): `foundation_ui.py` 16 checks, `polish_book.py` 29, `polish_overview.py` 27, `polish_queue.py` 27, `polish_review.py` 20, `polish_settings.py` 85, `polish_voices.py` 24, plus the earlier
+  `versions_ui.py` 29 and `delivery_ui.py` 13.
+- Processing-time estimates were never compared with real timings (mock timings are not representative); their accuracy on the M3 Max is unknown. The query-count and timing figures for `get_book` are from synthetic
+  data on a Windows machine.
+- The Settings folder browser and Finder picker, and the API key *Save* / *Test connection* clicks, were not exercised in a browser. Queue drag-to-reorder was not browser-tested.
+- Whether "Regenerate with direction" changes how a real model sounds is unmeasured: the explanation describes what is sent, not what is heard.
+- **Known, unfixed:** the Book page at 360 px width has a horizontal overflow from a `nowrap` table in `book.js`.
+- Schema v6 was migrated on mock databases only, not on the Mac's real library (a pre-migration backup is written automatically).
+
 ## v0.7.0
 Feature release. **Tested only with the mock engine, stub LLM servers (HTTP stubs, no real model) and, for narrator versions and the delete/import/review fixes, a browser
 run in Edge (`tools/e2e/versions_ui.py`, mock engine). Nothing in this release has been run on the Mac, with a real LLM, with the real Qwen3-TTS/Whisper models, or in

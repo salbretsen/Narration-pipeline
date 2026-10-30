@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
+from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import services as S
@@ -191,6 +192,14 @@ def register(app, ctx) -> None:
     @app.get("/api/segments/{segment_id}/inspect")
     def api_inspect(segment_id: int):
         return ST.inspect_segment(ctx, segment_id)
+
+    @app.get("/api/segments/{segment_id}/delivery-preview")
+    def api_delivery_preview(segment_id: int, emotion: Optional[str] = Query(None, max_length=20), intensity: Optional[str] = Query(None, max_length=2),
+                             pacing: Optional[str] = Query(None, max_length=20), tension: Optional[str] = Query(None, max_length=2),
+                             delivery: Optional[str] = Query(None, max_length=240)):
+        """What would reach the voice for these inputs, without saving anything. A parameter that is absent keeps the stored value; an empty one clears it."""
+        given = {k: v for k, v in (("emotion", emotion), ("intensity", intensity), ("pacing", pacing), ("tension", tension), ("delivery", delivery)) if v is not None}
+        return ST.preview_delivery(ctx, segment_id, given or None)
 
     @app.patch("/api/segments/{segment_id}/narrative")
     def api_seg_narrative(segment_id: int, req: SegNarrativeReq):

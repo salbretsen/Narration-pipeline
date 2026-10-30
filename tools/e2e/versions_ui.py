@@ -187,7 +187,8 @@ with sync_playwright() as p:
     top1 = pg.evaluate("document.querySelector('#seg-list').scrollTop")
     n1 = pg.locator("#seg-list li").count()
     check("review: the job really progressed during the test", made1 > made0, f"{made0} -> {made1}")
-    check("review: scroll position kept across live refreshes", top0 > 100 and abs(top1 - top0) < 5, f"{top0} -> {top1}")
+    dims = pg.evaluate("(() => { const e = document.querySelector('#seg-list'); const c = getComputedStyle(e); return [e.scrollHeight, e.clientHeight, c.overflowY, c.maxHeight, e.parentElement.className, getComputedStyle(e.parentElement).maxHeight]; })()")
+    check("review: scroll position kept across live refreshes", top0 > 100 and abs(top1 - top0) < 5, f"{top0} -> {top1}; list dims {dims}")
     check("review: segments loaded with 'Load more' kept", n1 >= n0 > 60, f"{n0} -> {n1}")
     pg.screenshot(path=str(OUT / "4-review-scrolled.png"))
 

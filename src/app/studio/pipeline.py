@@ -76,21 +76,24 @@ def take_paths(book: dict, seg: dict, chapter_idx: int, filename: str) -> tuple[
     return dirs["segments"] / rel, dirs["alternates"] / rel
 
 
-def resolve_take(book: dict, attempt: dict) -> Path | None:
-    """Locate a take file, tolerating a crash between a file move and its DB update."""
+def resolve_take(book: dict, attempt: dict, exists=None, dirs: dict | None = None) -> Path | None:
+    """Locate a take file, tolerating a crash between a file move and its DB update.
+    ``exists`` (path -> bool) and ``dirs`` (book_dirs(book)) let a caller that resolves thousands of takes share one memoised existence
+    check / one parsed storage map; the defaults behave exactly as before."""
+    exists = exists or Path.exists
     p = Path(attempt["wav_path"]) if attempt.get("wav_path") else None
-    if p and p.exists():
+    if p and exists(p):
         return p
     if not p:
         return None
-    dirs = book_dirs(book)
+    dirs = dirs if dirs is not None else book_dirs(book)
     for a, b in (("segments", "alternates"), ("alternates", "segments")):
         try:
             rel = p.relative_to(dirs[a])
         except (ValueError, KeyError):
             continue
         alt = dirs[b] / rel
-        if alt.exists():
+        if exists(alt):
             return alt
     return None
 

@@ -515,6 +515,14 @@ ALTER TABLE attempts ADD COLUMN pace_used REAL;
 ALTER TABLE attempts ADD COLUMN ref_id_used INTEGER;
 """
 
+# v0.8.0: indexes for the live-update digest and job lookups, and the wall time a job has actually spent working.
+SCHEMA_V6 = """
+CREATE INDEX IF NOT EXISTS ix_segments_updated ON segments(updated_at);
+CREATE INDEX IF NOT EXISTS ix_jobs_updated ON jobs(updated_at);
+CREATE INDEX IF NOT EXISTS ix_jobs_book ON jobs(book_id);
+ALTER TABLE jobs ADD COLUMN active_seconds REAL NOT NULL DEFAULT 0;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
@@ -522,6 +530,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (3, SCHEMA_V3),
     (4, SCHEMA_V4),
     (5, SCHEMA_V5),
+    (6, SCHEMA_V6),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 

@@ -6,17 +6,39 @@ const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reac
 const previews = {}; // voiceId -> last preview job
 const banks = {};    // voiceId -> GET /api/voices/{id}/refs (emotion reference bank of a cloned voice)
 const cands = {};    // voiceId -> candidate jobs generated for the bank [{job_id, bucket, status, result, error}]
+const pform = {};    // voiceId -> {text, instruct, verify}: what the owner typed in a card's preview form (kept across repaints and page visits)
+const notes = {};    // voiceId -> {kind, text}: callouts shown at the top of a card until dismissed ("Saved as version 3", "New copy created. Next: ...")
 let tab = "preset";
+let flashId = null;  // the voice that was just created: its card is highlighted and scrolled into view
 
 const KIND = { preset: "Preset speaker (CustomVoice)", design: "Designed voice (VoiceDesign)", clone: "Cloned voice (Base + reference)" };
+
+function lineage(v) {
+  const d = v.derived_from;
+  if (d) return d.relation === "retune" ? `Retuned from ${d.voice_name}` : `Copy of ${d.voice_name}`;
+  if (v.kind === "clone" && v.source_voice) return `Promoted from the designed voice ${v.source_voice.name}${v.source_voice.archived ? " (archived)" : ""}`;
+  return "";
+}
+
+function noteBlock(v) {
+  const n = notes[v.id];
+  if (!n) return "";
+  return html`<div class="callout ${n.tone || "info"} small voice-note" role="status">${n.text}
+    <div class="form-actions">${n.preview ? html`<button class="btn small primary" type="button" data-act="preview-now" data-id="${v.id}">Preview with new delivery</button>` : ""}
+      <button class="btn small ghost" type="button" data-act="note-dismiss" data-id="${v.id}">Dismiss</button></div></div>`;
+}
 
 function voiceCard(v) {
   const vv = v.version;
   const pj = previews[v.id];
-  return html`<article class="card voice" aria-labelledby="v-${v.id}">
+  const pf = pform[v.id] || {};
+  const lin = lineage(v);
+  return html`<article class="card voice ${flashId === v.id ? "voice-new" : ""}" id="voice-${v.id}" data-voice-card="${v.id}" aria-labelledby="v-${v.id}">
     <header class="voice-head"><h3 id="v-${v.id}">${v.name}</h3><span class="badge tone-${v.kind === "clone" ? "approved" : v.kind === "design" ? "info" : "good"}">${KIND[v.kind]}</span>
       ${v.builtin ? html`<span class="badge tone-neutral">built-in</span>` : ""}</header>
     <p class="small">${v.description}</p>
+    ${lin ? html`<p class="small muted voice-lineage">${lin}</p>` : ""}
+    ${noteBlock(v)}
     <dl class="kv small">
       <dt>Version</dt><dd>v${vv.version} · ${fmtDate(vv.created_at)}</dd>
       <dt>Model</dt><dd><code>${vv.model_id}</code></dd>
@@ -31,12 +53,14 @@ function voiceCard(v) {
     ${v.kind === "design" ? html`<p class="callout info small">VoiceDesign re-creates the voice from its description on every segment, so timbre can drift across a long book.
       For consistent narration, generate a preview you like and <strong>promote it to a stable narrator</strong> (it becomes a clone reference).</p>` : ""}
     <form class="preview-form" data-voice="${v.id}">
-      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${DEFAULT_TEXT}</textarea></label>
-      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered"></label>` : ""}
-      <label class="check"><input type="checkbox" name="verify"> Also verify with local Whisper (shows WER)</label>
+      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${pf.text !== undefined ? pf.text : DEFAULT_TEXT}</textarea></label>
+      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered" value="${pf.instruct || ""}"></label>` : ""}
+      <label class="check"><input type="checkbox" name="verify" ${pf.verify ? html`checked` : ""}> Also verify with local Whisper (shows WER)</label>
       <div class="form-actions"><button class="btn primary" type="submit">Generate preview</button>
-        ${!v.builtin ? html`<button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">Edit…</button>` : html`<button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">Delivery…</button>`}
-        ${!v.builtin ? html`<button class="btn ghost danger" type="button" data-act="archive" data-id="${v.id}">Archive</button>` : ""}</div>
+        <button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">${v.builtin ? "Delivery…" : "Edit…"}</button>
+        ${v.kind !== "clone" ? html`<button class="btn ghost" type="button" data-act="duplicate" data-id="${v.id}" title="Make an editable copy with different delivery instructions">Duplicate &amp; retune…</button>` : ""}
+        ${v.kind === "clone" && v.source_voice ? html`<button class="btn ghost" type="button" data-act="retune" data-id="${v.id}" title="Make a designed copy of the voice this clone came from, with new instructions">Retune from ‘${v.source_voice.name}’…</button>` : ""}
+        ${!v.builtin && isAdmin() ? html`<button class="btn ghost danger" type="button" data-act="archive" data-id="${v.id}">Archive</button>` : ""}</div>
     </form>
     <div class="preview-out" id="pv-${v.id}" aria-live="polite">${pj ? previewResult(v, pj) : ""}</div>
   </article>`;
@@ -143,14 +167,20 @@ export async function render(view) {
 
   const paint = () => {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
-      <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
-        books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
+      <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: changing a voice's delivery creates a new version;
+        books keep the version they were created with until you explicitly switch them (which regenerates their audio).
+        To try a different delivery without touching a voice that is already in use, use <strong>Duplicate &amp; retune…</strong> on its card.</p>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
     const host = view.querySelector("#lab-host");
     if (host) host.appendChild(lab.el);  // the lab keeps its own state while the tab is switched or the page repaints
     wireForms();
     data.voices.filter((v) => v.kind === "clone" && !banks[v.id]).forEach((v) => loadBank(v.id));
+    if (flashId !== null) {
+      const card = view.querySelector(`#voice-${flashId}`);
+      flashId = null;
+      if (card) { card.scrollIntoView({ block: "center" }); const h = card.querySelector("h3"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
+    }
   };
 
   async function reload() { data = await get("/api/voices"); paint(); }
@@ -245,6 +275,100 @@ export async function render(view) {
     });
   }
 
+  const normNl = (t) => String(t || "").split("\r").join("").trim();
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function versionNote(v) {
+    const nv = v.version.version;
+    if (v.builtin) return html`<p class="callout info small"><strong>${v.name}</strong> is a built-in speaker, so its name and speaker are fixed. You can change only its
+      <strong>delivery instruction</strong>. Saving creates <strong>version ${nv + 1}</strong> of ${v.name}; previews and new books use it straight away, but books already
+      narrated with version ${nv} keep that version until you switch them on the book page. To keep ${v.name} as it is and try a variation, use
+      <strong>Duplicate &amp; retune…</strong>.</p>`;
+    if (v.kind === "clone") return html`<p class="callout info small">A cloned voice is defined by its reference clip and cannot take instructions, so only its name can be edited here.
+      ${v.source_voice ? html`To make a variant, use <strong>Retune from ‘${v.source_voice.name}’…</strong>` : "To make a variant, upload a new reference clip"}.</p>`;
+    return html`<p class="callout info small">${v.kind === "design"
+      ? html`You can change the <strong>name</strong> and the <strong>description</strong>. A new description makes VoiceDesign create a different-sounding voice.`
+      : html`You can change the <strong>name</strong>, the <strong>speaker</strong> and the <strong>delivery instruction</strong>.`}
+      Changing the sound saves <strong>version ${nv + 1}</strong> of this voice (renaming does not). Previews and new books use it straight away; books already narrated with
+      version ${nv} keep it until you switch them on the book page. Prefer a separate voice? Use <strong>Duplicate &amp; retune…</strong>.</p>`;
+  }
+
+  async function editVoice(b, v) {
+    const nv = v.version.version;
+    const res = await dialog({ title: v.builtin ? `Delivery for ${v.name} (built-in)` : `Edit ${v.name}`, form: true,
+      buttons: [{ label: v.kind === "clone" ? "Save name" : v.builtin ? `Save as version ${nv + 1}` : "Save", value: "save", kind: "primary" },
+        ...(v.kind !== "clone" ? [{ label: "Duplicate & retune instead…", value: "dup" }] : [])],
+      body: html`${versionNote(v)}
+        ${!v.builtin ? html`<label>Name <input name="name" required maxlength="80" value="${v.name}"></label>` : ""}
+        ${v.kind === "preset" && !v.builtin ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>`
+          : v.kind === "preset" ? html`<p class="small">Speaker: <strong>${v.version.speaker}</strong> (fixed)</p>` : ""}
+        ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="4" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${v.version.instruct || ""}</textarea></label>` : ""}` });
+    if (!res) return;
+    if (res.value === "dup") { await duplicateVoice(b, v, res.data.instruct); return; }
+    const body = {};
+    if (res.data.name !== undefined && res.data.name.trim() !== v.name) body.name = res.data.name;
+    if (res.data.instruct !== undefined && normNl(res.data.instruct) !== normNl(v.version.instruct)) body.instruct = res.data.instruct;
+    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+    if (!Object.keys(body).length) { toast("Nothing was changed.", "info"); return; }
+    let out;
+    try { out = await busy(b, () => patch(`/api/voices/${v.id}`, body)); } catch (e) { return; }
+    const nver = out.version.version, made = nver !== nv, older = out.books_on_older_version || [];
+    const vers = [...new Set(older.map((x) => x.voice_version).filter((x) => x))].sort((x, y) => x - y);
+    const still = older.length ? ` ${plural(older.length, "book still uses", "books still use")} ${vers.length ? (vers.length === 1 ? `version ${vers[0]}` : `versions ${vers.join(" and ")}`) : "an earlier version"}.` : "";
+    const msg = made ? `Saved as version ${nver}.${still}` : "Saved (name only: no new version).";
+    toast(msg, made && older.length ? "warn" : "success", 10000);
+    if (made) notes[v.id] = { tone: "good", preview: true, text: `${msg} Previews and new books use version ${nver} now.${older.length ? " Switch those books from their book page to hear the new sound." : ""}` };
+    await reload();
+  }
+
+  const freeName = (base) => {
+    const taken = new Set(data.voices.map((x) => x.name.toLowerCase()));
+    let n = base, i = 2;
+    while (taken.has(n.toLowerCase())) n = base.replace(/\)$/, "") + ` ${i++})`;
+    return n.slice(0, 80);
+  };
+
+  async function duplicateVoice(b, v, instruct) {
+    const text = instruct !== undefined ? instruct : (v.version.instruct || "");
+    const res = await dialog({ title: `Duplicate & retune ${v.name}`, form: true, buttons: [{ label: "Create copy", value: "ok", kind: "primary" }],
+      body: html`<p class="callout info small">Creates a <strong>new, separate voice</strong> from ${v.name}’s current settings (version ${v.version.version}) with the delivery you choose below.
+        ${v.name} itself and the books using it are not changed. Then generate a preview of the copy, and keep refining it until you like it.</p>
+        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(v.name + " (retune)")}"></label>
+        ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
+        <label>${v.kind === "design" ? "Voice description" : "Delivery instruction"} <textarea name="instruct" rows="5" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${text}</textarea></label>` });
+    if (!res) return;
+    const body = { name: res.data.name };
+    if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
+    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+    await createdCopy(b, () => post(`/api/voices/${v.id}/duplicate`, body), v, `Copy of ${v.name} created`);
+  }
+
+  async function retuneVoice(b, v) {
+    const src = v.source_voice;
+    let srcFull;
+    try { srcFull = await get(`/api/voices/${src.id}`); } catch (e) { toastError(e); return; }
+    const res = await dialog({ title: `Retune from ‘${src.name}’`, form: true, buttons: [{ label: "Create designed voice", value: "ok", kind: "primary" }],
+      body: html`<p class="callout info small">${v.name} is a stable clone and cannot take instructions. This creates a <strong>new designed voice</strong> from ‘${src.name}’
+        (the voice ${v.name} was made from), with the description below. ${v.name} is not changed.
+        ${src.archived ? " (The source voice is archived; it can still be used.)" : ""}</p>
+        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(src.name + " (retune)")}"></label>
+        <label>Voice description <textarea name="instruct" rows="5" required minlength="10" maxlength="1000">${srcFull.version.instruct || ""}</textarea></label>` });
+    if (!res) return;
+    await createdCopy(b, () => post(`/api/voices/${v.id}/retune`, { name: res.data.name, instruct: res.data.instruct }), v, "Retuned design voice created", true);
+  }
+
+  async function createdCopy(b, fn, from, okMsg, fromClone) {
+    let out;
+    try { out = await busy(b, fn, okMsg); } catch (e) { return; }
+    flashId = out.id;
+    const prev = pform[from.id] || {};
+    pform[out.id] = { text: prev.text !== undefined ? prev.text : DEFAULT_TEXT, instruct: "", verify: false };
+    notes[out.id] = { tone: "good", text: out.kind === "design"
+      ? `New design voice created${fromClone ? ` from ‘${from.source_voice.name}’` : ` as a copy of ${from.name}`}. Next: generate a preview, pick one you like, then Promote to stable narrator.`
+      : `New voice created as a copy of ${from.name}. Next: generate a preview to hear the new delivery.` };
+    await reload();
+  }
+
   async function onClick(e) {
     const tb = e.target.closest("[data-tab]");
     if (tb) {
@@ -257,20 +381,18 @@ export async function render(view) {
       if (!(await confirmDialog("Archive voice?", "It will no longer be offered for new books. Existing books keep using it.", "Archive", true))) return;
       await busy(b, () => post(`/api/voices/${b.dataset.id}/archive`), "Voice archived"); await reload();
     } else if (act === "edit") {
-      const v = data.voices.find((x) => x.id === Number(b.dataset.id));
-      const res = await dialog({ title: `Edit ${v.name}`, form: true, buttons: [{ label: "Save as new version", value: "save", kind: "primary" }],
-        body: html`${!v.builtin ? html`<label>Name <input name="name" maxlength="80" value="${v.name}"></label>` : ""}
-          ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
-          ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="3" maxlength="1000">${v.version.instruct || ""}</textarea></label>` : html`<p class="muted small">Cloned voices are defined by their reference clip; upload a new clip to change the voice.</p>`}
-          <p class="small muted">Sound-affecting changes create version v${v.version.version + 1}. Books already using this voice are not changed automatically.</p>` });
-      if (!res) return;
-      const body = {};
-      if (res.data.name !== undefined && res.data.name !== v.name) body.name = res.data.name;
-      if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
-      if (res.data.speaker !== undefined) body.speaker = res.data.speaker;
-      const out = await busy(b, () => patch(`/api/voices/${v.id}`, body), "Voice saved");
-      if (out.books_on_older_version && out.books_on_older_version.length) toast(`${out.books_on_older_version.length} book(s) still use the previous version. Switch them from the book page if you want the new sound.`, "warn", 10000);
-      await reload();
+      await editVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "duplicate") {
+      await duplicateVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "retune") {
+      await retuneVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "note-dismiss") {
+      delete notes[Number(b.dataset.id)]; paint();
+    } else if (act === "preview-now") {
+      const vid = Number(b.dataset.id);
+      delete notes[vid]; paint();
+      const nf = view.querySelector(`.preview-form[data-voice="${vid}"]`);
+      if (nf) { nf.scrollIntoView({ block: "center" }); nf.requestSubmit(); }
     } else if (act === "bank-gen") {
       const vid = Number(b.dataset.voice), bucket = b.dataset.bucket;
       try {
@@ -306,10 +428,19 @@ export async function render(view) {
     }
   }
 
+  // remember what is typed in each card's preview form, so a repaint (tab switch, reload after an edit) never resets it
+  const rememberPreviewForm = (e) => {
+    const f = e.target.closest && e.target.closest(".preview-form");
+    if (!f) return;
+    const fd = new FormData(f);
+    pform[Number(f.dataset.voice)] = { text: fd.get("text") || "", instruct: fd.get("instruct") || "", verify: fd.get("verify") === "on" };
+  };
+  view.addEventListener("input", rememberPreviewForm);
+  view.addEventListener("change", rememberPreviewForm);
   view.addEventListener("click", onClick);
   paint();
   lab.init();
   Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
   Object.entries(cands).forEach(([vid, cs]) => cs.filter((c) => ["queued", "running"].includes(c.status)).forEach((c) => pollCandidate(Number(vid), c)));
-  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
+  return () => { view.removeEventListener("click", onClick); view.removeEventListener("input", rememberPreviewForm); view.removeEventListener("change", rememberPreviewForm); timers.forEach(clearInterval); lab.destroy(); };
 }

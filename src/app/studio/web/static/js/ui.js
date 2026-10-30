@@ -33,6 +33,105 @@ export function applyBars(root) {
   });
 }
 
+// ------------------------------------------------------------ in-place repaint (live views)
+const tplString = (tpl) => (tpl instanceof Raw ? tpl.s : esc(String(tpl)));
+/** Rendered markup of a template (what setHTML would assign). Pure. */
+export const htmlOf = tplString;
+
+/**
+ * patchHTML(el, tpl): like setHTML(el, tpl) but survives a live repaint. Contract:
+ *  - Preserved: scrollTop/scrollLeft of `el` and of every scrollable descendant that has an `id` (restored by id);
+ *    keyboard focus and the text selection of the focused element, if it has an `id` that exists again afterwards;
+ *    the open/closed state of every <details id="..."> (restored by id, so a section the user opened stays open).
+ *  - NOT preserved: elements without an id, typed-but-unsaved form values (use snapshotForm/applyForm), <audio> position/paused
+ *    state (views must skip the refresh while something is playing).
+ *  - Give anything the user can scroll, focus or open a stable id in your template and it will survive repaints.
+ * Returns el.
+ */
+export function patchHTML(el, tpl) {
+  const scrolls = new Map();
+  const note = (node) => { if (node.id && (node.scrollTop || node.scrollLeft)) scrolls.set(node.id, [node.scrollTop, node.scrollLeft]); };
+  const opens = new Map();
+  for (const node of el.querySelectorAll("[id]")) {
+    note(node);
+    if (String(node.tagName).toUpperCase() === "DETAILS") opens.set(node.id, !!node.open);
+  }
+  const selfTop = el.scrollTop || 0, selfLeft = el.scrollLeft || 0;
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  let focus = null;
+  if (active && active !== el && active.id && el.contains(active)) {
+    focus = { id: active.id };
+    try { if (typeof active.selectionStart === "number") focus.sel = [active.selectionStart, active.selectionEnd, active.selectionDirection]; } catch { /* input types without selection */ }
+  }
+  setHTML(el, tpl);
+  const byId = new Map();
+  for (const node of el.querySelectorAll("[id]")) byId.set(node.id, node);
+  for (const [id, open] of opens) { const n = byId.get(id); if (n) n.open = open; }
+  if (selfTop) el.scrollTop = selfTop;
+  if (selfLeft) el.scrollLeft = selfLeft;
+  for (const [id, [top, left]] of scrolls) { const n = byId.get(id); if (n) { n.scrollTop = top; n.scrollLeft = left; } }
+  if (focus) {
+    const n = byId.get(focus.id);
+    if (n && typeof n.focus === "function") {
+      n.focus({ preventScroll: true });
+      if (focus.sel) { try { n.setSelectionRange(focus.sel[0], focus.sel[1], focus.sel[2] || "none"); } catch { /* not a text control any more */ } }
+    }
+  }
+  return el;
+}
+
+const regionLast = new WeakMap();
+/**
+ * patchRegions(root, regions): regions = { "css selector": (el, i) => template }. For every element in `root` matching a selector
+ * the template is rendered and patchHTML'd into it ONLY if the markup differs from what this helper painted there last time
+ * (previous markup is kept in a WeakMap, so unchanged data touches no DOM at all). An element this helper has not painted yet is
+ * painted once. Returns the number of regions repainted.
+ */
+export function patchRegions(root, regions) {
+  let n = 0;
+  for (const [sel, fn] of Object.entries(regions)) {
+    root.querySelectorAll(sel).forEach((el, i) => {
+      const tpl = fn(el, i);
+      const str = tplString(tpl);
+      if (regionLast.get(el) === str) return;
+      regionLast.set(el, str);
+      patchHTML(el, tpl instanceof Raw ? tpl : new Raw(str));
+      n++;
+    });
+  }
+  return n;
+}
+
+/**
+ * pager(total, offset, limit, opts?): markup for "1–10 of 37" with Prev / Next buttons. No inline handlers; convention:
+ *   <nav class="pager" data-total data-limit>  ...  <button data-pager="prev|next" data-offset="<offset to go to>" [disabled]>
+ * Views delegate: wirePager(container, (newOffset) => { offset = newOffset; reload(); }) once per container (it listens on
+ * the container, so it keeps working after repaints). opts.noun (default "") adds a word after the total ("of 37 books").
+ * With total <= limit only the range text is shown (no buttons).
+ */
+export function pager(total, offset, limit, opts = {}) {
+  total = Math.max(0, Number(total) || 0); limit = Math.max(1, Number(limit) || 1);
+  offset = Math.min(Math.max(0, Number(offset) || 0), Math.max(0, total - 1));
+  const from = total ? offset + 1 : 0, to = Math.min(total, offset + limit);
+  const noun = opts.noun ? " " + opts.noun : "";
+  const range = html`<span class="pager-range" aria-live="polite">${from}–${to} of ${total}${noun}</span>`;
+  if (total <= limit) return html`<nav class="pager" aria-label="Pagination" data-total="${total}" data-limit="${limit}">${range}</nav>`;
+  const prev = Math.max(0, offset - limit), next = offset + limit;
+  return html`<nav class="pager" aria-label="Pagination" data-total="${total}" data-limit="${limit}">${range}
+    <button class="btn small" type="button" data-pager="prev" data-offset="${prev}" aria-label="Previous page" ${offset <= 0 ? raw("disabled") : ""}>Prev</button>
+    <button class="btn small" type="button" data-pager="next" data-offset="${next}" aria-label="Next page" ${next >= total ? raw("disabled") : ""}>Next</button></nav>`;
+}
+/** Delegate clicks on pager buttons inside `container`; calls handler(newOffset). Returns an unwire function. */
+export function wirePager(container, handler) {
+  const onClick = (e) => {
+    const b = e.target.closest && e.target.closest("button[data-pager]");
+    if (!b || b.disabled || !container.contains(b)) return;
+    handler(Number(b.dataset.offset) || 0, b.dataset.pager);
+  };
+  container.addEventListener("click", onClick);
+  return () => container.removeEventListener("click", onClick);
+}
+
 // The signed-in user, set by app.js. Mirrors the server: with sign-in off (loopback only) there is no user and everything is allowed.
 // This only hides controls; the server enforces administrator-only actions itself.
 let sessionUser = null;
@@ -216,13 +315,29 @@ export function parseHash() {
 }
 export function navigate(hash) { if (location.hash !== hash) location.hash = hash; }
 
-/** Subscribe to live state pushes (throttled). Returns an unsubscribe function. */
+/** True when two state payloads carry the same data (JSON string compare; the server emits stable key order). Pure. */
+export function sameState(a, b) {
+  if (a === b) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
+/**
+ * Subscribe to live state pushes. Returns an unsubscribe function. The callback receives the state payload and is
+ * called: on the first delivery; whenever the payload differs from the last one delivered to THIS subscriber; and on
+ * every polled-fallback payload (state.polled). Deliveries are throttled to at most one per minInterval ms.
+ */
 export function onState(fn, minInterval = 1500) {
-  let last = 0, timer = null, lastDetail = null;
-  const fire = () => { last = Date.now(); timer = null; fn(lastDetail); };
+  let last = 0, timer = null, lastDetail = null, delivered = null, hasDelivered = false;
+  const stale = (d) => hasDelivered && !(d && d.polled) && sameState(d, delivered);
+  const fire = () => {
+    timer = null;
+    if (stale(lastDetail)) return;
+    last = Date.now(); delivered = lastDetail; hasDelivered = true;
+    fn(lastDetail);
+  };
   const h = (e) => {
     lastDetail = e.detail;
-    if (timer) return;
+    if (timer || stale(lastDetail)) return;
     const wait = Math.max(0, minInterval - (Date.now() - last));
     timer = setTimeout(fire, wait);
   };

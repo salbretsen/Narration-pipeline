@@ -36,8 +36,10 @@ def register(app, ctx) -> None:
         return (getattr(request.state, "user", None) or {}).get("name", "operator")
 
     @app.get("/api/disk/usage")
-    def api_disk_usage():
-        return D.usage(ctx)
+    def api_disk_usage(refresh: int = 0):
+        # sync route (runs in the threadpool): walking the library is slow. Served from a 60 s cache unless ?refresh=1; the body carries
+        # measured_at / age_s / cached. Disk-changing actions drop the cache themselves.
+        return D.usage(ctx, max_age=D.USAGE_TTL_S, refresh=bool(refresh))
 
     @app.get("/api/disk/backups")
     def api_disk_backups():

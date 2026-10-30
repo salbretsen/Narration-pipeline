@@ -1,5 +1,6 @@
 // Multi-manuscript library: upload, import preview, metadata + narrator, add to queue.
-import { api, get, post, html, setHTML, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState, snapshotForm, applyForm } from "../ui.js";
+import { api, get, post, html, setHTML, patchRegions, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState, snapshotForm, applyForm } from "../ui.js";
+import { fmtRuntime } from "../runtime.js";
 
 // Previews survive navigation within the session (the server also keeps them for 48 h).
 const pending = [];
@@ -103,16 +104,17 @@ function bookList(books) {
   return html`<section class="card" aria-labelledby="lib-h">
     <h2 id="lib-h">Library (${groups.length})</h2>
     ${books.length ? html`<div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Length</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-      <tbody>${groups.map((g) => { const b = g.shown; return html`<tr>
+      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Audio length</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>${groups.map((g) => { const b = g.shown; const rt = fmtRuntime(b.runtime); return html`<tr>
         <td><a href="#/book/${b.id}"><strong>${b.title}</strong></a><div class="small muted">${b.author || ""}${b.author ? " · " : ""}${b.source || ""} · ${fmtDate(b.created_at)}</div></td>
         <td>${g.versions.length > 1
           ? html`<label class="sr-only" for="nv-${g.work}">Narrator version of ${b.title}</label>
               <select id="nv-${g.work}" data-work="${g.work}">${g.versions.map((v) => html`<option value="${v.id}" ${v.id === b.id ? html`selected` : ""}>${v.voice || "–"}</option>`)}</select>
               <div class="small muted">${g.versions.length} narrations</div>`
           : (b.voice || "–")}</td>
-        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
-        <td class="small">${fmtDuration(b.audio_duration_s || b.est_duration_s)}${b.audio_duration_s ? "" : " est."}</td>
+        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div>
+          ${rt.toString() ? html`<div class="small rt-line">${rt}</div>` : ""}</td>
+        <td class="small">${fmtDuration(b.audio_duration_s || b.est_duration_s)}${b.audio_duration_s ? "" : " est."} <span class="muted">audio</span></td>
         <td>${badge(b.state)}</td>
         <td class="actions">
           ${b.pending && !(b.job && ["queued", "running", "paused"].includes(b.job.status)) ? html`<button class="btn small primary" data-act="queue" data-id="${b.id}">Queue</button>` : ""}
@@ -121,15 +123,28 @@ function bookList(books) {
   </section>`;
 }
 
-export async function render(view) {
-  let voices = (await get("/api/voices")).voices;
-  let books = (await get("/api/books")).books;
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  const [vres, bres] = await Promise.all([get("/api/voices", { signal }), get("/api/books", { signal })]);
+  let voices = vres.voices;
+  let books = bres.books;
+
+  // The list region is patched in place (only when its markup changed). paintList is skipped while a narrator <select> in it has focus,
+  // because replacing the element would close an open dropdown; it catches up on blur or when a choice is made.
+  const selectBusy = () => { const a = document.activeElement; return !!(a && a.tagName === "SELECT" && a.closest && a.closest("#lib-wrap")); };
+  let listDirty = false;
+  const paintList = (force = false) => {
+    if (!force && selectBusy()) { listDirty = true; return; }
+    listDirty = false;
+    patchRegions(view, { "#lib-wrap": () => bookList(books) });
+  };
 
   const paint = () => {
     const p = pending.find((x) => x.token === selectedToken && !x.done);
     setHTML(view, html`<div class="page-head"><h1>Library &amp; Import</h1></div>
-      <div class="grid-import">${uploadCard()}${previewPanel(p, voices)}</div><div id="lib-wrap">${bookList(books)}</div>`);
+      <div class="grid-import">${uploadCard()}${previewPanel(p, voices)}</div><div id="lib-wrap"></div>`);
     wire();
+    paintList(true);
   };
 
   async function upload(files) {
@@ -196,7 +211,7 @@ export async function render(view) {
     } else if (act === "queue") {
       const j = await busy(t, () => post("/api/queue", { book_id: Number(t.dataset.id) }));
       toast(j.created ? "Added to the queue" : "Already in the queue", "success");
-      books = (await get("/api/books")).books; paint();
+      books = (await get("/api/books")).books; paintList(true);
     }
   }
 
@@ -204,21 +219,34 @@ export async function render(view) {
     const sel = e.target.closest("select[data-work]");
     if (!sel || !view.contains(sel)) return;
     chosen[sel.dataset.work] = Number(sel.value);
-    const wrap = view.querySelector("#lib-wrap");
-    if (wrap) setHTML(wrap, bookList(books));
+    paintList(true);
     const again = view.querySelector(`select[data-work="${sel.dataset.work}"]`);
-    if (again) again.focus();
+    if (again && document.activeElement !== again) again.focus({ preventScroll: true });
   }
+  const onFocusOut = (e) => { if (listDirty && e.target && e.target.tagName === "SELECT") setTimeout(() => { if (!selectBusy()) paintList(); }, 0); };
 
   paint();
   view.addEventListener("click", onClick);
   view.addEventListener("change", onChange);
-  const off = onState(async () => {
+  view.addEventListener("focusout", onFocusOut);
+  let inflight = false, stopped = false, stale = false;
+  const ctl = new AbortController();
+  async function refresh() {
+    if (stopped) return;
+    if (document.hidden || inflight) { stale = true; return; }
+    inflight = true; stale = false;
     try {
-      books = (await get("/api/books")).books;
-      const wrap = view.querySelector("#lib-wrap");
-      if (wrap) setHTML(wrap, bookList(books)); // only the list: never disturb a form being filled in
+      books = (await get("/api/books", { signal: ctl.signal })).books;
+      if (!stopped) paintList(); // only the list: never disturb a form being filled in
     } catch (e) { /* transient; the next update retries */ }
-  }, 4000);
-  return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); };
+    finally { inflight = false; }
+  }
+  const onVisible = () => { if (!document.hidden && stale) refresh(); };
+  document.addEventListener("visibilitychange", onVisible);
+  const off = onState(refresh, 4000);
+  return () => {
+    stopped = true; ctl.abort(); off();
+    view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("focusout", onFocusOut);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }

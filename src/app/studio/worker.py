@@ -238,6 +238,7 @@ class Worker:
                 job = self._next_job(conn)
             if not job:
                 return False
+        t0 = self.clock()
         try:
             if job["kind"] == "preview":
                 self._run_preview(job)
@@ -250,7 +251,23 @@ class Worker:
         except Exception as exc:
             log.exception("job %s failed", job["id"])
             self._fail(job, f"{type(exc).__name__}: {exc}", traceback.format_exc())
+        finally:
+            self._add_active_seconds(job["id"], self.clock() - t0)
         return True
+
+    # Monotonic clock for job timing (tests replace it with a fake).
+    clock = staticmethod(time.monotonic)
+
+    def _add_active_seconds(self, job_id: int, seconds: float) -> None:
+        """Add the wall time of one worker step (Director/LLM time included; queued waits, pauses and restarts excluded) to
+        jobs.active_seconds. Deliberately leaves updated_at alone so it never wakes the live-update digest by itself."""
+        if seconds <= 0:
+            return
+        try:
+            with self.ctx.db.tx() as conn:
+                conn.execute("UPDATE jobs SET active_seconds = active_seconds + ? WHERE id=?", (float(seconds), job_id))
+        except Exception:  # timing is advisory; it must never break the queue
+            log.exception("could not record active_seconds for job %s", job_id)
 
     def run_until_idle(self, max_steps: int = 100000) -> int:
         steps = 0

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 from . import audio as A
+from . import runtime as R
 from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
 from .narrative import ab as N_ab
@@ -70,23 +71,42 @@ def ensure_builtin_voices(ctx) -> None:
             conn.execute("UPDATE voices SET current_version_id=? WHERE id=?", (vvid, vid))
 
 
-def _voice_dict(conn, v: dict) -> dict:
-    vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],)) or {}
-    used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
-    return {
+def _source_ref(s: dict | None) -> dict | None:
+    return {"id": s["id"], "name": s["name"], "archived": bool(s["archived"])} if s else None
+
+
+def _voice_dict(conn, v: dict, vv: dict | None = None, used: int | None = None, designs: list[dict] | None = None) -> dict:
+    """``vv`` / ``used`` / ``designs`` may be preloaded by a list call so that N voices cost a constant number of queries."""
+    if vv is None:
+        vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],)) or {}
+    if used is None:
+        used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
+    consent = loads(vv.get("consent_json"), None)
+    out = {
         "id": v["id"], "uid": v["uid"], "name": v["name"], "kind": v["kind"], "description": v["description"], "builtin": bool(v["builtin"]),
         "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used, "pace": float(v.get("pace") or 1.0),
         "version": {"id": vv.get("id"), "version": vv.get("version"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                     "language": vv.get("language"), "instruct": vv.get("instruct"), "ref_text": vv.get("ref_text"),
                     "ref_duration_s": vv.get("ref_duration_s"), "has_reference": bool(vv.get("ref_audio_path")),
-                    "consent": loads(vv.get("consent_json"), None), "created_at": vv.get("created_at")},
+                    "consent": consent, "created_at": vv.get("created_at")},
+        "derived_from": (consent or {}).get("derived_from") or None,
     }
+    if v["kind"] == "clone":
+        if designs is None:
+            out["source_voice"] = _source_ref(clone_source_voice(conn, v))
+        else:
+            out["source_voice"] = _source_ref(_pick_source(consent or {}, designs))
+    return out
 
 
 def list_voices(ctx, include_archived: bool = False) -> list[dict]:
+    """A constant number of queries however many voices exist (versions, book counts and clone sources are batched)."""
     with ctx.db.session() as conn:
         vs = rows(conn, "SELECT * FROM voices " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY builtin DESC, name")
-        return [_voice_dict(conn, v) for v in vs]
+        vvs = {r["id"]: r for r in rows(conn, "SELECT * FROM voice_versions WHERE id IN (SELECT current_version_id FROM voices)")}
+        used = {r["voice_id"]: r["n"] for r in rows(conn, "SELECT voice_id, COUNT(*) AS n FROM books WHERE archived=0 GROUP BY voice_id")}
+        designs = rows(conn, "SELECT id, name, archived FROM voices WHERE kind='design' ORDER BY archived, id DESC")
+        return [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
 
 
 def get_voice(ctx, voice_id: int) -> dict:
@@ -230,11 +250,91 @@ def update_voice(ctx, voice_id: int, instruct: str | None = None, speaker: str |
                                           consent_json, ? FROM voice_versions WHERE id=?""",
                                 (ver, new_speaker, new_instruct, now(), cur["id"])).lastrowid
             conn.execute("UPDATE voices SET current_version_id=?, updated_at=? WHERE id=?", (vvid, now(), voice_id))
+            if v["kind"] == "design" and description is None:  # a designed voice's card summary IS its description: keep it current
+                conn.execute("UPDATE voices SET description=? WHERE id=?", (new_instruct[:300], voice_id))
             ctx.audit(conn, "voice", voice_id, "new_version", {"version": ver, "instruct": new_instruct, "speaker": new_speaker})
     out = get_voice(ctx, voice_id)
     with ctx.db.session() as conn:
-        out["books_on_older_version"] = rows(conn, "SELECT id, title FROM books WHERE voice_id=? AND voice_version_id<>? AND archived=0",
+        out["books_on_older_version"] = rows(conn, """SELECT b.id, b.title, vv.version AS voice_version FROM books b
+                                                      LEFT JOIN voice_versions vv ON vv.id=b.voice_version_id
+                                                      WHERE b.voice_id=? AND b.voice_version_id<>? AND b.archived=0""",
                                             (voice_id, out["version"]["id"]))
+    return out
+
+
+def _derive_voice(ctx, conn, src: dict, name: str, instruct: str | None, speaker: str | None, description: str | None,
+                  derived: dict, action: str, actor: str) -> int:
+    """Insert a NEW non-built-in voice (version 1) of the same kind/model/language as ``src``, starting from src's CURRENT
+    version. ``instruct``/``speaker`` of None mean "copy"; an empty ``instruct`` clears a preset's delivery instruction."""
+    cur = row(conn, "SELECT * FROM voice_versions WHERE id=?", (src["current_version_id"],))
+    if not cur:
+        raise ServiceError("Voice has no current version.", 409)
+    new_instruct = cur["instruct"] if instruct is None else (instruct.strip() or None)
+    new_speaker = cur["speaker"]
+    if src["kind"] == "preset":
+        new_speaker = cur["speaker"] if speaker is None else speaker
+        if new_speaker not in PRESET_SPEAKERS:
+            raise ServiceError(f"Unsupported speaker '{new_speaker}'. Supported: {', '.join(PRESET_SPEAKERS)}", 422)
+    elif speaker is not None:
+        raise ServiceError("Only preset voices have a speaker setting.", 422)
+    if src["kind"] == "design" and not (new_instruct and 10 <= len(new_instruct) <= 1000):
+        raise ServiceError("A designed voice needs a description of 10-1000 characters.", 422)
+    name = _check_name(conn, name)
+    old = loads(cur["consent_json"], {}) or {}
+    consent = {k: old[k] for k in ("type", "note") if old.get(k)}
+    consent.setdefault("type", "designed synthetic voice" if src["kind"] == "design" else "built-in synthetic speaker")
+    consent["derived_from"] = derived
+    if description is not None and description.strip():
+        summary = description.strip()[:300]
+    elif src["kind"] == "design":
+        summary = new_instruct[:300]
+    else:
+        summary = f"Preset speaker {new_speaker}"
+    vid = conn.execute("INSERT INTO voices(uid, name, kind, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                       (new_uid("voice"), name, src["kind"], summary, now(), now())).lastrowid
+    vvid = conn.execute("INSERT INTO voice_versions(voice_id, version, model_id, speaker, language, instruct, consent_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (vid, 1, cur["model_id"], new_speaker, cur["language"], new_instruct, dumps(consent), now())).lastrowid
+    conn.execute("UPDATE voices SET current_version_id=?, pace=? WHERE id=?", (vvid, float(src.get("pace") or 1.0), vid))
+    ctx.audit(conn, "voice", vid, action, {"derived_from": derived, "speaker": new_speaker, "instruct": new_instruct}, actor)
+    return vid
+
+
+def duplicate_voice(ctx, voice_id: int, name: str, instruct: str | None = None, speaker: str | None = None,
+                    description: str | None = None, actor: str = "operator") -> dict:
+    """Copy a preset or designed voice (built-ins included) into a new, editable, non-built-in voice, optionally with a different
+    delivery instruction / description / speaker. The original and its versions are not touched."""
+    with ctx.db.tx() as conn:
+        src = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not src:
+            raise ServiceError("Voice not found", 404)
+        if src["kind"] == "clone":
+            raise ServiceError("A cloned voice is defined by its reference clip and cannot be duplicated with new instructions. "
+                               "Use 'Retune' on a clone made from a designed voice, or upload a new reference clip.", 422)
+        cur = row(conn, "SELECT version FROM voice_versions WHERE id=?", (src["current_version_id"],)) or {}
+        vid = _derive_voice(ctx, conn, src, name, instruct, speaker, description,
+                            {"relation": "copy", "voice_id": src["id"], "voice_name": src["name"], "version": cur.get("version")}, "duplicate", actor)
+    return get_voice(ctx, vid)
+
+
+def retune_from_design(ctx, clone_voice_id: int, name: str, instruct: str | None = None, actor: str = "operator") -> dict:
+    """A promoted clone cannot take instructions, so retuning means going back to the designed voice it came from: create a new
+    designed voice from that source's current description (or ``instruct``), ready for new previews and another promotion."""
+    with ctx.db.tx() as conn:
+        c = row(conn, "SELECT * FROM voices WHERE id=?", (clone_voice_id,))
+        if not c:
+            raise ServiceError("Voice not found", 404)
+        if c["kind"] != "clone":
+            raise ServiceError("Retune applies to cloned voices made from a designed voice; use Duplicate for other voices.", 422)
+        src = clone_source_voice(conn, c)
+        if not src:
+            raise ServiceError("No source design voice is recorded for this clone; duplicate a design voice manually.", 422)
+        cur = row(conn, "SELECT version FROM voice_versions WHERE id=?", (src["current_version_id"],)) or {}
+        vid = _derive_voice(ctx, conn, src, name, instruct, None, None,
+                            {"relation": "retune", "voice_id": src["id"], "voice_name": src["name"], "version": cur.get("version"),
+                             "source_voice_id": src["id"], "clone_voice_id": c["id"], "clone_name": c["name"]}, "retune", actor)
+        source = _source_ref(src)
+    out = get_voice(ctx, vid)
+    out["source"] = source
     return out
 
 
@@ -460,6 +560,24 @@ def _is_synthetic_consent(consent: dict) -> bool:
     return str(consent.get("rights_holder") or "").startswith(SYNTHETIC_HOLDER)
 
 
+def _holder_source_name(consent: dict) -> str | None:
+    m = re.search(r"\('(.+)'\)\s*$", str(consent.get("rights_holder") or ""))
+    return m.group(1) if m else None
+
+
+def _pick_source(consent: dict, designs: list[dict]) -> dict | None:
+    """In-memory twin of clone_source_voice for list calls. ``designs`` = all design voices ordered by (archived, id DESC)."""
+    if not _is_synthetic_consent(consent):
+        return None
+    sid = consent.get("source_voice_id")
+    if sid:
+        hit = next((d for d in designs if d["id"] == sid), None)
+        if hit:
+            return hit
+    nm = _holder_source_name(consent)
+    return next((d for d in designs if d["name"] == nm), None) if nm else None
+
+
 def clone_source_voice(conn, v: dict) -> dict | None:
     """The designed voice a clone was promoted from (archived ones included), or None for human-recorded clones.
     Clones promoted before v0.7.0 only name it inside ``rights_holder``."""
@@ -470,9 +588,9 @@ def clone_source_voice(conn, v: dict) -> dict | None:
     if consent.get("source_voice_id"):
         sv = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (consent["source_voice_id"],))
     if not sv:
-        m = re.search(r"\('(.+)'\)\s*$", str(consent.get("rights_holder") or ""))
-        if m:
-            sv = row(conn, "SELECT * FROM voices WHERE name=? AND kind='design' ORDER BY archived, id DESC", (m.group(1),))
+        nm = _holder_source_name(consent)
+        if nm:
+            sv = row(conn, "SELECT * FROM voices WHERE name=? AND kind='design' ORDER BY archived, id DESC", (nm,))
     return sv
 
 
@@ -846,12 +964,19 @@ def display_title(title: str, narrator: str | None) -> str:
 
 
 def _book_stats(conn, book_ids: list[int] | None = None) -> dict[int, dict]:
-    q = "SELECT book_id, status, COUNT(*) n FROM segments" + (f" WHERE book_id IN ({','.join('?' * len(book_ids))})" if book_ids else "") + " GROUP BY book_id, status"
+    """book_id -> {segment status: count, "_audio_s": seconds of selected audio}. ``book_ids=None`` means every book; a list (even an empty one)
+    limits BOTH queries to those books."""
+    if book_ids is not None:
+        book_ids = sorted({int(i) for i in book_ids})
+        if not book_ids:
+            return {}
+    marks = ",".join("?" * len(book_ids)) if book_ids is not None else ""
+    q = "SELECT book_id, status, COUNT(*) n FROM segments" + (f" WHERE book_id IN ({marks})" if book_ids is not None else "") + " GROUP BY book_id, status"
     stats: dict[int, dict] = {}
     for r in rows(conn, q, book_ids or ()):
         stats.setdefault(r["book_id"], {})[r["status"]] = r["n"]
-    durs = rows(conn, """SELECT s.book_id, SUM(a.duration_s) d FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id
-                         GROUP BY s.book_id""")
+    durs = rows(conn, """SELECT s.book_id, SUM(a.duration_s) d FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id"""
+                + (f" WHERE s.book_id IN ({marks})" if book_ids is not None else "") + " GROUP BY s.book_id", book_ids or ())
     for d in durs:
         stats.setdefault(d["book_id"], {})["_audio_s"] = d["d"] or 0.0
     return stats
@@ -862,7 +987,11 @@ def _progress(st: dict) -> float:
     return round((st.get("passed", 0) + st.get("flagged", 0) + st.get("approved", 0)) / total, 4) if total else 0.0
 
 
-def _book_summary(conn, b: dict, st: dict) -> dict:
+def _book_summary(conn, b: dict, st: dict, rt_ctx: dict | None | bool = None) -> dict:
+    """``rt_ctx``: a runtime.runtime_context built once per request (built lazily here when a caller has none); ``False`` leaves the
+    ``runtime`` field out (the light Review payload does not show processing time)."""
+    if rt_ctx is None:
+        rt_ctx = R.runtime_context(conn)
     total = sum(v for k, v in st.items() if not k.startswith("_"))
     produced = total - st.get("pending", 0) - st.get("synthesizing", 0)
     job = row(conn, "SELECT id, status, paused_reason, error, current_segment_sid, retries FROM jobs WHERE book_id=? AND kind='book' ORDER BY id DESC LIMIT 1", (b["id"],))
@@ -882,6 +1011,7 @@ def _book_summary(conn, b: dict, st: dict) -> dict:
         "pending": st.get("pending", 0) + st.get("synthesizing", 0), "progress": round(produced / total, 4) if total else 0.0,
         "est_duration_s": est, "audio_duration_s": round(st.get("_audio_s", 0.0), 1), "retries": retries,
         "job": job, "current_chapter": cur_ch, "released": b["state"] == "approved",
+        **({"runtime": R.book_runtime(conn, b, rt_ctx)} if rt_ctx is not False else {}),
     }
 
 
@@ -889,17 +1019,62 @@ def list_books(ctx, include_archived: bool = False) -> list[dict]:
     with ctx.db.session() as conn:
         books = rows(conn, "SELECT * FROM books " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY created_at DESC")
         stats = _book_stats(conn)
-        return [_book_summary(conn, b, stats.get(b["id"], {})) for b in books]
+        rt_ctx = R.runtime_context(conn, now(), ctx.settings())
+        return [_book_summary(conn, b, stats.get(b["id"], {}), rt_ctx) for b in books]
 
 
-def get_book(ctx, book_id: int) -> dict:
+def _cover_version(cover_path) -> int:
+    """Integer mtime of the cover file, or 0 when there is none."""
+    try:
+        return int(Path(cover_path).stat().st_mtime) if cover_path else 0
+    except OSError:
+        return 0
+
+
+def _chapter_status_counts(conn, book_id: int) -> dict[int, dict]:
+    """chapter_id -> {segment status: count} for a whole book in one GROUP BY."""
+    out: dict[int, dict] = {}
+    for r in rows(conn, "SELECT chapter_id, status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY chapter_id, status", (book_id,)):
+        out.setdefault(r["chapter_id"], {})[r["status"]] = r["n"]
+    return out
+
+
+def _chapter_row(ch: dict, st: dict) -> dict:
+    return {"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
+            "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
+            "est_duration_s": ch["est_duration_s"], "status_counts": st}
+
+
+def get_book_review(ctx, book_id: int) -> dict:
+    """LIGHT book payload for the Review page (GET /api/books/{id}?view=review): the summary fields and the chapter list, with NO
+    readiness / release check / exports / logs / utility jobs / narrative status / manuscript manifest. Key names equal get_book's.
+
+    Keys: id, uid, title, author, state, last_error, work_uid, narrator, display_title, version_count, created_at, voice, voice_kind, source,
+    format, segments, produced, passed, flagged, approved, pending, progress, est_duration_s, audio_duration_s, retries, job,
+    current_chapter, released; and chapters = [{id, index, title, words, segments, title_overridden, original_title, est_duration_s,
+    status_counts}]. The chapters carry no missing_audio / render_current / renders (those need the per-file readiness check)."""
     with ctx.db.session() as conn:
         b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
         if not b:
             raise ServiceError("Book not found", 404)
-        out = _book_summary(conn, b, _book_stats(conn, [book_id]).get(book_id, {}))
+        out = _book_summary(conn, b, _book_stats(conn, [book_id]).get(book_id, {}), False)
+        counts = _chapter_status_counts(conn, book_id)
+        out["chapters"] = [_chapter_row(ch, counts.get(ch["id"], {})) for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))]
+    return out
+
+
+def get_book(ctx, book_id: int) -> dict:
+    """Full book page payload. Costs a constant number of queries (independent of the segment count): the per-segment take lookups and
+    file checks are batched in assembly.chapter_readiness, which runs once and also feeds the release check."""
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not b:
+            raise ServiceError("Book not found", 404)
+        stats = _book_stats(conn, [book_id]).get(book_id, {})
+        out = _book_summary(conn, b, stats, R.runtime_context(conn, now(), ctx.settings()))
         out.update({k: b[k] for k in ("narrator_credit", "publisher", "year", "description", "language", "genre", "instructions", "synth_fingerprint", "archived")})
         out["has_cover"] = bool(b["cover_path"] and Path(b["cover_path"]).exists())
+        out["cover_version"] = _cover_version(b["cover_path"])  # cache-buster for /media/cover/<id>: changes only when the file does
         out["settings"] = loads(b["settings_json"], {})
         out["storage"] = loads(b["storage_json"], {})
         vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (b["voice_version_id"],)) or {}
@@ -908,19 +1083,18 @@ def get_book(ctx, book_id: int) -> dict:
                                "current_version_id": v.get("current_version_id"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                                "instruct": vv.get("instruct")}
         out["voice_outdated"] = bool(v and v.get("current_version_id") != b["voice_version_id"])
-        sibs = siblings(conn, b)
+        sibs = rows(conn, """SELECT x.id, x.state, x.archived, x.created_at, (SELECT name FROM voices vo WHERE vo.id=x.voice_id) AS narrator
+                             FROM books x WHERE COALESCE(x.work_uid, x.uid)=? ORDER BY x.created_at, x.id""", (work_key(b),))
         sib_stats = _book_stats(conn, [x["id"] for x in sibs]) if len(sibs) > 1 else {}
-        out["versions"] = [{"id": x["id"], "narrator": (row(conn, "SELECT name FROM voices WHERE id=?", (x["voice_id"],)) or {}).get("name"), "state": x["state"],
+        out["versions"] = [{"id": x["id"], "narrator": x["narrator"], "state": x["state"],
                             "archived": bool(x["archived"]), "current": x["id"] == book_id, "created_at": x["created_at"],
                             "progress": _progress(sib_stats.get(x["id"], {}))} for x in sibs]
-        ready = chapter_readiness(conn, b, ctx)
+        ready = chapter_readiness(conn, b, ctx)  # once: feeds both the chapter rows and the release check below
+        counts = _chapter_status_counts(conn, book_id)
         out["chapters"] = []
         for r in ready:
             ch = r["chapter"]
-            st = {x["status"]: x["n"] for x in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE chapter_id=? GROUP BY status", (ch["id"],))}
-            out["chapters"].append({"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
-                                    "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
-                                    "est_duration_s": ch["est_duration_s"], "status_counts": st, "missing_audio": len(r["problems"]),
+            out["chapters"].append({**_chapter_row(ch, counts.get(ch["id"], {})), "missing_audio": len(r["problems"]),
                                     "render_current": r["render_current"],
                                     "renders": {k: {"id": v_["id"], "duration_s": v_["duration_s"], "draft": bool(v_["draft"]), "created_at": v_["created_at"],
                                                     "current": r["render_current"]} for k, v_ in r["renders"].items()}})
@@ -929,10 +1103,10 @@ def get_book(ctx, book_id: int) -> dict:
                              "manifest": loads(m.get("parse_report_json"), {})}
         out["exports"] = rows(conn, "SELECT id, kind, label, draft, size_bytes, duration_s, created_at FROM exports WHERE book_id=? ORDER BY id DESC LIMIT 50", (book_id,))
         out["release"] = active_release(conn, book_id)
-        out["release_check"] = release_check_conn(conn, b, ctx)
+        out["release_check"] = release_check_conn(conn, b, ctx, ready=ready, counts={k: n for k, n in stats.items() if not k.startswith("_")})
         out["logs"] = rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE book_id=? AND level<>'debug' ORDER BY id DESC LIMIT 40", (book_id,))
         out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export','analyze') ORDER BY id DESC LIMIT 10", (book_id,))
-    out["narrative"] = N_store.narrative_status(ctx, book_id)
+        out["narrative"] = N_store.narrative_status(ctx, book_id, conn)
     return out
 
 
@@ -1102,48 +1276,118 @@ def enqueue_book(ctx, book_id: int, front: bool = False) -> dict:
     return j
 
 
-def list_queue(ctx) -> dict:
+QUEUE_WINDOW_DAYS = 30        # finished book jobs older than this drop off the Queue page
+QUEUE_PAGE_MAX = 50
+EARLIER_RUNS_MAX = 20
+_DONE_SQL = "('completed','failed','cancelled')"
+
+
+def _page(offset, limit) -> tuple[int, int]:
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit if limit is not None else 10)
+    except (TypeError, ValueError):
+        limit = 10
+    return offset, max(1, min(QUEUE_PAGE_MAX, limit))
+
+
+def _queue_entry(j: dict, st: dict, rt: dict, retries: int, last_log, t: float) -> dict:
+    total = sum(v for k, v in st.items() if not k.startswith("_"))
+    remaining = st.get("pending", 0) + st.get("synthesizing", 0)
+    # eta_s / eta_finish_s are the pre-v0.8.0 fields; they now come from the same estimate the runtime dict carries
+    eta = eta_finish = None
+    if j["status"] in ("queued", "running"):
+        eta = rt["remaining_s"] if j["status"] == "running" else rt["total_est_s"]
+        eta_finish = (rt["finish_at"] - t) if (eta is not None and rt["finish_at"] is not None) else None
+    return {"id": j["id"], "book_id": j["book_id"], "title": j["title"], "status": j["status"], "position": j["position"],
+            "paused_reason": j["paused_reason"], "error": j["error"], "retries": j["retries"], "segment_retries": retries,
+            "current_segment_sid": j["current_segment_sid"], "created_at": j["created_at"], "started_at": j["started_at"],
+            "finished_at": j["finished_at"], "segments": total, "remaining": remaining, "flagged": st.get("flagged", 0),
+            "progress": round((total - remaining) / total, 4) if total else 0, "eta_s": eta, "eta_finish_s": eta_finish,
+            "active_seconds": round(float(j["active_seconds"] or 0), 1), "runtime": rt,
+            "pause_requested": bool(j["pause_requested"]), "cancel_requested": bool(j["cancel_requested"]), "last_log": last_log}
+
+
+def list_queue(ctx, finished_offset: int = 0, finished_limit: int = 10, utility_offset: int = 0, utility_limit: int = 10) -> dict:
+    """The Queue page: every active (queued/running/paused) book job, ONE "recently finished" entry per book (its latest finished run, with the
+    book's earlier finished runs folded into ``earlier_runs``) and the assemble/export/preview/analyze jobs; the last two are paginated."""
+    f_off, f_lim = _page(finished_offset, finished_limit)
+    u_off, u_lim = _page(utility_offset, utility_limit)
+    t = now()
+    cut = t - QUEUE_WINDOW_DAYS * 86400
+    fin_when = "COALESCE(j.finished_at, j.updated_at)"
     with ctx.db.session() as conn:
-        jobs = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title, b.uid FROM jobs j LEFT JOIN books b ON b.id=j.book_id
-                             WHERE j.kind='book' AND (j.status IN ('queued','running','paused') OR j.updated_at > ?)
-                             ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, j.position, j.id""",
-                    (now() - 7 * 86400,))
+        active = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title FROM jobs j LEFT JOIN books b ON b.id=j.book_id
+                               WHERE j.kind='book' AND j.status IN ('queued','running','paused')
+                               ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, j.position, j.id""")
+        latest = f"""SELECT j2.id FROM jobs j2 WHERE j2.book_id=j.book_id AND j2.kind='book' AND j2.status IN {_DONE_SQL}
+                     AND COALESCE(j2.finished_at, j2.updated_at) > ? ORDER BY COALESCE(j2.finished_at, j2.updated_at) DESC, j2.id DESC LIMIT 1"""
+        finished_total = scalar(conn, f"""SELECT COUNT(DISTINCT j.book_id) FROM jobs j WHERE j.kind='book' AND j.book_id IS NOT NULL
+                                         AND j.status IN {_DONE_SQL} AND {fin_when} > ?""", (cut,), 0)
+        finished = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title FROM jobs j JOIN books b ON b.id=j.book_id
+                                 WHERE j.kind='book' AND j.status IN {_DONE_SQL} AND {fin_when} > ? AND j.id = ({latest})
+                                 ORDER BY {fin_when} DESC, j.id DESC LIMIT ? OFFSET ?""", (cut, cut, f_lim, f_off))
+        earlier: dict[int, list[dict]] = {}
+        if finished:
+            marks = ",".join("?" * len(finished))
+            for r in rows(conn, f"""SELECT j.id, j.book_id, j.status, j.created_at, j.started_at, j.finished_at, j.updated_at, j.active_seconds FROM jobs j
+                                   WHERE j.kind='book' AND j.book_id IN ({marks}) AND j.status IN {_DONE_SQL} AND {fin_when} > ? AND j.id NOT IN ({marks})
+                                   ORDER BY {fin_when} DESC, j.id DESC""", ([x["book_id"] for x in finished] + [cut] + [x["id"] for x in finished])):
+                lst = earlier.setdefault(r["book_id"], [])
+                if len(lst) < EARLIER_RUNS_MAX:
+                    lst.append(r)
+        utility_total = scalar(conn, "SELECT COUNT(*) FROM jobs WHERE kind IN ('assemble','export','preview','analyze')", (), 0)
         utility = rows(conn, f"""SELECT j.id, j.kind, j.status, j.error, j.book_id, {DISPLAY_TITLE_SQL} AS title, j.created_at, j.finished_at, j.payload_json
                                 FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview','analyze')
-                                ORDER BY j.id DESC LIMIT 15""")
+                                ORDER BY j.id DESC LIMIT ? OFFSET ?""", (u_lim, u_off))
         per_seg = _segment_seconds(conn)
-        stats = _book_stats(conn, [j["book_id"] for j in jobs if j["book_id"]]) if jobs else {}
-        out = []
-        cumulative = 0.0
-        for j in jobs:
+        rt_ctx = R.runtime_context(conn, t, ctx.settings())
+        book_ids = sorted({j["book_id"] for j in active + finished if j["book_id"]})
+        stats = _book_stats(conn, book_ids) if book_ids else {}
+        # how much each shown run actually rendered: distinct segments with an attempt that started during the run
+        runs = [r for lst in earlier.values() for r in lst] + finished
+        rendered: dict[int, int] = {}
+        if runs:
+            marks = ",".join("?" * len(runs))
+            rendered = {r["id"]: r["n"] for r in rows(conn, f"""
+                SELECT j.id, COUNT(DISTINCT a.segment_id) n FROM jobs j JOIN segments s ON s.book_id = j.book_id JOIN attempts a ON a.segment_id = s.id
+                WHERE j.id IN ({marks}) AND a.created_at >= COALESCE(j.started_at, j.created_at) AND a.created_at <= COALESCE(j.finished_at, j.updated_at)
+                GROUP BY j.id""", [r["id"] for r in runs])}
+
+        def entry(j: dict) -> dict:
             st = stats.get(j["book_id"], {})
-            total = sum(v for k, v in st.items() if not k.startswith("_"))
-            remaining = st.get("pending", 0) + st.get("synthesizing", 0)
-            eta = None
-            if per_seg["samples"] >= 20 and j["status"] in ("queued", "running"):
-                eta = remaining * per_seg["median_s"]
-                cumulative += eta
             last_log = row(conn, "SELECT message, level, created_at FROM job_logs WHERE job_id=? AND level<>'debug' ORDER BY id DESC LIMIT 1", (j["id"],))
             retries = scalar(conn, "SELECT COUNT(*) FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.attempt_no>1", (j["book_id"],), 0)
-            out.append({"id": j["id"], "book_id": j["book_id"], "title": j["title"], "status": j["status"], "position": j["position"],
-                        "paused_reason": j["paused_reason"], "error": j["error"], "retries": j["retries"], "segment_retries": retries,
-                        "current_segment_sid": j["current_segment_sid"], "created_at": j["created_at"], "started_at": j["started_at"],
-                        "finished_at": j["finished_at"], "segments": total, "remaining": remaining, "flagged": st.get("flagged", 0),
-                        "progress": round((total - remaining) / total, 4) if total else 0, "eta_s": eta,
-                        "eta_finish_s": cumulative if eta is not None else None, "pause_requested": bool(j["pause_requested"]),
-                        "cancel_requested": bool(j["cancel_requested"]), "last_log": last_log})
+            return _queue_entry(j, st, R.job_runtime(conn, j, rt_ctx), retries, last_log, t)
+
+        def run_summary(r: dict, total_segments: int) -> dict:
+            n = rendered.get(r["id"], 0)
+            secs = float(r["active_seconds"] or 0)
+            if secs <= 0 and r["started_at"] and r["finished_at"] and r["finished_at"] >= r["started_at"]:
+                secs = float(r["finished_at"] - r["started_at"])
+            return {"id": r["id"], "status": r["status"], "finished_at": r["finished_at"] or r["updated_at"], "segments_rendered": n,
+                    "active_seconds": round(secs, 1), "kind_hint": "full pass" if total_segments and n * 2 >= total_segments else "touch-up"}
+
+        out = [entry(j) for j in active]
+        done_entries = []
+        for j in finished:
+            e = entry(j)
+            total = e["segments"]
+            e["latest_run"] = run_summary(j, total)
+            e["earlier_runs"] = [run_summary(r, total) for r in earlier.get(j["book_id"], [])]
+            done_entries.append(e)
         for u in utility:
             u["payload"] = loads(u.pop("payload_json"), {})
-        return {"jobs": out, "utility": utility, "throughput": per_seg}
+    return {"jobs": out + done_entries, "active": out, "finished": done_entries, "finished_total": finished_total,
+            "finished_offset": f_off, "finished_limit": f_lim, "window_days": QUEUE_WINDOW_DAYS,
+            "utility": utility, "utility_total": utility_total, "utility_offset": u_off, "utility_limit": u_lim, "throughput": per_seg}
 
 
 def _segment_seconds(conn) -> dict:
-    data = rows(conn, """SELECT a.segment_id, SUM(a.finished_at - a.created_at) t FROM attempts a
-                         WHERE a.status IN ('done','error') AND a.finished_at IS NOT NULL GROUP BY a.segment_id ORDER BY MAX(a.id) DESC LIMIT 200""")
-    vals = [d["t"] for d in data if d["t"] is not None and d["t"] >= 0]
-    if not vals:
-        return {"samples": 0, "median_s": None}
-    return {"samples": len(vals), "median_s": round(statistics.median(vals), 2)}
+    return R.global_rate(conn)
 
 
 def reorder_queue(ctx, job_ids: list[int]) -> dict:
@@ -1501,10 +1745,15 @@ def segment_detail(ctx, segment_id: int) -> dict:
         reviews = rows(conn, "SELECT action, detail_json, actor, created_at FROM review_actions WHERE segment_id=? ORDER BY id DESC", (segment_id,))
         prev_id = scalar(conn, "SELECT id FROM segments WHERE book_id=? AND id<? ORDER BY id DESC LIMIT 1", (s["book_id"], segment_id))
         next_id = scalar(conn, "SELECT id FROM segments WHERE book_id=? AND id>? ORDER BY id LIMIT 1", (s["book_id"], segment_id))
-        render = row(conn, "SELECT segment_map_json FROM chapter_renders WHERE chapter_id=? AND kind='wav'", (s["chapter_id"],))
-    timing = None
-    if render:
-        timing = next((m for m in loads(render["segment_map_json"], []) if m["sid"] == s["sid"]), None)
+        timing = None
+        try:  # find this segment's entry inside SQLite: the whole chapter map (hundreds of entries) is not decoded into Python objects
+            hit = row(conn, """SELECT j.value AS entry FROM chapter_renders r, json_each(r.segment_map_json) j
+                               WHERE r.chapter_id=? AND r.kind='wav' AND json_extract(j.value, '$.sid')=? LIMIT 1""", (s["chapter_id"], s["sid"]))
+            timing = loads(hit["entry"], None) if hit else None
+        except Exception:  # SQLite built without JSON1: decode the map the old way
+            render = row(conn, "SELECT segment_map_json FROM chapter_renders WHERE chapter_id=? AND kind='wav'", (s["chapter_id"],))
+            if render:
+                timing = next((m for m in loads(render["segment_map_json"], []) if m["sid"] == s["sid"]), None)
     out_atts = []
     for a in atts:
         asr = loads(a["asr_json"], {}) or {}
@@ -1556,7 +1805,7 @@ def approve_segment(ctx, segment_id: int, note: str | None = None, actor: str = 
     return {"ok": True, "status": "approved", "segment_id": segment_id}
 
 
-def regenerate_segment(ctx, segment_id: int, note: str | None = None) -> dict:
+def regenerate_segment(ctx, segment_id: int, note: str | None = None, extra: dict | None = None) -> dict:
     with ctx.db.tx() as conn:
         s, b = _seg_and_book(conn, segment_id)
         if s["status"] in ("pending", "synthesizing"):
@@ -1564,10 +1813,43 @@ def regenerate_segment(ctx, segment_id: int, note: str | None = None) -> dict:
         conn.execute("UPDATE segments SET round=round+1, attempts_used=0, status='pending', selected_attempt_id=NULL, flag_reason=NULL, updated_at=? WHERE id=?",
                      (now(), segment_id))
         conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (s["chapter_id"],))
-        _review(conn, ctx, s, "regenerate", {"previous_status": s["status"], "previous_attempt": s["selected_attempt_id"], "note": note})
+        _review(conn, ctx, s, "regenerate", {"previous_status": s["status"], "previous_attempt": s["selected_attempt_id"], "note": note, **(extra or {})})
         _revoke(conn, ctx, s["book_id"], f"segment {s['sid']} regenerated")
     enqueue_book(ctx, s["book_id"], front=True)
     return {"ok": True, "status": "pending", "segment_id": segment_id}
+
+
+def regenerate_with_direction(ctx, segment_id: int, direction: dict, note: str | None = None, actor: str = "operator") -> dict:
+    """Regenerate one segment with a direction from the editor (for example emotion anger, intensity 5, delivery "shouting").
+
+    The direction is ALWAYS kept as the segment's own user direction (the same record ``PATCH /api/segments/{id}/narrative`` writes); there is
+    no one-shot mode, so later re-renders of the segment keep sounding the same. It is visible and clearable in Inspect and in the Review
+    panel. Fields left out keep their stored value; a field given as None is cleared. The result carries ``delivery``: what the segment's
+    voice kind will actually be given (see narrative.store.delivery_summary)."""
+    patch = N_store.validate_direction(direction)
+    if patch.get("emotion") and patch["emotion"] != "neutral" and patch.get("intensity") is None and "intensity" not in patch:
+        patch["intensity"] = 3  # an emotion without a strength would otherwise inherit whatever the rules engine guessed
+    if not patch:
+        out = regenerate_segment(ctx, segment_id, note)
+    else:
+        N_store.set_segment_narrative(ctx, segment_id, patch, actor)
+        with ctx.db.tx() as conn:
+            s, _b = _seg_and_book(conn, segment_id)
+            queued = s["status"] in ("pending", "synthesizing")
+            if queued:  # the new direction already changed the take's key, so the segment went back to pending by itself
+                _review(conn, ctx, s, "regenerate", {"note": note, "direction": patch, "reason": "direction changed"}, actor)
+        if queued:
+            try:
+                enqueue_book(ctx, s["book_id"], front=True)  # idempotent; the segment may be pending without a job (a cascade reset)
+            except ServiceError:
+                pass
+            out = {"ok": True, "status": s["status"], "segment_id": segment_id}
+        else:
+            out = regenerate_segment(ctx, segment_id, note, {"direction": patch})
+    with ctx.db.session() as conn:
+        s, b = _seg_and_book(conn, segment_id)
+        out["delivery"] = N_store.delivery_summary(conn, ctx, s, b)
+    return out
 
 
 def set_override(ctx, segment_id: int, text: str | None, regenerate: bool = True) -> dict:
@@ -1621,15 +1903,19 @@ def set_note(ctx, segment_id: int, note: str | None) -> dict:
 # ====================================================================== release
 
 
-def release_check_conn(conn, b: dict, ctx=None) -> dict:
-    counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (b["id"],))}
+def release_check_conn(conn, b: dict, ctx=None, ready: list[dict] | None = None, counts: dict | None = None) -> dict:
+    """Release blockers. ``ready`` (assembly.chapter_readiness output) and ``counts`` (segment status counts) may be passed by a caller that
+    already computed them for the same book in the same transaction; the result is identical, without repeating the per-file checks."""
+    if counts is None:
+        counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (b["id"],))}
     blockers = []
     pend = counts.get("pending", 0) + counts.get("synthesizing", 0)
     if pend:
         blockers.append(f"{pend} segment(s) have no audio yet.")
     if counts.get("flagged", 0):
         blockers.append(f"{counts['flagged']} segment(s) are flagged by automatic QA - approve, fix or regenerate them.")
-    ready = chapter_readiness(conn, b, ctx)
+    if ready is None:
+        ready = chapter_readiness(conn, b, ctx)
     missing = sum(len(r["problems"]) for r in ready)
     if missing and not pend:
         blockers.append(f"{missing} segment(s) have missing or mismatched take files.")
@@ -1692,7 +1978,8 @@ def overview(ctx) -> dict:
         flags = rows(conn, f"""SELECT s.id, s.sid, s.flag_reason, s.book_id, {DISPLAY_TITLE_SQL} AS title, c.idx AS chapter_idx FROM segments s JOIN books b ON b.id=s.book_id
                               JOIN chapters c ON c.id=s.chapter_id WHERE s.status='flagged' AND b.archived=0 ORDER BY s.updated_at DESC LIMIT 25""")
         events = rows(conn, "SELECT id, kind, book_id, message, level, created_at FROM events ORDER BY id DESC LIMIT 25")
-        recent = [_book_summary(conn, b, stats.get(b["id"], {})) for b in books[:12]]
+        rt_ctx = R.runtime_context(conn, now(), ctx.settings())
+        recent = [_book_summary(conn, b, stats.get(b["id"], {}), rt_ctx) for b in books[:12]]
         worker = row(conn, "SELECT * FROM worker_state WHERE id=1")
         failed_jobs = rows(conn, f"SELECT j.id, j.book_id, j.error, {DISPLAY_TITLE_SQL} AS title FROM jobs j JOIN books b ON b.id=j.book_id WHERE j.status='failed' AND j.kind='book' ORDER BY j.id DESC LIMIT 10")
     total = sum(seg_counts.values())
@@ -1714,12 +2001,13 @@ def worker_status_from_row(ctx, w: dict | None) -> dict:
     hb = w.get("heartbeat_at")
     alive = bool(w.get("owner")) and hb is not None and now() - hb < 30
     return {"online": alive, "state": w.get("state") if alive else "offline", "message": w.get("message"), "pid": w.get("pid"),
-            "heartbeat_age_s": round(now() - hb, 1) if hb else None, "current_job_id": w.get("current_job_id") if alive else None,
+            "heartbeat_at": hb, "heartbeat_age_s": round(now() - hb, 1) if hb else None, "current_job_id": w.get("current_job_id") if alive else None,
             "current_segment_sid": w.get("current_segment_sid") if alive else None, "engine": ctx.engine_mode}
 
 
 def state_digest(ctx) -> dict:
-    """Cheap snapshot used by the SSE stream to detect changes."""
+    """Cheap snapshot used by the SSE stream to detect changes. Must be a pure function of stored state: nothing that
+    varies with the clock alone (ages, timestamps of "now") may appear here, or the stream emits an event every second."""
     with ctx.db.session() as conn:
         ev = scalar(conn, "SELECT MAX(id) FROM events", (), 0)
         seg = scalar(conn, "SELECT MAX(updated_at) FROM segments", (), 0)
@@ -1735,7 +2023,9 @@ def state_digest(ctx) -> dict:
                 total = sum(st.values())
                 done = total - st.get("pending", 0) - st.get("synthesizing", 0)
                 progress[a["book_id"]] = {"done": done, "total": total, "flagged": st.get("flagged", 0)}
-    ws = worker_status_from_row(ctx, w)
+    # heartbeat_age_s / heartbeat_at change on every beat; the digest must only move when something real changed.
+    # (online flips when the heartbeat goes stale, which is a real change.) /api/worker still returns the exact age.
+    ws = {k: v for k, v in worker_status_from_row(ctx, w).items() if k not in ("heartbeat_age_s", "heartbeat_at")}
     return {"events": ev, "segments": seg, "jobs": job, "attempts": att, "worker": ws, "active": active, "progress": progress,
             "worker_message": ws.get("message")}
 

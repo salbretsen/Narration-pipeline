@@ -97,6 +97,8 @@ are `Secure` only over HTTPS; over the plain HTTP address passwords cross the LA
   a new book (format in doc 3). Neither folder is part of any release, so updates never remove them. Copy the zips off the Mac
   (or to an external drive) for real safety; a backup on the same disk does not protect against disk loss. Restored books are
   labelled "(restored)"; rename them in the book page. Not yet verified on the real Mac (mock engine only).
+- **Disk & Backups measuring time (v0.8.0).** The page opens at once and measures the library in the background; a measurement is reused for 60 s and *Refresh* (or `?refresh=1`) forces a new one, so on a big
+  library the first numbers can take several seconds and later visits are instant. Delete, purge, backup, restore and deleting a backup drop the cache themselves (moving a book to another folder does not; use Refresh). How long a measurement takes on the Mac's real library has not been timed.
 
 ## Real-engine behaviour on this hardware (measured)
 

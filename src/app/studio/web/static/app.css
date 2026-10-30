@@ -421,3 +421,116 @@ pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--su
 .nav-dot[hidden] { display: none; }
 .ab-choice { border: 1px solid var(--border); border-radius: 8px; margin: .6rem 0; padding: .4rem .8rem; }
 .ab-choice .check { display: block; margin: .25rem 0; }
+
+/* ---------------------------------------------------------------- P2-F: page width, column caps, settings tabs */
+/* The page content is a centred column (page headers, cards and tables all sit inside #view) instead of stretching across a
+   wide monitor. The Review page is a two-pane workspace, so it may use more. Grids cap their column count with
+   max(Npx, (100% - gaps) / maxColumns) as the minimum track size; min(100%, ...) keeps one column from overflowing a phone. */
+[hidden] { display: none !important; }
+code { overflow-wrap: anywhere; }   /* long paths and ids must wrap instead of widening the page */
+#view { max-width: 1440px; margin-inline: auto; }
+#view:has(.review-layout) { max-width: 1680px; }
+.form-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); align-items: start; }
+.stats { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(170px, calc((100% - 4rem) / 6))), 1fr)); }
+.stats.compact { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 4rem) / 6))), 1fr)); }
+.voice-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(340px, calc((100% - 2rem) / 3))), 1fr)); }
+.takes { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(380px, calc((100% - 2rem) / 3))), 1fr)); }
+.ov-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(260px, calc((100% - 1.8rem) / 4))), 1fr)); }
+@media (max-width: 480px) { .stats, .stats.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .ov-grid { grid-template-columns: 1fr; } }
+
+.set-layout { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 0 1.4rem; align-items: start; }
+.set-tabs { position: sticky; top: 72px; display: flex; flex-direction: column; gap: .15rem; }
+.set-tab { display: block; text-align: left; background: none; border: 0; border-left: 3px solid transparent; border-radius: 0 8px 8px 0; padding: .5rem .8rem;
+  font: inherit; font-weight: 600; color: var(--text); cursor: pointer; }
+.set-tab:hover { background: var(--surface-2); }
+.set-tab[aria-selected=true] { background: var(--accent-soft); color: var(--accent); border-left-color: var(--accent); }
+.set-tab-blurb { display: block; font-weight: 400; font-size: .78rem; color: var(--muted); line-height: 1.3; }
+.tab-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--warn); margin-left: .4rem; vertical-align: middle; }
+.set-panels { min-width: 0; }
+.set-panel:focus-visible { outline-offset: 4px; }
+.set-card h2 { margin-bottom: .35rem; }
+.set-intro { margin: 0 0 .8rem; }
+.set-card .form-grid { margin-top: .4rem; }
+.lbl { display: block; }
+.hint { display: block; font-weight: 400; font-size: .8rem; color: var(--muted); margin-top: .1rem; }
+.set-overrides { margin-top: .6rem; }
+details.set-details > summary { font-size: 1.05rem; margin: 0 0 .5rem; }
+details.set-details:not([open]) > summary { margin-bottom: 0; }
+.is-off, .is-inactive { opacity: .55; }
+.set-bar { z-index: 6; flex-wrap: wrap; gap: .5rem 1rem; }
+.set-bar-btns { margin-left: auto; display: inline-flex; gap: .5rem; }
+.set-status { font-weight: 600; }
+.set-status.dirty { color: var(--warn); }
+@media (max-width: 900px) {
+  .set-layout { grid-template-columns: minmax(0, 1fr); }
+  .set-tabs { position: sticky; top: 56px; z-index: 7; flex-direction: row; overflow-x: auto; background: var(--bg); border-bottom: 1px solid var(--border); margin-bottom: 1rem; gap: .2rem; -webkit-overflow-scrolling: touch; }
+  .set-tab { flex: none; white-space: nowrap; border-left: 0; border-bottom: 3px solid transparent; border-radius: 8px 8px 0 0; }
+  .set-tab[aria-selected=true] { border-bottom-color: var(--accent); }
+  .set-tab-blurb { display: none; }
+}
+@media (max-width: 700px) { .set-note { display: none; } }
+
+/* ---------------------------------------------------------------- router loading state (v0.8) */
+#view { position: relative; }
+/* each navigation renders into its own host, hidden beside the old page until it is ready (see app.js route()) */
+.view-page.view-pending { position: absolute; top: 0; left: 0; width: 100%; visibility: hidden; pointer-events: none; }
+#view.view-stale > :not(.view-loading) { opacity: .5; pointer-events: none; transition: opacity .12s ease .1s; }
+.view-loading { position: absolute; top: 1.5rem; left: 50%; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: .6rem;
+  padding: .5rem 1rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 999px; font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.view-loading .spinner { width: 1.1em; height: 1.1em; }
+
+/* ---------------------------------------------------------------- pager (ui.js pager()) */
+.pager { display: flex; align-items: center; gap: .5rem; margin: .75rem 0; }
+.pager-range { color: var(--muted); font-size: .85rem; margin-right: auto; }
+
+/* ---------------------------------------------------------------- P2-B: Overview / Library processing-time line, attention cap, feed hint */
+.rt-line { margin-top: .25rem; color: var(--muted); }
+.rt .rt-k { font-weight: 600; }
+.rt-running { color: var(--info, inherit); }
+.attention.att-scroll { max-height: 320px; overflow: auto; }
+.feed-hint { min-height: 2rem; margin-bottom: .25rem; }
+.feed:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- narrator studio: duplicate & retune (P2-G) */
+.voice-lineage { margin: -.25rem 0 .5rem; font-style: italic; }
+.voice-note { margin-top: .25rem; }
+.voice-note .form-actions { margin-top: .4rem; }
+.voice-new { outline: 3px solid var(--accent); outline-offset: 2px; animation: voice-flash 2.4s ease-out 1; }
+@keyframes voice-flash { from { background: var(--accent-soft); } to { background: var(--surface); } }
+@media (prefers-reduced-motion: reduce) { .voice-new { animation: none; } }
+
+/* ---------------------------------------------------------------- P2-A: book page live regions, disk page (v0.8.x) */
+#release-form[hidden], #view section.card[hidden] { display: none; }
+#bk-cover-slot { display: inline-flex; }
+#dk-age { margin-right: .5rem; }
+
+/* ---------------------------------------------------------------- P2-C queue: runtime estimates, finished rows, earlier runs */
+.rt { display: inline-block; font-size: .88rem; font-weight: 600; }
+.rt-running { color: var(--info); }
+.rt-queued, .rt-idle { color: var(--text); }
+.rt-paused { color: var(--warn); }
+.rt-finished { color: var(--good); }
+.rt-none { color: var(--muted); font-weight: 400; font-size: .82rem; }
+.qrow-done { padding: .55rem .4rem; }
+.qrow-done .q-title { margin-bottom: .1rem; }
+details.earlier { margin-top: .25rem; }
+details.earlier summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+.earlier-list { list-style: none; margin: .3rem 0 0; padding: 0 0 0 .8rem; border-left: 2px solid var(--border); font-size: .82rem; color: var(--muted); }
+.earlier-list li { padding: .1rem 0; }
+
+/* ---------------------------------------------------------------- Review: regenerate with direction (views/review.js) */
+.r-contents { display: contents; }
+.regen-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; margin: .8rem 0; }
+.regen-dir { background: var(--surface-2); border-radius: 8px; padding: .5rem .8rem; }
+.regen-dir > summary { cursor: pointer; font-weight: 600; padding: .2rem 0; }
+.regen-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; margin: .5rem 0; }
+.regen-form label { display: block; font-size: .85rem; font-weight: 600; }
+.regen-form select, .regen-form input { width: 100%; margin-top: .2rem; }
+.regen-form .regen-wide { grid-column: 1 / -1; }
+.regen-explain { border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; background: var(--surface); min-width: 0; }
+.regen-explain h3 { margin: 0 0 .3rem; font-size: .9rem; }
+.regen-explain ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
+.regen-explain .instruct-text { font-style: italic; }
+@media (max-width: 900px) { .regen-wrap { grid-template-columns: 1fr; } }

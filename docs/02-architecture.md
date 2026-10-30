@@ -23,7 +23,9 @@
   and the studio carries on with HTTP.
 - **Service:** on the Mac the server is a LaunchAgent (`com.audiobookstudio.claude`) with KeepAlive; see doc 6.
 - **The SSE stream** (`GET /api/events`) polls a cheap `state_digest` once a second and pushes a `state` event when it changes
-  (plus keep-alive comments). The browser then refetches the data it shows. There are no WebSockets.
+  (plus keep-alive comments). The browser then refetches the data it shows. There are no WebSockets. **The digest must be a pure function of stored state** (v0.8.0): it carries no worker
+  heartbeat age or time and nothing else that changes with the clock alone, otherwise every idle second looks like a change and every open page repaints (the "live-update storm" fixed in v0.8.0). `online` is kept because it flips
+  only when the heartbeat goes stale. The browser adds a second line of defence: `onState` drops a payload equal to the last one it delivered (doc 4).
 
 ## Repository and runtime layout
 
@@ -68,11 +70,12 @@ Per-book data lives under the book's own recorded directories (the **per-project
 | `audio.py` | WAV I/O (atomic), acoustic QA `analyze` (clipping, silence, dead air, level, duration ratio, noise floor), ffmpeg/ffprobe wrappers, reference conversion (24 kHz mono, 3-30 s) |
 | `engines.py` | `MlxQwenEngine` (warm LRU of models, per-attempt `mx.random.seed`, RTF/peak memory), `MlxWhisperASR`, `MockEngine` (deterministic tones with fault injection), `MockASR` (reads a `<wav>.json` sidecar transcript) |
 | `pipeline.py` | `process_segment` attempt lifecycle, crash recovery `recover_interrupted`, take placement, scoring |
-| `worker.py` | `Worker`: lease/heartbeat, scheduling `step()`, job kinds, storage pause/auto-resume, `caffeinate`, `refresh_book_state` |
+| `worker.py` | `Worker`: lease/heartbeat, scheduling `step()`, job kinds, storage pause/auto-resume, `caffeinate`, `refresh_book_state`; since v0.8.0 each step's wall time is added to `jobs.active_seconds` (`_add_active_seconds`, injectable `clock`; deliberately leaves `updated_at` alone so it never wakes the live digest) |
+| `runtime.py` | **v0.8.0** processing-time estimates and actuals, one place so Overview, Library, Book and Queue agree: `global_rate`, `model_rates`, `runtime_context(conn)` (fixed number of queries whatever the number of books), `book_runtime`, `job_runtime`; returns the `runtime` dict documented in doc 3. Pure SQL plus arithmetic, no I/O; the web side formats it in `static/js/runtime.js` |
 | `assembly.py` | Chapter masters (pauses, room tone, two-pass loudnorm, WAV/MP3), `export_book` (M4B with chapter metadata, MP3 ZIP), blocking rules |
 | `reports.py` | QA report (JSON + escaped HTML), QA limitations text |
 | `storage.py` | Path validation, disk usage, mount detection, `browse`/`make_folder` (folder browser), native Finder chooser, verified `move_book` |
-| `services.py` | **All business logic**, used by the web API, CLI and smoke test: voices, imports, books, queue, segments/review, release, overview/digest, settings, the recording lab |
+| `services.py` | **All business logic**, used by the web API, CLI and smoke test: voices, imports, books, queue, segments/review, release, overview/digest, settings, the recording lab. v0.8.0 notes: `get_book` is batched (constant query count; `assembly.chapter_readiness` loads the whole book once and checks each file at most once; the same result feeds `release_check_conn`), `get_book_review` is the light `?view=review` payload, `list_queue` groups finished jobs per book and paginates, `regenerate_with_direction`, `duplicate_voice` / `retune_from_design` |
 | `reference.py` | Sample scripts for the lab, `analyze_recording`, `quality_report` |
 | `tls.py` | Self-signed certificate generation/reuse for the LAN names and IPs |
 | `doctor.py` | Environment checks, model licence table |
@@ -89,10 +92,13 @@ Per-book data lives under the book's own recorded directories (the **per-project
 | `narrative/ab.py` | **v0.7.0** the four named A/B comparisons (settings patches, labels), the catalogue and the vote tally; pure data and SQL. The round lifecycle is in `services.py` (`enqueue_ab`, `get_ab_round`, `vote_ab`, `random_differing_segment`) |
 | `narrative/delivery.py`, `director.py`, `analysis.py`, `llm.py` | grew in v0.7.0: pace/pause (`effective_pace`), the LLM translator (`translate_llm`, `stored_translation`), `direct_scene`, `direct_scope`/`director_batch` windows, `LLMClient.derive`/`resolve_models`/thinking mode (doc 9) |
 
+**Disk usage cache (v0.8.0).** `diskmgmt.usage(ctx, max_age, refresh)` walks every book folder (one `lstat` per file, take sizes reused for the purgeable estimate). The HTTP route serves a 60 s per-library cache (`USAGE_TTL_S`), one measurement at a time (`_MEASURE_LOCK`), and
+`invalidates_usage` / `invalidate_usage` drop it after delete, purge, backup, restore and backup deletion (an in-flight measurement cannot store a stale result: a generation counter). The default `max_age=0` always measures, so tests and the CLI are unaffected.
+
 **Rule:** business logic belongs in `services.py` (or the domain modules it calls), raising `ServiceError(message, status, details)`.
 Endpoints stay thin. The CLI and smoke test call the same functions.
 
-## Data model (SQLite schema v1 + v2 + v3 + v4 + v5, `db.py`)
+## Data model (SQLite schema v1 + v2 + v3 + v4 + v5 + v6, `db.py`)
 
 **Narrator versions (v4, `versions.py`).** One manuscript can be narrated by several narrators. Each narration is a complete `books` row (own segments, takes, chapter
 masters, exports, review and release state), so nothing in the pipeline had to learn about versions; the rows of one manuscript share `books.work_uid`
@@ -107,6 +113,10 @@ path + SHA-256 + parse manifest); `chapters`; `segments` (`sid` stable id `bk_xx
 model, seed, temperature, spoken text, ASR text/JSON, WER, issues, acoustics, score, passed, RTF, peak memory, fingerprint,
 versions); `jobs`; `job_logs`; `events`; `review_actions`; `audit_log`; `worker_state` (single row lease); `chapter_renders`;
 `exports`; `releases`; `imports` (uploaded manuscripts awaiting confirmation).
+
+**Schema v6 (v0.8.0)** adds three indexes (`ix_segments_updated` on `segments(updated_at)`, `ix_jobs_updated` on `jobs(updated_at)`, `ix_jobs_book` on `jobs(book_id)`, which the live digest's `MAX(updated_at)` and the per-book job lookups use) and
+`jobs.active_seconds REAL NOT NULL DEFAULT 0`: the wall seconds the worker has actually spent on a job (Director and LLM time included; queue waits, pauses and restarts excluded), accumulated per step. It is the actual in "processed in ..." and the basis of a running job's own
+rate; older jobs have 0 and fall back to `finished_at - started_at`. Like every migration it is applied automatically with a pre-migration backup; it has only been run on mock databases.
 
 **Schema v5 (v0.7.0)** adds `voice_refs` (the emotion reference bank of a cloned voice: one row per `voice_id` and `bucket` in `tense|tender|sorrow|bright`, with the converted clip, the untouched original, the
 transcript, SHA-256, `source` recording|synthetic, `consent_json` and `metrics_json` such as level gain and pitch/brightness drift; row ids are never reused so history stays unambiguous), `ab_votes` (one row per

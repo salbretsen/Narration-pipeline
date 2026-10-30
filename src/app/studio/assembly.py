@@ -31,15 +31,28 @@ def active_release(conn, book_id: int) -> dict | None:
     return row(conn, "SELECT * FROM releases WHERE book_id=? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1", (book_id,))
 
 
-def _chapter_takes(conn, book: dict, chapter_id: int):
-    segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+def _memo_exists():
+    """Path.exists with a per-call memo: one filesystem check per distinct path within a request."""
+    seen: dict = {}
+
+    def exists(p) -> bool:
+        k = str(p)
+        if k not in seen:
+            seen[k] = Path(p).exists()
+        return seen[k]
+
+    return exists
+
+
+def _classify_takes(book: dict, segs: list[dict], atts: dict, exists, dirs: dict):
+    """Split a chapter's segments into usable (segment, attempt, path) triples and problems. ``atts`` maps attempt id -> attempt row."""
     out, problems = [], []
     for s in segs:
         if not s["selected_attempt_id"]:
             problems.append({"sid": s["sid"], "problem": "no audio" if s["status"] == "pending" else f"no usable take ({s['status']})"})
             continue
-        att = row(conn, "SELECT * FROM attempts WHERE id=?", (s["selected_attempt_id"],))
-        path = resolve_take(book, att) if att else None
+        att = atts.get(s["selected_attempt_id"])
+        path = resolve_take(book, att, exists, dirs) if att else None
         if not att or path is None:
             problems.append({"sid": s["sid"], "problem": "selected take file is missing"})
             continue
@@ -47,6 +60,13 @@ def _chapter_takes(conn, book: dict, chapter_id: int):
             problems.append({"sid": s["sid"], "problem": "take was rendered with different narrator/model settings"})
             continue
         out.append((s, att, path))
+    return out, problems
+
+
+def _chapter_takes(conn, book: dict, chapter_id: int):
+    segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+    atts = {a["id"]: a for a in rows(conn, "SELECT * FROM attempts WHERE id IN (SELECT selected_attempt_id FROM segments WHERE chapter_id=? AND selected_attempt_id IS NOT NULL)", (chapter_id,))}
+    out, problems = _classify_takes(book, segs, atts, _memo_exists(), book_dirs(book))
     return segs, out, problems
 
 
@@ -54,15 +74,18 @@ PAUSE_HINT_MS = {"beat": 350, "long": 900}  # minimum gap after a sentence/parag
 HINTABLE_KINDS = ("sentence", "paragraph")
 
 
+def _pauses_on(ctx, book: dict) -> bool:
+    from .config import effective_narrative
+
+    ov = loads(book.get("narrative_json"), {})
+    return bool((ov.get("delivery") or {}).get("pauses_from_direction") if ctx is None else effective_narrative(ctx.settings(), ov).delivery.pauses_from_direction)
+
+
 def pause_hints(conn, ctx, book: dict, chapter_id: int) -> dict[str, str]:
     """sid -> 'beat' | 'long' for segments whose direction asks for a longer pause, only when the book's
     ``delivery.pauses_from_direction`` is on. Empty otherwise, so digests and gaps of existing books never change.
     Without a ``ctx`` only the book's own override is consulted."""
-    from .config import effective_narrative
-
-    ov = loads(book.get("narrative_json"), {})
-    on = (ov.get("delivery") or {}).get("pauses_from_direction") if ctx is None else effective_narrative(ctx.settings(), ov).delivery.pauses_from_direction
-    if not on:
+    if not _pauses_on(ctx, book):
         return {}
     out = {}
     for r in rows(conn, """SELECT s.sid, s.pause_kind, d.final_json FROM segments s JOIN directions d ON d.segment_id=s.id
@@ -73,28 +96,58 @@ def pause_hints(conn, ctx, book: dict, chapter_id: int) -> dict[str, str]:
     return out
 
 
-def takes_digest(conn, book: dict, chapter_id: int, ctx=None) -> str:
-    sel = rows(conn, "SELECT sid, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+def takes_digest(conn, book: dict, chapter_id: int, ctx=None, *, sel=None, chapter=None, hints=None) -> str:
+    """Digest of what a chapter master is built from. ``sel`` ((sid, selected_attempt_id) pairs in segment order), ``chapter`` (its row) and
+    ``hints`` (its pause hints) may be passed by a caller that already loaded them for the whole book; the result is identical."""
+    if sel is None:
+        sel = [(r["sid"], r["selected_attempt_id"]) for r in rows(conn, "SELECT sid, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))]
     snap = loads(book["settings_json"], {})
-    payload = {"sel": [(r["sid"], r["selected_attempt_id"]) for r in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
+    payload = {"sel": [(sid, att) for sid, att in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
                "meta": [book["title"], book["author"]]}
-    hints = pause_hints(conn, ctx, book, chapter_id)
+    if hints is None:
+        hints = pause_hints(conn, ctx, book, chapter_id)
     if hints:  # only non-none hints, so digests of existing renders stay unchanged
         payload["pause_hints"] = sorted(hints.items())
-    ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    if chapter is None:
+        ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    else:
+        ov = {"title": chapter["title"]} if chapter.get("original_title") is not None else None
     if ov:  # only retitled chapters, so digests of existing renders stay unchanged
         payload["chapter_title"] = ov["title"]
     return short_hash(dumps(payload), 16)
 
 
 def chapter_readiness(conn, book: dict, ctx=None) -> list[dict]:
+    """Per chapter: usable takes, problems, masters and whether the masters are current. Loads the whole book in a constant number of
+    queries (chapters, segments, selected attempts, renders, and pause hints when enabled) and checks each file at most once."""
+    chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],))
+    if not chapters:
+        return []
+    segs_by: dict[int, list[dict]] = {}
+    for s in rows(conn, """SELECT s.sid, s.chapter_id, s.status, s.selected_attempt_id FROM segments s
+                           WHERE s.chapter_id IN (SELECT id FROM chapters WHERE book_id=?) ORDER BY s.chapter_id, s.idx""", (book["id"],)):
+        segs_by.setdefault(s["chapter_id"], []).append(s)
+    atts = {a["id"]: a for a in rows(conn, """SELECT a.id, a.wav_path, a.fingerprint FROM attempts a WHERE a.id IN
+                                             (SELECT s.selected_attempt_id FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE c.book_id=?)""", (book["id"],))}
+    renders_by: dict[int, dict] = {}
+    for r in rows(conn, "SELECT cr.* FROM chapter_renders cr JOIN chapters c ON c.id=cr.chapter_id WHERE c.book_id=?", (book["id"],)):
+        renders_by.setdefault(r["chapter_id"], {})[r["kind"]] = r
+    hints_by: dict[int, dict] = {}
+    if _pauses_on(ctx, book):
+        for r in rows(conn, """SELECT s.chapter_id, s.sid, d.final_json FROM segments s JOIN directions d ON d.segment_id=s.id JOIN chapters c ON c.id=s.chapter_id
+                               WHERE c.book_id=? AND s.pause_kind IN ('sentence','paragraph')""", (book["id"],)):
+            hint = loads(r["final_json"], {}).get("pause")
+            if hint in PAUSE_HINT_MS:
+                hints_by.setdefault(r["chapter_id"], {})[r["sid"]] = hint
+    exists, dirs = _memo_exists(), book_dirs(book)
     out = []
-    for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],)):
-        segs, takes, problems = _chapter_takes(conn, book, ch["id"])
-        renders = {r["kind"]: r for r in rows(conn, "SELECT * FROM chapter_renders WHERE chapter_id=?", (ch["id"],))}
-        digest = takes_digest(conn, book, ch["id"], ctx)
+    for ch in chapters:
+        segs = segs_by.get(ch["id"], [])
+        takes, problems = _classify_takes(book, segs, atts, exists, dirs)
+        renders = renders_by.get(ch["id"], {})
+        digest = takes_digest(conn, book, ch["id"], ctx, sel=[(s["sid"], s["selected_attempt_id"]) for s in segs], chapter=ch, hints=hints_by.get(ch["id"], {}))
         current = bool(renders.get("wav") and renders.get("mp3") and renders["wav"]["takes_digest"] == digest
-                       and Path(renders["wav"]["path"]).exists() and Path(renders["mp3"]["path"]).exists())
+                       and exists(renders["wav"]["path"]) and exists(renders["mp3"]["path"]))
         out.append({"chapter": ch, "segments": len(segs), "ready_takes": len(takes), "problems": problems,
                     "renders": renders, "render_current": current, "digest": digest})
     return out

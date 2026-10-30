@@ -379,15 +379,62 @@ class Plan:
     pace_reason: str = ""
     ref_id: int | None = None
     ref_bucket: str | None = None
+    user_source: bool = False  # the direction (or part of it) was set by the user, not the Director
 
 
 def spoken_text(seg: dict) -> str:
     return (seg.get("override_text") or seg.get("narration_text") or seg.get("original_text") or "").strip()
 
 
-def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = None) -> Plan:
+USER_DIRECTION_FIELDS = ("emotion", "intensity", "pacing", "tension", "delivery")
+USER_DIRECTION_REASON = "direction set by you for this segment"
+
+
+def clean_user_direction(user: dict | None) -> dict:
+    """The usable part of a stored/offered user direction: known fields with a real value. ``once`` and unknown keys are dropped."""
+    from . import vocab as V
+
+    out: dict = {}
+    for k in USER_DIRECTION_FIELDS:
+        v = (user or {}).get(k)
+        if v in (None, ""):
+            continue
+        if k == "emotion" and v not in V.EMOTIONS:
+            continue
+        if k == "pacing" and v not in V.PACINGS:
+            continue
+        if k in ("intensity", "tension"):
+            try:
+                v = V.clamp_intensity(int(v))
+            except (TypeError, ValueError):
+                continue
+        if k == "delivery":
+            v = " ".join(str(v).split())[:240]
+            if not v:
+                continue
+        out[k] = v
+    return out
+
+
+def user_only_direction(seg: dict, ns: NarrativeSettings, user: dict) -> dict:
+    """The effective direction when only the user's fields are known: the rules engine's neutral base overlaid with ``user``
+    (an emotion given without an intensity means a clearly audible 3)."""
+    from . import continuity as CT
+    from . import director as D
+
+    raw = D.rules_direction(seg["sid"], None, {}, ns.emotion_sensitivity, seg.get("original_text") or "")
+    smoothed = {k: raw[k] for k in CT.FIELDS}
+    u = dict(user)
+    if "emotion" in u and "intensity" not in u and u["emotion"] != "neutral":
+        u["intensity"] = 3
+    return CT.final_of(raw, smoothed, u)
+
+
+def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = None, user_override: dict | None = None) -> Plan:
     """Everything that determines how a segment sounds: voice, delivery instruction and the cache key.
-    ``ns_patch`` (A/B listening only) overrides whitelisted narrative settings for this one call."""
+    ``ns_patch`` (A/B listening only) overrides whitelisted narrative settings for this one call.
+    ``user_override`` (preview only, never stored) is merged over the segment's stored user direction (None/"" removes a field).
+    A user direction takes effect even when the Director is off or the book is a classic (non-semantic) one."""
     ns = book_ns(ctx, book)
     if ns_patch:
         ns = effective_narrative_with(ns, ns_patch)
@@ -416,19 +463,49 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
     info = {"applied": False, "reason": "delivery guidance is off for this book"}
     delivery = None
     pace_final = None  # the direction pace is taken from (the Director's, or a user's own when the Director is off)
+    # The user's own direction for this segment (stored, or offered for a preview). With the Director on it is already part of the
+    # stored final direction; with the Director off (or a classic book) it is the only direction there is.
+    user_dir: dict = {}
+    d0 = None
+    undirected = isinstance(ns_patch, dict) and ns_patch.get("director_enabled") is False  # blind A/B "undirected" side: no direction of any kind
+    if not undirected and (user_override is not None or not ns.director_enabled):
+        d0 = row(conn, "SELECT raw_json, smoothed_json, user_json, final_json FROM directions WHERE segment_id=?", (seg["id"],))
+        user_dir = clean_user_direction(loads(d0["user_json"], {})) if d0 else {}
+        for k, val in (user_override or {}).items():
+            if k not in USER_DIRECTION_FIELDS:
+                continue
+            if val in (None, ""):
+                user_dir.pop(k, None)
+            else:
+                user_dir.update(clean_user_direction({k: val}))
+    user_source = False
+    has_user = False  # the stored final direction already contains the user's fields (Director on): reported, but the reason text is the Director's
     if ns.director_enabled:
-        d = row(conn, "SELECT final_json FROM directions WHERE segment_id=?", (seg["id"],))
+        d = d0 if user_override is not None else row(conn, "SELECT final_json, user_json FROM directions WHERE segment_id=?", (seg["id"],))
         if d:
-            final = loads(d["final_json"], None)
+            if user_override is not None:
+                from . import continuity as CT
+
+                final = CT.final_of(loads(d["raw_json"], {}), loads(d["smoothed_json"], {}), user_dir)
+                user_source = bool(user_dir)
+            else:
+                final = loads(d["final_json"], None)
+                has_user = bool(clean_user_direction(loads(d["user_json"], {})))
             pace_final = final
-            translated = DL.stored_translation(conn, final, v["kind"], seg, ns) if ns.delivery.translator == "llm" else None  # read-only, never asks the LLM
+            translated = DL.stored_translation(conn, final, v["kind"], seg, ns) if ns.delivery.translator == "llm" and user_override is None else None  # read-only, never asks the LLM
             delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, translated)
+        elif user_dir:
+            final = user_only_direction(seg, ns, user_dir)
+            pace_final = final
+            user_source = True
+            delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, None)
         else:
             info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
-    elif ns.delivery.pace_from_direction != "off":
-        d = row(conn, "SELECT final_json, user_json FROM directions WHERE segment_id=?", (seg["id"],))
-        if d and loads(d["user_json"], {}):
-            pace_final = loads(d["final_json"], None)
+    elif user_dir:
+        final = user_only_direction(seg, ns, user_dir)
+        pace_final = final
+        user_source = True
+        delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, None)
     from ..pronunciation import apply_for_book
 
     text = apply_for_book(conn, book["id"], spoken_text(seg))  # dictionary respellings; the stored text is untouched
@@ -442,6 +519,8 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
             info = {"applied": True, "reason": why}
         else:
             info = {"applied": False, "reason": why}
+    if user_source:
+        info = {**info, "reason": f"{USER_DIRECTION_REASON}; {info['reason']}"}
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
     snap = loads(book["settings_json"], {}).get("models", {})
     key = short_hash(dumps({
@@ -450,7 +529,7 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
         "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {}),
         **({"ref": ref_row["ref_sha256"]} if ref_row else {})}), 20)
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace,
-                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None)
+                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -708,11 +787,13 @@ def set_segment_narrative(ctx, segment_id: int, patch: dict, actor: str = "opera
     # a voice or speaker change can alter how neighbouring text is cut; re-reconcile the chapter
     if "character_id" in patch and s["src_start"] is not None:
         resegment_book(ctx, s["book_id"], [s["chapter_id"]])
+    recomputed_reset: list[int] = []
     if changed_dir:
-        A.recompute_from(ctx, s["book_id"], segment_id)
+        recomputed_reset = list(A.recompute_from(ctx, s["book_id"], segment_id).get("audio_reset") or [])  # the Director-on cascade resets takes itself
     with ctx.db.tx() as conn:
         reset = invalidate_changed(conn, ctx, s["book_id"], [segment_id], include_approved=True)
         seg_now = row(conn, "SELECT status FROM segments WHERE id=?", (segment_id,))
+    reset = reset or ([segment_id] if segment_id in recomputed_reset else []) or recomputed_reset  # anything put back to pending must also be queued
     if reset:
         from ..services import enqueue_book
 
@@ -720,7 +801,88 @@ def set_segment_narrative(ctx, segment_id: int, patch: dict, actor: str = "opera
             enqueue_book(ctx, s["book_id"], front=True)
         except Exception:
             pass
-    return {"ok": True, "segment_id": segment_id, "regenerating": bool(reset), "status": seg_now["status"] if seg_now else None}
+    return {"ok": True, "segment_id": segment_id, "regenerating": segment_id in reset, "status": seg_now["status"] if seg_now else None}
+
+
+def validate_direction(direction: dict | None) -> dict:
+    """A user direction offered through the API, checked like ``set_segment_narrative`` does: unknown keys and bad vocabulary -> 422,
+    intensity/tension clamped to 1-5, delivery trimmed to 240 characters. A key present with None/"" means "clear this field"."""
+    from . import vocab as V
+
+    out: dict = {}
+    for k, v in (direction or {}).items():
+        if k not in USER_DIRECTION_FIELDS:
+            raise _err(f"Unknown direction field '{k}'", 422)
+        if v in (None, ""):
+            out[k] = None
+            continue
+        if k == "emotion" and v not in V.EMOTIONS:
+            raise _err(f"emotion must be one of: {', '.join(V.EMOTIONS)}", 422)
+        if k == "pacing" and v not in V.PACINGS:
+            raise _err(f"pacing must be one of: {', '.join(V.PACINGS)}", 422)
+        if k in ("intensity", "tension"):
+            try:
+                v = V.clamp_intensity(int(v))
+            except (TypeError, ValueError):
+                raise _err(f"{k} must be a number from 1 to 5", 422) from None
+        if k == "delivery":
+            v = " ".join(str(v).split())
+            if len(v) > 240:
+                raise _err("The delivery note can be at most 240 characters.", 422)
+        out[k] = v
+    return out
+
+
+def delivery_summary(conn, ctx, seg: dict, book: dict, user_override: dict | None = None) -> dict:
+    """What would reach the engine for this segment, in words and numbers (pure: no LLM, no writes). ``user_override`` previews a direction
+    that is not saved. ``applied`` means the emotion itself reaches the voice (an instruction, or a bank clip for a clone)."""
+    plan = plan_for_segment(conn, ctx, seg, book, user_override=user_override)
+    ns = book_ns(ctx, book)
+    final = plan.direction or {}
+    kind = plan.voice_kind
+    v = row(conn, "SELECT id, name FROM voices WHERE id=?", (plan.voice_id,))
+    d0 = row(conn, "SELECT user_json FROM directions WHERE segment_id=?", (seg["id"],))
+    emotion = final.get("emotion")
+    bucket = RB.bucket_for(emotion) if final else None
+    notes: list[str] = []
+    if kind == "clone":
+        notes.append("This is a cloned voice (Base model): it cannot take written instructions.")
+        if ns.delivery.clone != "reference_bank":
+            notes.append("The emotion reference bank is switched off in Settings, so emotion cannot steer this voice; only pace can.")
+        elif plan.ref_id:
+            notes.append(f"Uses the '{plan.ref_bucket}' reference clip for '{emotion}'.")
+        elif final and bucket:
+            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one in Narrator Studio).")
+        elif final:
+            notes.append(f"'{emotion}' is served by the base reference, so no clip changes the sound.")
+        if not plan.ref_id:
+            notes.append("The take will differ only in pace." if abs(plan.pace - 1.0) > 1e-6 and plan.pace_reason else
+                         "Pace is unchanged, so a new take differs only by chance.")
+            notes.append("Tip: add an exclamation mark or other emphasis in the spoken text, or add an emotion reference clip.")
+    elif not plan.delivery_applied:
+        notes.append(plan.delivery_reason or "No instruction reaches the voice.")
+    if abs(plan.pace - 1.0) > 1e-6:
+        notes.append(f"Speed x{plan.pace:.2f}" + (f" ({plan.pace_reason})" if plan.pace_reason else "") + ".")
+    return {"voice_kind": kind, "voice": {"id": v["id"], "name": v["name"]} if v else None, "model_id": plan.voice.model_id,
+            "applied": bool(plan.delivery_applied), "instruct": plan.instruct, "pace": round(plan.pace, 3), "pace_reason": plan.pace_reason,
+            "bank_clip": plan.ref_bucket, "bank_bucket": bucket, "bank_enabled": ns.delivery.clone == "reference_bank", "reason": plan.delivery_reason,
+            "source": "you" if plan.user_source else ("director" if final else "none"),
+            "direction": {k: final.get(k) for k in ("emotion", "intensity", "pacing", "tension", "delivery")} if final else None,
+            "user_direction": clean_user_direction(loads(d0["user_json"], {})) if d0 else {}, "notes": notes}
+
+
+def preview_delivery(ctx, segment_id: int, direction: dict | None = None) -> dict:
+    """``delivery_summary`` for a segment, optionally with an unsaved direction merged over its stored one. Reads only."""
+    d = validate_direction(direction) if direction else None
+    with ctx.db.session() as conn:
+        s = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not s:
+            raise _err("Segment not found", 404)
+        book = row(conn, "SELECT * FROM books WHERE id=?", (s["book_id"],))
+        try:
+            return {"segment_id": segment_id, **delivery_summary(conn, ctx, s, book, d)}
+        except ValueError as e:  # no narrator voice assigned
+            raise _err(str(e), 409) from None
 
 
 def update_character(ctx, character_id: int, patch: dict, actor: str = "operator") -> dict:
@@ -762,24 +924,29 @@ def accept_guess(ctx, span_or_segment_id: int, character_id: int, actor: str = "
     return set_segment_narrative(ctx, span_or_segment_id, {"character_id": character_id}, actor)
 
 
-def narrative_status(ctx, book_id: int) -> dict:
-    with ctx.db.session() as conn:
-        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
-        if not b:
-            raise _err("Book not found", 404)
-        ns = book_ns(ctx, b)
-        stages = {r["stage"]: {"status": r["status"], "started_at": r["started_at"], "finished_at": r["finished_at"], "error": r["error"],
-                               "stats": loads(r["stats_json"], {})} for r in rows(conn, "SELECT * FROM analysis_stages WHERE book_id=?", (book_id,))}
-        total = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=?", (book_id,), 0)
-        semantic = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND src_start IS NOT NULL", (book_id,), 0)
-        directed = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=?", (book_id,), 0)
-        stale = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND stale=1", (book_id,), 0)
-        review = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND needs_review=1", (book_id,), 0)
-        dreview = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND needs_review=1", (book_id,), 0)
-        job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
-        cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
-        chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
-        ab = AB.tally(conn, book_id)
+def narrative_status(ctx, book_id: int, conn=None) -> dict:
+    """Narrative analysis status of a book. Pass ``conn`` to reuse the caller's open session (no extra connection)."""
+    if conn is not None:
+        return _narrative_status(ctx, book_id, conn)
+    with ctx.db.session() as own:
+        return _narrative_status(ctx, book_id, own)
+
+
+def _narrative_status(ctx, book_id: int, conn) -> dict:
+    b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    if not b:
+        raise _err("Book not found", 404)
+    ns = book_ns(ctx, b)
+    stages = {r["stage"]: {"status": r["status"], "started_at": r["started_at"], "finished_at": r["finished_at"], "error": r["error"],
+                           "stats": loads(r["stats_json"], {})} for r in rows(conn, "SELECT * FROM analysis_stages WHERE book_id=?", (book_id,))}
+    sg = row(conn, "SELECT COUNT(*) total, COALESCE(SUM(src_start IS NOT NULL), 0) semantic, COALESCE(SUM(needs_review=1), 0) review FROM segments WHERE book_id=?", (book_id,))
+    dr = row(conn, "SELECT COUNT(*) directed, COALESCE(SUM(stale=1), 0) stale, COALESCE(SUM(needs_review=1), 0) review FROM directions WHERE book_id=?", (book_id,))
+    total, semantic, review = sg["total"], sg["semantic"], sg["review"]
+    directed, stale, dreview = dr["directed"], dr["stale"], dr["review"]
+    job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
+    cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
+    chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
+    ab = AB.tally(conn, book_id)
     if job:
         job["result"] = loads(job.pop("result_json"), None)
     return {"semantic": semantic > 0, "segments": total, "semantic_segments": semantic, "directed": directed, "stale": stale, "ab": ab,

@@ -44,6 +44,26 @@
 | Blind A/B instead of automatic scoring | Whisper and acoustic metrics say nothing about emotion; the only judge is a person who does not know which clip is which. Rounds use the same seed and explicit settings patches, so only the setting differs. The adoption guidance (60% of non-tie votes, other-narrator flags <= 10%) is advice shown to the owner, not enforced |
 | Optional per-pass models (`chapter_model`, `scene_model`, `translator_model`), blank = main model | Lets the owner try a stronger model for the one slow pass and a small one for the many fast ones without a new provider concept. Whether a smaller scene model is good enough is unmeasured |
 
+**v0.8.0 decisions**
+
+| Decision | Reason |
+|---|---|
+| Views are a **fixed shell plus live regions** repainted by `patchRegions`, not whole-page repaints; forms are drawn once | A whole-page repaint on every state push threw away scroll position, focus, open `<details>` and typed text (the Overview feed jumped, Book fields were wiped). Repainting only changed regions, with stable ids for anything scrollable/focusable, fixes the class of bug, not each page |
+| The SSE **digest must not contain clock-derived values** (heartbeat age, "now") | The heartbeat age changed every second, so the stream pushed an event every second and every page refetched and repainted forever. The exact age stays in `/api/worker`; `online` flips only when the heartbeat goes stale |
+| `onState` **delivers only changed payloads** (polled-fallback payloads always) | A second line of defence behind the digest: a subscriber never repaints for an event that carries nothing new |
+| The router renders each navigation into its **own host** and swaps it in when ready, with a stale-render guard and a "Loading..." state after 120 ms | A slow response used to paint over the page the user had already moved on to, and a slow page looked like a dead click. The old page stays (dimmed) so nothing flashes blank |
+| A **light payload** for Review (`GET /api/books/{id}?view=review`) | Review needs the summary and chapter rows, not readiness, the release check, exports, logs or narrative status, which cost file-existence checks. Key names equal `get_book`'s so views are unchanged |
+| `get_book` cost must not grow with segment count: batch readiness, one existence check per path | A 4,000-segment book took 6,523 queries and about 333 ms; now 30 queries and about 104 ms, and an equivalence test keeps the batched result identical to the per-segment one |
+| Disk usage: paint at once, measure in the background, 60 s cache, explicit Refresh, actions invalidate | Walking every file of a big library made the page feel hung. A stale number with its age shown is better than a blank page; deleting, purging, backing up and restoring through the app drop the cache so it never lies about them |
+| **One "recently finished" row per book** with "+N earlier runs" | Every segment regenerate is a job; ten touch-ups of one book buried everything else. The earlier runs are still listed, with segments rendered and processing time |
+| **Processing time is shown apart from audio length**, with a basis sentence | They answer different questions (how long will the Mac be busy vs how long is the book). The rate is the job's own pace after 10 segments, else per TTS model (>= 20 samples), else global, else "estimate after N more segments": no number is better than a made-up one. Paused jobs do not advance the queue |
+| `jobs.active_seconds` is accumulated by the worker per step and does not touch `updated_at` | Wall time from start to finish includes queue waits, pauses and restarts. Bumping `updated_at` would wake the live digest on every step |
+| A **user's direction always takes effect** (also with the Director off and on classic books) and is stored as the segment's own user direction; no one-shot mode | The panel promised an effect the pipeline silently ignored. Keeping it stored means a later re-render sounds the same and the direction is visible and clearable in Inspect |
+| The regenerate panel **explains per voice kind** what reaches the voice (instruction, bank clip, pace) | A clone cannot take instructions, so "anger, 5" would otherwise look like it should work and silently not |
+| Settings: seven tabs over **one form and one Save; the saved payload is unchanged** | The page had grown into one long scroll. Keeping a single form means nothing about validation, the `PUT /api/settings` body or what gets saved could regress; hidden fields are never dropped from the body |
+| Wide screens: content capped at 1440 px (Review 1680 px) with grid column caps | Cards and tables stretched across a 2560 px monitor and became unreadable |
+| Duplicate & retune creates a **new voice** (version 1, lineage in `derived_from`) instead of editing in place; a clone is retuned via its source design voice | Editing a voice in use creates a version that books keep until switched; a variation should not touch it. A clone is defined by its reference clip and cannot take instructions, so the only honest retune is back at the design |
+
 ## Gotchas already hit (do not rediscover them)
 
 - (v0.3) Patch scripts with backslashes passed through a shell heredoc corrupted regexes (`\b` became a backspace character). Use the Edit tool, a script file, or `chr(92)`.
@@ -123,6 +143,24 @@
 - A legacy book can be converted (it re-cuts every segment); semantic segmentation cannot be switched off afterwards. The import preview's segment count still uses the legacy chunker estimate.
 - Summaries are extractive; an optional LLM summary stays unconfirmed. A downstream cascade never resets approved segments.
 - `lan_e2e.py` and `lab_local.py` were not re-run for v0.3.0 (the smoke test and `narrative_real.py` were).
+
+**Live updates and browser testing (v0.8.0)**
+- **A reveal-on-refresh `scrollIntoView` was a regression.** The first version of the Review rewrite scrolled the selected segment into view inside every live refresh, so the list jumped back whenever a job pushed an update (found in integration by `polish_review.py`). `repaintList(reveal)` now scrolls only for an explicit pick (click, J/K, deep link).
+- **`onState` de-duplication means views must not rely on periodic ticks.** On an idle studio the callback is not called at all. A view that shows relative time ("2 min ago") needs its own timer, cleared in its cleanup.
+- **Never put a clock value in `state_digest`** (see decisions). A regression test checks the digest is identical across two reads a second apart.
+- **Playwright's `wait_for_function` does not work against this app**: the CSP forbids `unsafe-eval`, which a string expression needs. The browser scripts poll from Python with `page.evaluate` instead (`foundation_ui.py` and `polish_review.py` have the helper).
+- `jobs.active_seconds` must be updated without touching `jobs.updated_at`, or the live digest wakes on every worker step.
+- A router host is inserted **first** in `#view` (`prepend`) so `document.getElementById` finds the new page's ids before the old page's while both exist.
+- Patching a region with `patchRegions` only restores scroll/focus/open state for elements **with an id**; give new scrollable or focusable parts one.
+- `get_book` and `get_book_review` have an equivalence/subset test; if you add a field to one, add it to the other or the Review page will quietly lose it.
+
+## v0.8.0 known limitations
+
+- Nothing ran on the Mac, with the real engine or in real Safari. Processing-time estimates were never compared with real timings; the Director term and the per-model median are untested against a real run.
+- The Book page at 360 px wide has a horizontal overflow from a `nowrap` table in `book.js` (known, unfixed). Queue drag-to-reorder, the Settings folder browser / Finder picker and the API key *Save* / *Test connection* clicks were not exercised in a browser.
+- "Regenerate with direction" shows what is sent; whether a real model changes its delivery is unmeasured. A clone with no bank clip changes only by pace (the panel says so).
+- The Queue lists finished jobs of the last 30 days (was 7); older runs do not appear in "+N earlier runs".
+- The disk usage figure can be up to 60 s old (its age is shown); changes made outside the app (files deleted by hand) and a book move appear after Refresh.
 
 ## v0.7.0 known limitations
 

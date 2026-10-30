@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - self-contained installer for macOS on Apple Silicon
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.7.0 (build 20261029182429-9e03fd86)
+#  Version v0.8.0 (build 20261029193823-a745506b)
 #
 #  LEGACY installer (needs Homebrew, installs into ~/audiobook-studio-claude). Kept for existing deployments only.
 #  New installs and migrations: install_audiobook_studio_mac.sh (no prerequisites, signed updates) - docs/10-installation-and-updates.md.
@@ -23,8 +23,8 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.7.0"
-BUILD_ID="20261029182429-9e03fd86"
+STUDIO_VERSION="v0.8.0"
+BUILD_ID="20261029193823-a745506b"
 APP_HOME="${AUDIOBOOK_STUDIO_HOME:-$HOME/audiobook-studio-claude}"
 NO_MODELS=0
 PREFETCH_ALL=0
@@ -416,11 +416,99 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_c1894ed3c498__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_613db1f2d417__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.8.0
+Feature release (polish batch). **Tested only with the mock engine, HTTP stub servers, 531 pytest tests and headless Edge scripts on Windows (`tools/e2e/foundation_ui.py`, `polish_*.py`). Nothing in
+this release has been run on the Mac, with the real engine, or in real Safari; processing-time estimates were never compared with real timings.** See *Not verified* at the end.
+
+**Live updates and repainting**
+- **The live-update storm is fixed.** The SSE state digest (`services.state_digest`) no longer contains the worker heartbeat age or time (they changed every second, so the stream pushed an event
+  every second and every page repainted). The digest is now a pure function of stored state; `/api/worker` and the Overview still return the exact heartbeat age, and the top-bar pill
+  derives it from `heartbeat_at` when the digest has none. `onState` (`ui.js`) skips a payload equal to the last one it delivered to that subscriber (`sameState`); polled-fallback payloads
+  are always delivered.
+- **Views repaint live regions only.** New `patchHTML` / `patchRegions` (`ui.js`) repaint a region in place only when its markup changed and keep scroll positions, keyboard focus, text selection
+  and `<details id>` open state. Overview, Library, Queue, Book, Disk and Review are now a fixed shell plus live regions (Settings and Narrator Studio keep their forms and previews across redraws instead). Visible results: the Overview activity feed no longer jumps to the top
+  (a "N new events - back to top" hint appears instead), "Needs attention" is capped at 5 rows with *Show all (N)* and lists a book once, a Library narrator dropdown keeps its selection and focus.
+- **Book page forms are drawn once.** Metadata, cover, release sign-off (approved by, notes, attestation) and delivery-instruction fields are never touched by a live update, so typed values survive; the
+  stats, chapters, exports and log regions update in place. A playing chapter mini-player is not re-created. The cover is no longer re-downloaded on every repaint: `GET /api/books/{id}` carries
+  `cover_version` (the cover file's mtime) as the cache key.
+
+**Navigation and performance**
+- **Router.** Each navigation renders into its own host element with a stale-render guard (a superseded or slow render can never paint over a newer page); the old page stays visible but dimmed and a
+  "Loading..." status appears after 120 ms. Views receive `nav` (`nav.signal`, `nav.isCurrent()`) as a fourth argument and fetch in parallel. Focus moves to the new page's `<h1>` and the page scrolls to the top only when
+  the route actually changed.
+- **`get_book` no longer grows with the number of segments**: chapter readiness, take lookups and release check are batched (one file-existence check per path). 4,000 synthetic segments: 6,523 queries
+  down to 30, about 333 ms down to about 104 ms. Equivalence with the old per-segment implementation is tested. `GET /api/books/{id}?view=review` returns a light payload (summary plus chapter
+  rows, no readiness, release check, exports, logs or narrative status) for the Review page; the segment-detail chapter timing is looked up with `json_each` instead of decoding the whole map.
+- **Disk & Backups paints at once** with "Measuring disk usage..." placeholders and measures in the background. `GET /api/disk/usage` serves a 60 s cache (one measurement at a time, one `lstat` per file) and
+  returns `measured_at`, `age_s` and `cached`; `?refresh=1` (the *Refresh* button) forces a new measurement. Delete, purge, backup and restore drop the cache.
+- **Schema v6** (migration applied automatically, keeps all data): indexes `ix_segments_updated`, `ix_jobs_updated`, `ix_jobs_book` and the column `jobs.active_seconds REAL NOT NULL DEFAULT 0`.
+
+**Review & QA**
+- **Regenerate with direction...** (Review panel): emotion, intensity, pacing and a delivery note, with a read-only **Preview** that explains, per voice kind, what actually reaches the voice
+  (`GET /api/segments/{id}/delivery-preview`): preset and designed voices receive a written instruction; a cloned voice cannot take instructions, so only an emotion reference-bank clip (if enabled and present)
+  and pace can change the take, and the panel says so. `POST /api/segments/{id}/regenerate` now accepts `direction`.
+- **A user direction takes effect even when the book's Director is off and on classic (non-semantic) books** (`plan_for_segment` builds the direction from the user's fields alone); it is always stored as the
+  segment's own user direction, visible and clearable in Inspect.
+- **Fix: the Director-on cascade now queues the segments it resets.** Setting a direction with the Director on reset dependent segments to pending but did not enqueue them; they are now queued
+  (`regenerating` in the reply refers to this segment).
+- **Fix (found during integration): the Review list no longer jumps to the selected segment on a live refresh**; it scrolls to the selection only for an explicit pick (click, J/K, deep link).
+
+**Queue**
+- **One "recently finished" row per book**, with a "+N earlier runs" disclosure (touch-ups from segment regenerates are folded in; each run shows segments rendered, processing time and "full pass" or "touch-up"),
+  a Book column, and a 30-day window (was 7 days).
+- **Pagination, 10 per page**, for *Recently finished* and for *Assembly, export, preview & analysis jobs* (`ui.js` `pager` / `wirePager`).
+
+**Processing time** (`studio/runtime.py`, `js/runtime.js`; shown on Overview, Library and Queue)
+- Running: "about ... left · done about HH:MM". Queued: "about ... processing · starts about HH:MM". Finished: "processed in ...". Paused jobs show "paused" and do not advance the queue estimate.
+- The rate is a running job's own pace once at least 10 of its segments are done, else the median for the book's TTS model over the last 200 segments (at least 20 samples), else the global median, else
+  "estimate after N more segments". Director (LLM) seconds are added for undirected pending segments, except for an observed job rate (which already includes them).
+- Actual time is `jobs.active_seconds`, accumulated by the worker per step (queued waits, pauses and restarts are not counted; `updated_at` is left alone so it does not wake the live digest). Jobs
+  finished before v0.8.0 fall back to `finished_at - started_at`.
+- Always labelled and tooltipped as **processing time, not audio length**; the audio length is shown separately.
+- `GET /api/overview`, `/api/books`, `/api/books/{id}` and `/api/queue` entries carry a `runtime` object (`state`, `processing_s`, `remaining_s`, `finish_at`, `starts_at`, `total_est_s`, `estimated`, `basis`).
+
+**Settings & Storage**
+- **Seven tabs** over one form and one Save: Storage, Production, Quality & verification, Voices & models, Narrative, Local LLM, Server & advanced (`#/settings/<tab>`; arrow keys, Home and End navigate). Unsaved-change dots per tab,
+  Discard, a warning when leaving with unsaved edits, and drafts survive a back/forward. **The saved payload is unchanged** (same sections and keys; a hidden tab or dependent field never drops a key).
+- **Wide-screen layout**: page content is a centred column capped at 1440 px (Review 1680 px); stat, voice, take and Overview grids cap their column counts. No horizontal scroll at 360 or 768 px on Overview, Library, Queue and Settings (the Book page is the known exception, below).
+
+**Narrator Studio**
+- The edit dialog says honestly what can change for each voice kind (built-in presets: delivery instruction only; presets: speaker and instruction; designed: description; clones: name only), the version
+  number a save will create, and which books still use an older version (`books_on_older_version` now carries `voice_version`).
+- `voices.description` stays in sync for designed voices when their description is edited.
+- **Duplicate & retune...** (`POST /api/voices/{id}/duplicate`) copies a preset or designed voice (built-ins included) into a new editable voice with different delivery; **Retune from '<source>'...**
+  (`POST /api/voices/{id}/retune`) makes a designed copy of the voice a promoted clone came from. Voices carry `derived_from` (lineage, stored in the new voice's consent JSON) and the card shows it; clones carry `source_voice`.
+- `GET /api/voices` runs a constant number of queries however many voices exist. Preview form text survives redraws and a trip to the Record tab.
+
+**API and schema summary**
+- Schema v6: see above. No setting changed.
+- `GET /api/queue?finished_offset&finished_limit&utility_offset&utility_limit` (limits 1-50, default 10); the reply gains `active`, `finished` (one entry per book with `latest_run`, `earlier_runs`), `finished_total`,
+  `utility_total`, the offsets/limits and `window_days`; `jobs` (active plus finished entries) and `throughput` stay.
+- `POST /api/segments/{id}/regenerate` accepts `direction {emotion, intensity, pacing, tension, delivery}` and returns `delivery` (what the voice will be given).
+- `GET /api/segments/{id}/delivery-preview?emotion&intensity&pacing&tension&delivery` (absent = stored value, empty = cleared; nothing is saved).
+- `GET /api/disk/usage?refresh=1`; `GET /api/books/{id}?view=review`; `POST /api/voices/{id}/duplicate`; `POST /api/voices/{id}/retune`. See doc 3.
+
+**Housekeeping**
+- `test_background_download_endpoint_flow_and_busy_guard` (update flow) no longer fails on a loaded machine: it waits up to 20 s and reports the real state and error.
+- 80 new pytest tests (451 to 531): `test_live_foundation`, `test_book_perf`, `test_disk_cache`, `test_runtime`, `test_overview_runtime`, `test_regen_direction`, `test_voice_retune`, `test_settings_ui`; three node unit suites
+  in `tests/js/` run through pytest wrappers. New browser scripts in `tools/e2e/`: `foundation_ui.py`, `polish_book.py`, `polish_overview.py`, `polish_queue.py`, `polish_review.py`, `polish_settings.py`, `polish_voices.py`.
+
+**Not verified**
+- Everything ran on Windows against the mock engine (tones), HTTP stub servers and headless Edge. **Nothing of v0.8.0 ran on the Mac, with the real engine, or in real Safari.**
+- Browser scripts (headless Edge, mock engine): `foundation_ui.py` 16 checks, `polish_book.py` 29, `polish_overview.py` 27, `polish_queue.py` 27, `polish_review.py` 20, `polish_settings.py` 85, `polish_voices.py` 24, plus the earlier
+  `versions_ui.py` 29 and `delivery_ui.py` 13.
+- Processing-time estimates were never compared with real timings (mock timings are not representative); their accuracy on the M3 Max is unknown. The query-count and timing figures for `get_book` are from synthetic
+  data on a Windows machine.
+- The Settings folder browser and Finder picker, and the API key *Save* / *Test connection* clicks, were not exercised in a browser. Queue drag-to-reorder was not browser-tested.
+- Whether "Regenerate with direction" changes how a real model sounds is unmeasured: the explanation describes what is sent, not what is heard.
+- **Known, unfixed:** the Book page at 360 px width has a horizontal overflow from a `nowrap` table in `book.js`.
+- Schema v6 was migrated on mock databases only, not on the Mac's real library (a pre-migration backup is written automatically).
 
 ## v0.7.0
 Feature release. **Tested only with the mock engine, stub LLM servers (HTTP stubs, no real model) and, for narrator versions and the delete/import/review fixes, a browser
@@ -698,7 +786,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_c1894ed3c498__
+__STUDIO_EOF_613db1f2d417__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -2862,7 +2950,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_d2ea4160686b__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_1a85e9d93375__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -2871,13 +2959,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_d2ea4160686b__
+__STUDIO_EOF_1a85e9d93375__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -3059,7 +3147,7 @@ def evaluate(ref_text: str, hyp_text: str, words: list[dict] | None = None, dura
 def _issue(severity: str, kind: str, message: str, at: float | None, words: list) -> dict:
     return {"severity": severity, "kind": kind, "message": message, "at_s": at, "words": words, "source": "asr"}
 __STUDIO_EOF_c9c866d2c8aa__
-cat > "$DEST/studio/assembly.py" <<'__STUDIO_EOF_3afc7696205c__'
+cat > "$DEST/studio/assembly.py" <<'__STUDIO_EOF_299f26b31f56__'
 """Chapter mastering and book export (WAV master, MP3, chapter-marked M4B, ZIP).
 
 Assembly never hides gaps: a chapter with any segment lacking a usable selected take, or
@@ -3093,15 +3181,28 @@ def active_release(conn, book_id: int) -> dict | None:
     return row(conn, "SELECT * FROM releases WHERE book_id=? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1", (book_id,))
 
 
-def _chapter_takes(conn, book: dict, chapter_id: int):
-    segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+def _memo_exists():
+    """Path.exists with a per-call memo: one filesystem check per distinct path within a request."""
+    seen: dict = {}
+
+    def exists(p) -> bool:
+        k = str(p)
+        if k not in seen:
+            seen[k] = Path(p).exists()
+        return seen[k]
+
+    return exists
+
+
+def _classify_takes(book: dict, segs: list[dict], atts: dict, exists, dirs: dict):
+    """Split a chapter's segments into usable (segment, attempt, path) triples and problems. ``atts`` maps attempt id -> attempt row."""
     out, problems = [], []
     for s in segs:
         if not s["selected_attempt_id"]:
             problems.append({"sid": s["sid"], "problem": "no audio" if s["status"] == "pending" else f"no usable take ({s['status']})"})
             continue
-        att = row(conn, "SELECT * FROM attempts WHERE id=?", (s["selected_attempt_id"],))
-        path = resolve_take(book, att) if att else None
+        att = atts.get(s["selected_attempt_id"])
+        path = resolve_take(book, att, exists, dirs) if att else None
         if not att or path is None:
             problems.append({"sid": s["sid"], "problem": "selected take file is missing"})
             continue
@@ -3109,6 +3210,13 @@ def _chapter_takes(conn, book: dict, chapter_id: int):
             problems.append({"sid": s["sid"], "problem": "take was rendered with different narrator/model settings"})
             continue
         out.append((s, att, path))
+    return out, problems
+
+
+def _chapter_takes(conn, book: dict, chapter_id: int):
+    segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+    atts = {a["id"]: a for a in rows(conn, "SELECT * FROM attempts WHERE id IN (SELECT selected_attempt_id FROM segments WHERE chapter_id=? AND selected_attempt_id IS NOT NULL)", (chapter_id,))}
+    out, problems = _classify_takes(book, segs, atts, _memo_exists(), book_dirs(book))
     return segs, out, problems
 
 
@@ -3116,15 +3224,18 @@ PAUSE_HINT_MS = {"beat": 350, "long": 900}  # minimum gap after a sentence/parag
 HINTABLE_KINDS = ("sentence", "paragraph")
 
 
+def _pauses_on(ctx, book: dict) -> bool:
+    from .config import effective_narrative
+
+    ov = loads(book.get("narrative_json"), {})
+    return bool((ov.get("delivery") or {}).get("pauses_from_direction") if ctx is None else effective_narrative(ctx.settings(), ov).delivery.pauses_from_direction)
+
+
 def pause_hints(conn, ctx, book: dict, chapter_id: int) -> dict[str, str]:
     """sid -> 'beat' | 'long' for segments whose direction asks for a longer pause, only when the book's
     ``delivery.pauses_from_direction`` is on. Empty otherwise, so digests and gaps of existing books never change.
     Without a ``ctx`` only the book's own override is consulted."""
-    from .config import effective_narrative
-
-    ov = loads(book.get("narrative_json"), {})
-    on = (ov.get("delivery") or {}).get("pauses_from_direction") if ctx is None else effective_narrative(ctx.settings(), ov).delivery.pauses_from_direction
-    if not on:
+    if not _pauses_on(ctx, book):
         return {}
     out = {}
     for r in rows(conn, """SELECT s.sid, s.pause_kind, d.final_json FROM segments s JOIN directions d ON d.segment_id=s.id
@@ -3135,28 +3246,58 @@ def pause_hints(conn, ctx, book: dict, chapter_id: int) -> dict[str, str]:
     return out
 
 
-def takes_digest(conn, book: dict, chapter_id: int, ctx=None) -> str:
-    sel = rows(conn, "SELECT sid, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+def takes_digest(conn, book: dict, chapter_id: int, ctx=None, *, sel=None, chapter=None, hints=None) -> str:
+    """Digest of what a chapter master is built from. ``sel`` ((sid, selected_attempt_id) pairs in segment order), ``chapter`` (its row) and
+    ``hints`` (its pause hints) may be passed by a caller that already loaded them for the whole book; the result is identical."""
+    if sel is None:
+        sel = [(r["sid"], r["selected_attempt_id"]) for r in rows(conn, "SELECT sid, selected_attempt_id FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))]
     snap = loads(book["settings_json"], {})
-    payload = {"sel": [(r["sid"], r["selected_attempt_id"]) for r in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
+    payload = {"sel": [(sid, att) for sid, att in sel], "pauses": snap.get("pauses"), "export": snap.get("export"),
                "meta": [book["title"], book["author"]]}
-    hints = pause_hints(conn, ctx, book, chapter_id)
+    if hints is None:
+        hints = pause_hints(conn, ctx, book, chapter_id)
     if hints:  # only non-none hints, so digests of existing renders stay unchanged
         payload["pause_hints"] = sorted(hints.items())
-    ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    if chapter is None:
+        ov = row(conn, "SELECT title FROM chapters WHERE id=? AND original_title IS NOT NULL", (chapter_id,))
+    else:
+        ov = {"title": chapter["title"]} if chapter.get("original_title") is not None else None
     if ov:  # only retitled chapters, so digests of existing renders stay unchanged
         payload["chapter_title"] = ov["title"]
     return short_hash(dumps(payload), 16)
 
 
 def chapter_readiness(conn, book: dict, ctx=None) -> list[dict]:
+    """Per chapter: usable takes, problems, masters and whether the masters are current. Loads the whole book in a constant number of
+    queries (chapters, segments, selected attempts, renders, and pause hints when enabled) and checks each file at most once."""
+    chapters = rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],))
+    if not chapters:
+        return []
+    segs_by: dict[int, list[dict]] = {}
+    for s in rows(conn, """SELECT s.sid, s.chapter_id, s.status, s.selected_attempt_id FROM segments s
+                           WHERE s.chapter_id IN (SELECT id FROM chapters WHERE book_id=?) ORDER BY s.chapter_id, s.idx""", (book["id"],)):
+        segs_by.setdefault(s["chapter_id"], []).append(s)
+    atts = {a["id"]: a for a in rows(conn, """SELECT a.id, a.wav_path, a.fingerprint FROM attempts a WHERE a.id IN
+                                             (SELECT s.selected_attempt_id FROM segments s JOIN chapters c ON c.id=s.chapter_id WHERE c.book_id=?)""", (book["id"],))}
+    renders_by: dict[int, dict] = {}
+    for r in rows(conn, "SELECT cr.* FROM chapter_renders cr JOIN chapters c ON c.id=cr.chapter_id WHERE c.book_id=?", (book["id"],)):
+        renders_by.setdefault(r["chapter_id"], {})[r["kind"]] = r
+    hints_by: dict[int, dict] = {}
+    if _pauses_on(ctx, book):
+        for r in rows(conn, """SELECT s.chapter_id, s.sid, d.final_json FROM segments s JOIN directions d ON d.segment_id=s.id JOIN chapters c ON c.id=s.chapter_id
+                               WHERE c.book_id=? AND s.pause_kind IN ('sentence','paragraph')""", (book["id"],)):
+            hint = loads(r["final_json"], {}).get("pause")
+            if hint in PAUSE_HINT_MS:
+                hints_by.setdefault(r["chapter_id"], {})[r["sid"]] = hint
+    exists, dirs = _memo_exists(), book_dirs(book)
     out = []
-    for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],)):
-        segs, takes, problems = _chapter_takes(conn, book, ch["id"])
-        renders = {r["kind"]: r for r in rows(conn, "SELECT * FROM chapter_renders WHERE chapter_id=?", (ch["id"],))}
-        digest = takes_digest(conn, book, ch["id"], ctx)
+    for ch in chapters:
+        segs = segs_by.get(ch["id"], [])
+        takes, problems = _classify_takes(book, segs, atts, exists, dirs)
+        renders = renders_by.get(ch["id"], {})
+        digest = takes_digest(conn, book, ch["id"], ctx, sel=[(s["sid"], s["selected_attempt_id"]) for s in segs], chapter=ch, hints=hints_by.get(ch["id"], {}))
         current = bool(renders.get("wav") and renders.get("mp3") and renders["wav"]["takes_digest"] == digest
-                       and Path(renders["wav"]["path"]).exists() and Path(renders["mp3"]["path"]).exists())
+                       and exists(renders["wav"]["path"]) and exists(renders["mp3"]["path"]))
         out.append({"chapter": ch, "segments": len(segs), "ready_takes": len(takes), "problems": problems,
                     "renders": renders, "render_current": current, "digest": digest})
     return out
@@ -3418,7 +3559,7 @@ def export_book(ctx, book_id: int, kind: str = "m4b", chapter_id: int | None = N
                            (book_id, kind, label + (" (DRAFT)" if draft else ""), str(out), 1 if draft else 0, size, info.get("duration_s"), dumps(info), now()))
         ctx.event(conn, "export", f"{label}{' (draft)' if draft else ''} exported for '{book['title']}'", book_id)
     return {"export_id": cur.lastrowid, "path": str(out), "draft": draft, "size_bytes": size, "probe": info}
-__STUDIO_EOF_3afc7696205c__
+__STUDIO_EOF_299f26b31f56__
 cat > "$DEST/studio/audio.py" <<'__STUDIO_EOF_837ab7a7fa97__'
 """Audio I/O, acoustic QA and FFmpeg/ffprobe helpers.
 
@@ -5048,7 +5189,7 @@ def setup_logging(ctx: Context, name: str) -> None:
     root.addHandler(fh)
     root.addHandler(sh)
 __STUDIO_EOF_2e4a2a1622be__
-cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_0cc15d039078__'
+cat > "$DEST/studio/db.py" <<'__STUDIO_EOF_24b4e17cea10__'
 """SQLite persistence: connection handling, transactions and ordered schema migrations."""
 from __future__ import annotations
 
@@ -5566,6 +5707,14 @@ ALTER TABLE attempts ADD COLUMN pace_used REAL;
 ALTER TABLE attempts ADD COLUMN ref_id_used INTEGER;
 """
 
+# v0.8.0: indexes for the live-update digest and job lookups, and the wall time a job has actually spent working.
+SCHEMA_V6 = """
+CREATE INDEX IF NOT EXISTS ix_segments_updated ON segments(updated_at);
+CREATE INDEX IF NOT EXISTS ix_jobs_updated ON jobs(updated_at);
+CREATE INDEX IF NOT EXISTS ix_jobs_book ON jobs(book_id);
+ALTER TABLE jobs ADD COLUMN active_seconds REAL NOT NULL DEFAULT 0;
+"""
+
 # Each migration is (version, sql). Append only; never edit a released migration.
 MIGRATIONS: list[tuple[int, str]] = [
     (1, SCHEMA_V1),
@@ -5573,6 +5722,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (3, SCHEMA_V3),
     (4, SCHEMA_V4),
     (5, SCHEMA_V5),
+    (6, SCHEMA_V6),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]
 
@@ -5687,8 +5837,8 @@ def scalar(conn: sqlite3.Connection, sql: str, params: Iterable[Any] = (), defau
 
 def copy_db_file(src: Path, dest: Path) -> None:
     shutil.copy2(src, dest)
-__STUDIO_EOF_0cc15d039078__
-cat > "$DEST/studio/diskmgmt.py" <<'__STUDIO_EOF_3868a8f87ef1__'
+__STUDIO_EOF_24b4e17cea10__
+cat > "$DEST/studio/diskmgmt.py" <<'__STUDIO_EOF_fd0c1bcdbab5__'
 """Disk management (roadmap C3): usage report, delete/purge, and book/database backup and restore.
 
 Safety rules shared by every destructive function here:
@@ -5703,12 +5853,14 @@ Backup format ("audiobook-studio-book-backup", version 1) is documented in docs/
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -5844,42 +5996,120 @@ def _prune_empty(root: Path) -> None:
 
 # ------------------------------------------------------------------ usage
 
+USAGE_TTL_S = 60.0                      # how long GET /api/disk/usage may serve a measurement (refresh=1 forces a new one)
+_MEASURE_LOCK = threading.Lock()        # one measurement at a time; concurrent callers share its result
+_USAGE_CACHE: dict[str, tuple[float, dict]] = {}   # library key -> (measured_at, payload)
+_USAGE_GEN: dict[str, int] = {}         # bumped by invalidate_usage so an in-flight measurement cannot store a stale result
 
-def _purgeable(conn, book: dict, dirs: dict[str, Path]) -> dict:
+
+def _usage_key(ctx) -> str:
+    return str(ctx.data_dir)
+
+
+def invalidate_usage(ctx=None) -> None:
+    """Forget the cached usage measurement (all libraries when ``ctx`` is None). Called by every action that changes what is on disk."""
+    keys = set(_USAGE_CACHE) | set(_USAGE_GEN) if ctx is None else {_usage_key(ctx)}
+    for k in keys:
+        _USAGE_GEN[k] = _USAGE_GEN.get(k, 0) + 1
+        _USAGE_CACHE.pop(k, None)
+
+
+def invalidates_usage(fn):
+    """Decorator for actions that change disk contents (first argument is ctx): the usage cache is dropped once the action has run, whether
+    it succeeded or failed half way. A confirmation preview (NeedsConfirmation) changed nothing and leaves the cache alone."""
+    @functools.wraps(fn)
+    def wrapper(ctx, *args, **kwargs):
+        try:
+            result = fn(ctx, *args, **kwargs)
+        except NeedsConfirmation:
+            raise
+        except BaseException:
+            invalidate_usage(ctx)
+            raise
+        invalidate_usage(ctx)
+        return result
+    return wrapper
+
+
+def _walk_files(path: Path) -> tuple[int, dict[str, int]]:
+    """(total bytes, {file path: bytes}) of every file under ``path``: one lstat per file."""
+    total, sizes = 0, {}
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            full = os.path.join(root, f)
+            try:
+                n = os.lstat(full).st_size
+            except OSError:
+                continue
+            total += n
+            sizes[full] = n
+    return total, sizes
+
+
+def _purgeable(conn, book: dict, dirs: dict[str, Path], sizes: dict[str, int] | None = None) -> dict:
+    """Superseded takes of one book: count and bytes. ``sizes`` ({path: bytes}, from the segments/alternates walk) avoids a second stat
+    per file; takes that are not in it fall back to the old existence-checked lookup."""
     keep = {r["selected_attempt_id"] for r in rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (book["id"],))}
+    atts = rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],))
+    return _purgeable_from(book, atts, keep, sizes or {})
+
+
+def _purgeable_from(book: dict, atts: list[dict], keep: set, sizes: dict[str, int]) -> dict:
     n, size = 0, 0
-    for a in rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],)):
+    for a in atts:
         if a["id"] in keep:
             continue
         n += 1
         if a["wav_path"]:
-            t = resolve_take(book, a)
-            size += file_size(t)
+            hit = sizes.get(str(Path(a["wav_path"])))
+            size += hit if hit is not None else file_size(resolve_take(book, a))
     return {"takes": n, "takes_bytes": size}
 
 
-def usage(ctx) -> dict:
-    """Per-book and global disk usage plus free space of the library volume and model cache."""
+def usage(ctx, max_age: float = 0.0, refresh: bool = False) -> dict:
+    """Per-book and global disk usage plus free space of the library volume and model cache.
+
+    Walking every file is the slow part, so the result carries ``measured_at`` (epoch seconds), ``age_s`` and ``cached``. With the default
+    ``max_age=0`` it always measures; the HTTP route passes ``max_age=USAGE_TTL_S`` so repeated page views reuse the last measurement, and
+    ``refresh=True`` (``?refresh=1``) forces a new one. Disk-changing actions drop the cache (``invalidates_usage``)."""
+    key = _usage_key(ctx)
+    t_req = time.time()
+
+    def usable(hit) -> bool:
+        if hit is None:
+            return False
+        if hit[0] >= t_req:                    # measured after this call began (another caller's fresh result)
+            return True
+        return not refresh and max_age > 0 and (time.time() - hit[0]) <= max_age
+
+    hit = _USAGE_CACHE.get(key)
+    cached = usable(hit)
+    if not cached:
+        with _MEASURE_LOCK:
+            hit = _USAGE_CACHE.get(key)
+            cached = usable(hit)
+            if not cached:
+                gen = _USAGE_GEN.get(key, 0)
+                started = time.time()
+                payload = _measure(ctx)
+                hit = (started, payload)
+                if _USAGE_GEN.get(key, 0) == gen:
+                    _USAGE_CACHE[key] = hit
+    return {**hit[1], "measured_at": hit[0], "age_s": round(max(0.0, time.time() - hit[0]), 1), "cached": cached}
+
+
+def _measure(ctx) -> dict:
     s = ctx.settings()
     with ctx.db.session() as conn:
         books_rows = rows(conn, "SELECT * FROM books ORDER BY id")
-        books = []
-        totals = {c: 0 for c in STORAGE_CATEGORIES}
-        for b in books_rows:
-            dirs = book_dirs(b)
-            cats, total = {}, 0
-            for c in STORAGE_CATEGORIES:
-                size = dir_size(dirs[c]) if c in dirs and dirs[c].exists() else 0
-                cats[c] = size
-                totals[c] += size
-                total += size
-            purge = _purgeable(conn, b, dirs)
-            cats_exports = cats.get("exports", 0)
-            narrator = (row(conn, "SELECT name FROM voices WHERE id=?", (b["voice_id"],)) or {}).get("name")
-            books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "narrator": narrator, "display_title": display_title(b["title"], narrator),
-                          "work_uid": work_key(b), "archived": bool(b["archived"]), "state": b["state"],
-                          "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats_exports, "masters_bytes": cats.get("masters", 0)},
-                          "busy": bool(row(conn, "SELECT id FROM jobs WHERE book_id=? AND status IN ('queued','running','paused')", (b["id"],)))})
+        voice_names = {r["id"]: r["name"] for r in rows(conn, "SELECT id, name FROM voices")}
+        busy_ids = {r["book_id"] for r in rows(conn, "SELECT DISTINCT book_id FROM jobs WHERE status IN ('queued','running','paused') AND book_id IS NOT NULL")}
+        keep_by: dict[int, set] = {}
+        for r in rows(conn, "SELECT book_id, selected_attempt_id FROM segments WHERE selected_attempt_id IS NOT NULL"):
+            keep_by.setdefault(r["book_id"], set()).add(r["selected_attempt_id"])
+        atts_by: dict[int, list] = {}
+        for r in rows(conn, "SELECT s.book_id, a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE a.status!='in_progress'"):
+            atts_by.setdefault(r["book_id"], []).append(r)
         vfiles = set()
         for v in rows(conn, "SELECT ref_audio_path, ref_original_path FROM voice_versions"):
             for k in ("ref_audio_path", "ref_original_path"):
@@ -5889,19 +6119,42 @@ def usage(ctx) -> dict:
             for k in ("ref_audio_path", "ref_original_path"):
                 if v[k]:
                     vfiles.add(v[k])
+    books = []
+    totals = {c: 0 for c in STORAGE_CATEGORIES}
+    for b in books_rows:
+        dirs = book_dirs(b)
+        cats, total = {}, 0
+        take_sizes: dict[str, int] = {}
+        for c in STORAGE_CATEGORIES:
+            if c not in dirs:
+                size = 0
+            elif c in ("segments", "alternates"):
+                size, files = _walk_files(dirs[c])   # the takes live here: keep the per-file sizes for the purgeable estimate
+                take_sizes.update(files)
+            else:
+                size = dir_size(dirs[c])
+            cats[c] = size
+            totals[c] += size
+            total += size
+        purge = _purgeable_from(b, atts_by.get(b["id"], []), keep_by.get(b["id"], set()), take_sizes)
+        narrator = voice_names.get(b["voice_id"])
+        books.append({"id": b["id"], "uid": b["uid"], "title": b["title"], "narrator": narrator, "display_title": display_title(b["title"], narrator),
+                      "work_uid": work_key(b), "archived": bool(b["archived"]), "state": b["state"],
+                      "categories": cats, "total_bytes": total, "purgeable": {**purge, "exports_bytes": cats.get("exports", 0), "masters_bytes": cats.get("masters", 0)},
+                      "busy": b["id"] in busy_ids})
     voices_bytes = sum(file_size(p) for p in vfiles)
     models = Path(s.models.cache_dir or os.environ.get("HF_HOME") or (ctx.cache_dir / "huggingface")).expanduser()
     db_bytes = sum(file_size(str(ctx.db.path) + suf) for suf in ("", "-wal", "-shm"))
     backups_dir = ctx.backups_dir
     other = {
         "voices": voices_bytes,
-        "recordings": dir_size(ctx.data_dir / "recordings") if (ctx.data_dir / "recordings").exists() else 0,
-        "previews": dir_size(ctx.data_dir / "previews") if (ctx.data_dir / "previews").exists() else 0,
-        "imports": dir_size(ctx.data_dir / "imports") if (ctx.data_dir / "imports").exists() else 0,
+        "recordings": dir_size(ctx.data_dir / "recordings"),
+        "previews": dir_size(ctx.data_dir / "previews"),
+        "imports": dir_size(ctx.data_dir / "imports"),
         "database": db_bytes,
-        "backups": dir_size(backups_dir) if backups_dir.exists() else 0,
-        "logs": dir_size(ctx.logs_dir) if ctx.logs_dir.exists() else 0,
-        "model_cache": dir_size(models) if models.exists() else 0,
+        "backups": dir_size(backups_dir),
+        "logs": dir_size(ctx.logs_dir),
+        "model_cache": dir_size(models),
     }
     return {
         "books": books,
@@ -5943,6 +6196,7 @@ _BOOK_DELETE_ORDER = [
 ]
 
 
+@invalidates_usage
 def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
     with ctx.db.session() as conn:
         b = _book(conn, book_id)
@@ -5981,6 +6235,7 @@ def delete_book(ctx, book_id: int, confirm: bool = False, actor: str = "operator
     return {"deleted": True, "title": b["title"], "freed_bytes": freed, "errors": errors}
 
 
+@invalidates_usage
 def delete_work(ctx, book_id: int, confirm: bool = False, actor: str = "operator") -> dict:
     """Remove a book entirely: every narrator version of its manuscript, with all audio, exports and history."""
     with ctx.db.session() as conn:
@@ -6005,6 +6260,7 @@ def delete_work(ctx, book_id: int, confirm: bool = False, actor: str = "operator
     return {"deleted": True, "title": b["title"], "versions_deleted": len(versions), "freed_bytes": freed, "errors": errors}
 
 
+@invalidates_usage
 def purge(ctx, book_id: int, scope: str, confirm: bool = False, actor: str = "operator") -> dict:
     if scope not in PURGE_SCOPES:
         raise ServiceError(f"scope must be one of {', '.join(PURGE_SCOPES)}", 422)
@@ -6111,18 +6367,40 @@ def _backup_path(ctx, name: str) -> Path:
     return p
 
 
-def list_backups(ctx) -> dict:
-    out = {"books": [], "databases": []}
-    root = backups_root(ctx)
-    for p in sorted(root.glob("*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
-        meta = {}
+_MANIFEST_CACHE: dict[tuple, dict] = {}   # (path, mtime_ns, size) -> manifest summary: a backup zip is opened once, not on every page view
+
+
+def _backup_meta(p: Path, key: tuple) -> dict:
+    meta = _MANIFEST_CACHE.get(key)
+    if meta is None:
         try:
             with zipfile.ZipFile(p) as zf:
                 m = json.loads(zf.read("manifest.json"))
                 meta = {"title": m.get("title"), "book_uid": m.get("book_uid"), "created_at": m.get("created_at"), "app_version": m.get("app_version")}
         except Exception:
             meta = {"title": None, "invalid": True}
-        out["books"].append({"name": p.name, "size_bytes": p.stat().st_size, "modified": p.stat().st_mtime, **meta})
+        _MANIFEST_CACHE[key] = meta
+    return dict(meta)
+
+
+def list_backups(ctx) -> dict:
+    out = {"books": [], "databases": []}
+    root = backups_root(ctx)
+    entries = []
+    for p in root.glob("*.zip"):
+        try:
+            entries.append((p, p.stat()))
+        except OSError:
+            continue    # vanished while listing
+    entries.sort(key=lambda e: e[1].st_mtime, reverse=True)
+    seen = set()
+    for p, st in entries:
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        seen.add(key)
+        out["books"].append({"name": p.name, "size_bytes": st.st_size, "modified": st.st_mtime, **_backup_meta(p, key)})
+    prefix = str(root)
+    for k in [k for k in _MANIFEST_CACHE if k[0].startswith(prefix) and k not in seen]:
+        _MANIFEST_CACHE.pop(k, None)
     dbdir = ctx.backups_dir / "db"
     if dbdir.is_dir():
         for p in sorted(dbdir.glob("*.db"), key=lambda x: x.stat().st_mtime, reverse=True):
@@ -6130,6 +6408,7 @@ def list_backups(ctx) -> dict:
     return out
 
 
+@invalidates_usage
 def backup_database(ctx, actor: str = "operator") -> dict:
     """Consistent copy of studio.db (SQLite online backup API) into backups/db, verified with integrity_check."""
     dbdir = ctx.backups_dir / "db"
@@ -6158,6 +6437,7 @@ def _sha(path: Path) -> str:
     return h.hexdigest()
 
 
+@invalidates_usage
 def backup_book(ctx, book_id: int, actor: str = "operator") -> dict:
     with ctx.db.session() as conn:
         b = _book(conn, book_id)
@@ -6242,6 +6522,7 @@ def backup_book(ctx, book_id: int, actor: str = "operator") -> dict:
     return {"name": name, "size_bytes": dest.stat().st_size, "files": len(files_meta), "media_bytes": total, "path": str(dest)}
 
 
+@invalidates_usage
 def delete_backup(ctx, name: str, confirm: bool = False, actor: str = "operator") -> dict:
     p = _backup_path(ctx, name)
     size = p.stat().st_size
@@ -6266,6 +6547,7 @@ def _clean_member(name: str) -> tuple[str, str] | None:
     raise ServiceError(f"Unexpected entry in backup: {name!r}", 422)
 
 
+@invalidates_usage
 def restore_book(ctx, name: str, actor: str = "operator") -> dict:
     """Restore a backup zip as a NEW book (new uid, new ids). The original book is never touched."""
     src = _backup_path(ctx, name)
@@ -6456,7 +6738,7 @@ def _restore_rows(ctx, doc: dict, old_uid: str, uid: str, storage: dict, actor: 
         ctx.audit(conn, "book", bid, "restored", {"from_backup": backup_name, "old_uid": old_uid, "uid": uid, "warnings": warnings}, actor)
         ctx.event(conn, "disk", f"Restored '{old_book['title']}' from {backup_name} as a new book.", bid)
     return {"restored": True, "book_id": bid, "uid": uid, "title": f"{old_book['title']} (restored)", "warnings": warnings}
-__STUDIO_EOF_3868a8f87ef1__
+__STUDIO_EOF_fd0c1bcdbab5__
 cat > "$DEST/studio/doctor.py" <<'__STUDIO_EOF_538595482854__'
 """Environment diagnostics shared by `studio doctor` and the About page."""
 from __future__ import annotations
@@ -10469,7 +10751,7 @@ def check_coverage(struct: ChapterStructure, segs: list[Seg]) -> list[str]:
             break
     return problems[:10]
 __STUDIO_EOF_42741318923c__
-cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_8f6a43bffd73__'
+cat > "$DEST/studio/narrative/store.py" <<'__STUDIO_EOF_73fa3ac164be__'
 """Persistence and orchestration for semantic segmentation (Pass 1 + Pass 2).
 
 Segments keep stable ids. Re-segmentation (after a voice assignment, a merge of characters, a
@@ -10851,15 +11133,62 @@ class Plan:
     pace_reason: str = ""
     ref_id: int | None = None
     ref_bucket: str | None = None
+    user_source: bool = False  # the direction (or part of it) was set by the user, not the Director
 
 
 def spoken_text(seg: dict) -> str:
     return (seg.get("override_text") or seg.get("narration_text") or seg.get("original_text") or "").strip()
 
 
-def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = None) -> Plan:
+USER_DIRECTION_FIELDS = ("emotion", "intensity", "pacing", "tension", "delivery")
+USER_DIRECTION_REASON = "direction set by you for this segment"
+
+
+def clean_user_direction(user: dict | None) -> dict:
+    """The usable part of a stored/offered user direction: known fields with a real value. ``once`` and unknown keys are dropped."""
+    from . import vocab as V
+
+    out: dict = {}
+    for k in USER_DIRECTION_FIELDS:
+        v = (user or {}).get(k)
+        if v in (None, ""):
+            continue
+        if k == "emotion" and v not in V.EMOTIONS:
+            continue
+        if k == "pacing" and v not in V.PACINGS:
+            continue
+        if k in ("intensity", "tension"):
+            try:
+                v = V.clamp_intensity(int(v))
+            except (TypeError, ValueError):
+                continue
+        if k == "delivery":
+            v = " ".join(str(v).split())[:240]
+            if not v:
+                continue
+        out[k] = v
+    return out
+
+
+def user_only_direction(seg: dict, ns: NarrativeSettings, user: dict) -> dict:
+    """The effective direction when only the user's fields are known: the rules engine's neutral base overlaid with ``user``
+    (an emotion given without an intensity means a clearly audible 3)."""
+    from . import continuity as CT
+    from . import director as D
+
+    raw = D.rules_direction(seg["sid"], None, {}, ns.emotion_sensitivity, seg.get("original_text") or "")
+    smoothed = {k: raw[k] for k in CT.FIELDS}
+    u = dict(user)
+    if "emotion" in u and "intensity" not in u and u["emotion"] != "neutral":
+        u["intensity"] = 3
+    return CT.final_of(raw, smoothed, u)
+
+
+def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = None, user_override: dict | None = None) -> Plan:
     """Everything that determines how a segment sounds: voice, delivery instruction and the cache key.
-    ``ns_patch`` (A/B listening only) overrides whitelisted narrative settings for this one call."""
+    ``ns_patch`` (A/B listening only) overrides whitelisted narrative settings for this one call.
+    ``user_override`` (preview only, never stored) is merged over the segment's stored user direction (None/"" removes a field).
+    A user direction takes effect even when the Director is off or the book is a classic (non-semantic) one."""
     ns = book_ns(ctx, book)
     if ns_patch:
         ns = effective_narrative_with(ns, ns_patch)
@@ -10888,19 +11217,49 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
     info = {"applied": False, "reason": "delivery guidance is off for this book"}
     delivery = None
     pace_final = None  # the direction pace is taken from (the Director's, or a user's own when the Director is off)
+    # The user's own direction for this segment (stored, or offered for a preview). With the Director on it is already part of the
+    # stored final direction; with the Director off (or a classic book) it is the only direction there is.
+    user_dir: dict = {}
+    d0 = None
+    undirected = isinstance(ns_patch, dict) and ns_patch.get("director_enabled") is False  # blind A/B "undirected" side: no direction of any kind
+    if not undirected and (user_override is not None or not ns.director_enabled):
+        d0 = row(conn, "SELECT raw_json, smoothed_json, user_json, final_json FROM directions WHERE segment_id=?", (seg["id"],))
+        user_dir = clean_user_direction(loads(d0["user_json"], {})) if d0 else {}
+        for k, val in (user_override or {}).items():
+            if k not in USER_DIRECTION_FIELDS:
+                continue
+            if val in (None, ""):
+                user_dir.pop(k, None)
+            else:
+                user_dir.update(clean_user_direction({k: val}))
+    user_source = False
+    has_user = False  # the stored final direction already contains the user's fields (Director on): reported, but the reason text is the Director's
     if ns.director_enabled:
-        d = row(conn, "SELECT final_json FROM directions WHERE segment_id=?", (seg["id"],))
+        d = d0 if user_override is not None else row(conn, "SELECT final_json, user_json FROM directions WHERE segment_id=?", (seg["id"],))
         if d:
-            final = loads(d["final_json"], None)
+            if user_override is not None:
+                from . import continuity as CT
+
+                final = CT.final_of(loads(d["raw_json"], {}), loads(d["smoothed_json"], {}), user_dir)
+                user_source = bool(user_dir)
+            else:
+                final = loads(d["final_json"], None)
+                has_user = bool(clean_user_direction(loads(d["user_json"], {})))
             pace_final = final
-            translated = DL.stored_translation(conn, final, v["kind"], seg, ns) if ns.delivery.translator == "llm" else None  # read-only, never asks the LLM
+            translated = DL.stored_translation(conn, final, v["kind"], seg, ns) if ns.delivery.translator == "llm" and user_override is None else None  # read-only, never asks the LLM
             delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, translated)
+        elif user_dir:
+            final = user_only_direction(seg, ns, user_dir)
+            pace_final = final
+            user_source = True
+            delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, None)
         else:
             info = {"applied": False, "reason": "no direction has been produced for this segment yet"}
-    elif ns.delivery.pace_from_direction != "off":
-        d = row(conn, "SELECT final_json, user_json FROM directions WHERE segment_id=?", (seg["id"],))
-        if d and loads(d["user_json"], {}):
-            pace_final = loads(d["final_json"], None)
+    elif user_dir:
+        final = user_only_direction(seg, ns, user_dir)
+        pace_final = final
+        user_source = True
+        delivery, info = DL.build_instruct(final, v["kind"], vv["model_id"], ns.delivery, None)
     from ..pronunciation import apply_for_book
 
     text = apply_for_book(conn, book["id"], spoken_text(seg))  # dictionary respellings; the stored text is untouched
@@ -10914,6 +11273,8 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
             info = {"applied": True, "reason": why}
         else:
             info = {"applied": False, "reason": why}
+    if user_source:
+        info = {**info, "reason": f"{USER_DIRECTION_REASON}; {info['reason']}"}
     instruct = " ".join(x for x in ((book.get("instructions") or "").strip(), delivery) if x) or None
     snap = loads(book["settings_json"], {}).get("models", {})
     key = short_hash(dumps({
@@ -10922,7 +11283,7 @@ def plan_for_segment(conn, ctx, seg: dict, book: dict, ns_patch: dict | None = N
         "r": snap.get("repetition_penalty"), **({"pace": round(pace, 3)} if abs(pace - 1.0) > 1e-6 else {}),
         **({"ref": ref_row["ref_sha256"]} if ref_row else {})}), 20)
     return Plan(spec, voice_id, instruct, bool(info["applied"]), info["reason"], key, seg.get("character_id"), final, text, v["kind"], pace,
-                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None)
+                pace_reason, ref_row["id"] if ref_row else None, ref_row["bucket"] if ref_row else None, user_source or has_user)
 
 
 def pick_segment(conn, book: dict, first: dict, warm: list[str], window: int = 150) -> dict:
@@ -11180,11 +11541,13 @@ def set_segment_narrative(ctx, segment_id: int, patch: dict, actor: str = "opera
     # a voice or speaker change can alter how neighbouring text is cut; re-reconcile the chapter
     if "character_id" in patch and s["src_start"] is not None:
         resegment_book(ctx, s["book_id"], [s["chapter_id"]])
+    recomputed_reset: list[int] = []
     if changed_dir:
-        A.recompute_from(ctx, s["book_id"], segment_id)
+        recomputed_reset = list(A.recompute_from(ctx, s["book_id"], segment_id).get("audio_reset") or [])  # the Director-on cascade resets takes itself
     with ctx.db.tx() as conn:
         reset = invalidate_changed(conn, ctx, s["book_id"], [segment_id], include_approved=True)
         seg_now = row(conn, "SELECT status FROM segments WHERE id=?", (segment_id,))
+    reset = reset or ([segment_id] if segment_id in recomputed_reset else []) or recomputed_reset  # anything put back to pending must also be queued
     if reset:
         from ..services import enqueue_book
 
@@ -11192,7 +11555,88 @@ def set_segment_narrative(ctx, segment_id: int, patch: dict, actor: str = "opera
             enqueue_book(ctx, s["book_id"], front=True)
         except Exception:
             pass
-    return {"ok": True, "segment_id": segment_id, "regenerating": bool(reset), "status": seg_now["status"] if seg_now else None}
+    return {"ok": True, "segment_id": segment_id, "regenerating": segment_id in reset, "status": seg_now["status"] if seg_now else None}
+
+
+def validate_direction(direction: dict | None) -> dict:
+    """A user direction offered through the API, checked like ``set_segment_narrative`` does: unknown keys and bad vocabulary -> 422,
+    intensity/tension clamped to 1-5, delivery trimmed to 240 characters. A key present with None/"" means "clear this field"."""
+    from . import vocab as V
+
+    out: dict = {}
+    for k, v in (direction or {}).items():
+        if k not in USER_DIRECTION_FIELDS:
+            raise _err(f"Unknown direction field '{k}'", 422)
+        if v in (None, ""):
+            out[k] = None
+            continue
+        if k == "emotion" and v not in V.EMOTIONS:
+            raise _err(f"emotion must be one of: {', '.join(V.EMOTIONS)}", 422)
+        if k == "pacing" and v not in V.PACINGS:
+            raise _err(f"pacing must be one of: {', '.join(V.PACINGS)}", 422)
+        if k in ("intensity", "tension"):
+            try:
+                v = V.clamp_intensity(int(v))
+            except (TypeError, ValueError):
+                raise _err(f"{k} must be a number from 1 to 5", 422) from None
+        if k == "delivery":
+            v = " ".join(str(v).split())
+            if len(v) > 240:
+                raise _err("The delivery note can be at most 240 characters.", 422)
+        out[k] = v
+    return out
+
+
+def delivery_summary(conn, ctx, seg: dict, book: dict, user_override: dict | None = None) -> dict:
+    """What would reach the engine for this segment, in words and numbers (pure: no LLM, no writes). ``user_override`` previews a direction
+    that is not saved. ``applied`` means the emotion itself reaches the voice (an instruction, or a bank clip for a clone)."""
+    plan = plan_for_segment(conn, ctx, seg, book, user_override=user_override)
+    ns = book_ns(ctx, book)
+    final = plan.direction or {}
+    kind = plan.voice_kind
+    v = row(conn, "SELECT id, name FROM voices WHERE id=?", (plan.voice_id,))
+    d0 = row(conn, "SELECT user_json FROM directions WHERE segment_id=?", (seg["id"],))
+    emotion = final.get("emotion")
+    bucket = RB.bucket_for(emotion) if final else None
+    notes: list[str] = []
+    if kind == "clone":
+        notes.append("This is a cloned voice (Base model): it cannot take written instructions.")
+        if ns.delivery.clone != "reference_bank":
+            notes.append("The emotion reference bank is switched off in Settings, so emotion cannot steer this voice; only pace can.")
+        elif plan.ref_id:
+            notes.append(f"Uses the '{plan.ref_bucket}' reference clip for '{emotion}'.")
+        elif final and bucket:
+            notes.append(f"No '{bucket}' reference clip for '{emotion}' yet (add one in Narrator Studio).")
+        elif final:
+            notes.append(f"'{emotion}' is served by the base reference, so no clip changes the sound.")
+        if not plan.ref_id:
+            notes.append("The take will differ only in pace." if abs(plan.pace - 1.0) > 1e-6 and plan.pace_reason else
+                         "Pace is unchanged, so a new take differs only by chance.")
+            notes.append("Tip: add an exclamation mark or other emphasis in the spoken text, or add an emotion reference clip.")
+    elif not plan.delivery_applied:
+        notes.append(plan.delivery_reason or "No instruction reaches the voice.")
+    if abs(plan.pace - 1.0) > 1e-6:
+        notes.append(f"Speed x{plan.pace:.2f}" + (f" ({plan.pace_reason})" if plan.pace_reason else "") + ".")
+    return {"voice_kind": kind, "voice": {"id": v["id"], "name": v["name"]} if v else None, "model_id": plan.voice.model_id,
+            "applied": bool(plan.delivery_applied), "instruct": plan.instruct, "pace": round(plan.pace, 3), "pace_reason": plan.pace_reason,
+            "bank_clip": plan.ref_bucket, "bank_bucket": bucket, "bank_enabled": ns.delivery.clone == "reference_bank", "reason": plan.delivery_reason,
+            "source": "you" if plan.user_source else ("director" if final else "none"),
+            "direction": {k: final.get(k) for k in ("emotion", "intensity", "pacing", "tension", "delivery")} if final else None,
+            "user_direction": clean_user_direction(loads(d0["user_json"], {})) if d0 else {}, "notes": notes}
+
+
+def preview_delivery(ctx, segment_id: int, direction: dict | None = None) -> dict:
+    """``delivery_summary`` for a segment, optionally with an unsaved direction merged over its stored one. Reads only."""
+    d = validate_direction(direction) if direction else None
+    with ctx.db.session() as conn:
+        s = row(conn, "SELECT * FROM segments WHERE id=?", (segment_id,))
+        if not s:
+            raise _err("Segment not found", 404)
+        book = row(conn, "SELECT * FROM books WHERE id=?", (s["book_id"],))
+        try:
+            return {"segment_id": segment_id, **delivery_summary(conn, ctx, s, book, d)}
+        except ValueError as e:  # no narrator voice assigned
+            raise _err(str(e), 409) from None
 
 
 def update_character(ctx, character_id: int, patch: dict, actor: str = "operator") -> dict:
@@ -11234,31 +11678,36 @@ def accept_guess(ctx, span_or_segment_id: int, character_id: int, actor: str = "
     return set_segment_narrative(ctx, span_or_segment_id, {"character_id": character_id}, actor)
 
 
-def narrative_status(ctx, book_id: int) -> dict:
-    with ctx.db.session() as conn:
-        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
-        if not b:
-            raise _err("Book not found", 404)
-        ns = book_ns(ctx, b)
-        stages = {r["stage"]: {"status": r["status"], "started_at": r["started_at"], "finished_at": r["finished_at"], "error": r["error"],
-                               "stats": loads(r["stats_json"], {})} for r in rows(conn, "SELECT * FROM analysis_stages WHERE book_id=?", (book_id,))}
-        total = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=?", (book_id,), 0)
-        semantic = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND src_start IS NOT NULL", (book_id,), 0)
-        directed = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=?", (book_id,), 0)
-        stale = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND stale=1", (book_id,), 0)
-        review = scalar(conn, "SELECT COUNT(*) FROM segments WHERE book_id=? AND needs_review=1", (book_id,), 0)
-        dreview = scalar(conn, "SELECT COUNT(*) FROM directions WHERE book_id=? AND needs_review=1", (book_id,), 0)
-        job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
-        cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
-        chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
-        ab = AB.tally(conn, book_id)
+def narrative_status(ctx, book_id: int, conn=None) -> dict:
+    """Narrative analysis status of a book. Pass ``conn`` to reuse the caller's open session (no extra connection)."""
+    if conn is not None:
+        return _narrative_status(ctx, book_id, conn)
+    with ctx.db.session() as own:
+        return _narrative_status(ctx, book_id, own)
+
+
+def _narrative_status(ctx, book_id: int, conn) -> dict:
+    b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    if not b:
+        raise _err("Book not found", 404)
+    ns = book_ns(ctx, b)
+    stages = {r["stage"]: {"status": r["status"], "started_at": r["started_at"], "finished_at": r["finished_at"], "error": r["error"],
+                           "stats": loads(r["stats_json"], {})} for r in rows(conn, "SELECT * FROM analysis_stages WHERE book_id=?", (book_id,))}
+    sg = row(conn, "SELECT COUNT(*) total, COALESCE(SUM(src_start IS NOT NULL), 0) semantic, COALESCE(SUM(needs_review=1), 0) review FROM segments WHERE book_id=?", (book_id,))
+    dr = row(conn, "SELECT COUNT(*) directed, COALESCE(SUM(stale=1), 0) stale, COALESCE(SUM(needs_review=1), 0) review FROM directions WHERE book_id=?", (book_id,))
+    total, semantic, review = sg["total"], sg["semantic"], sg["review"]
+    directed, stale, dreview = dr["directed"], dr["stale"], dr["review"]
+    job = row(conn, "SELECT id, status, error, result_json, updated_at FROM jobs WHERE book_id=? AND kind='analyze' ORDER BY id DESC LIMIT 1", (book_id,))
+    cache = row(conn, "SELECT COUNT(*) n, COALESCE(SUM(hits),0) hits FROM director_cache")
+    chars = scalar(conn, "SELECT COUNT(*) FROM characters WHERE book_id=? AND archived=0 AND kind='character'", (book_id,), 0)
+    ab = AB.tally(conn, book_id)
     if job:
         job["result"] = loads(job.pop("result_json"), None)
     return {"semantic": semantic > 0, "segments": total, "semantic_segments": semantic, "directed": directed, "stale": stale, "ab": ab,
             "needs_review": review, "direction_review": dreview, "characters": chars, "stages": stages, "job": job, "director_cache": cache,
             "settings": {"director_enabled": ns.director_enabled, "llm": ns.llm.provider, "model": ns.llm.model or None,
                          "semantic_segmentation": ns.semantic_segmentation}}
-__STUDIO_EOF_8f6a43bffd73__
+__STUDIO_EOF_73fa3ac164be__
 cat > "$DEST/studio/narrative/structure.py" <<'__STUDIO_EOF_e99ef7430c0a__'
 """Pass 1 - manuscript structure and speaker analysis.
 
@@ -13401,7 +13850,7 @@ def _epub_toc_labels(zf: zipfile.ZipFile, manifest: dict, toc_id: str | None) ->
             pass
     return labels
 __STUDIO_EOF_1b54c58a2a23__
-cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_d2b1ab5a73f1__'
+cat > "$DEST/studio/pipeline.py" <<'__STUDIO_EOF_a6ca514a20fa__'
 """Per-segment attempt lifecycle: synthesize -> transcribe -> QA -> score -> retry/flag.
 
 Budget rules (crash-safe):
@@ -13480,21 +13929,24 @@ def take_paths(book: dict, seg: dict, chapter_idx: int, filename: str) -> tuple[
     return dirs["segments"] / rel, dirs["alternates"] / rel
 
 
-def resolve_take(book: dict, attempt: dict) -> Path | None:
-    """Locate a take file, tolerating a crash between a file move and its DB update."""
+def resolve_take(book: dict, attempt: dict, exists=None, dirs: dict | None = None) -> Path | None:
+    """Locate a take file, tolerating a crash between a file move and its DB update.
+    ``exists`` (path -> bool) and ``dirs`` (book_dirs(book)) let a caller that resolves thousands of takes share one memoised existence
+    check / one parsed storage map; the defaults behave exactly as before."""
+    exists = exists or Path.exists
     p = Path(attempt["wav_path"]) if attempt.get("wav_path") else None
-    if p and p.exists():
+    if p and exists(p):
         return p
     if not p:
         return None
-    dirs = book_dirs(book)
+    dirs = dirs if dirs is not None else book_dirs(book)
     for a, b in (("segments", "alternates"), ("alternates", "segments")):
         try:
             rel = p.relative_to(dirs[a])
         except (ValueError, KeyError):
             continue
         alt = dirs[b] / rel
-        if alt.exists():
+        if exists(alt):
             return alt
     return None
 
@@ -13801,7 +14253,7 @@ def recover_interrupted(conn) -> dict:
 
 def wait_ms(t0: float) -> int:
     return int((time.time() - t0) * 1000)
-__STUDIO_EOF_d2b1ab5a73f1__
+__STUDIO_EOF_a6ca514a20fa__
 cat > "$DEST/studio/platform_services.py" <<'__STUDIO_EOF_6d7f7e457f3b__'
 """PlatformService implementations.
 
@@ -14799,6 +15251,241 @@ def write_report(ctx, book_id: int) -> dict:
             ids[kind] = cur.lastrowid
     return {"json": str(jp), "html": str(hp), "export_ids": ids, "findings": len(rep["findings"])}
 __STUDIO_EOF_d7c04f37b6d5__
+cat > "$DEST/studio/runtime.py" <<'__STUDIO_EOF_5313c147b6af__'
+"""Processing-time estimates and actuals for books and queue jobs (one place, so Overview, Library, Book and Queue agree).
+
+Shape returned by :func:`book_runtime` (stable; the web views render it as-is)::
+
+    {"state": "running" | "queued" | "finished" | "idle",
+     "processing_s": float | None,   # finished: actual processing time (sum of jobs.active_seconds over all the book's jobs)
+     "remaining_s": float | None,    # running: estimated time left
+     "finish_at": float | None,      # running / queued: estimated epoch finish
+     "starts_at": float | None,      # queued: estimated epoch start (None when paused or when something ahead has no estimate)
+     "total_est_s": float | None,    # queued / idle: estimated processing time for the whole pending part
+     "estimated": bool,              # False only for actuals
+     "basis": str}                   # one plain sentence on where the number comes from (shown as a tooltip)
+
+The rate is wall seconds per segment: this job's own observed pace once >= 10 segments are done, else the median for the book's TTS
+model over the 200 most recent segments, else the global median, and none (``basis`` says "estimate after N more segments") with
+fewer than 20 samples. Director (LLM) time is added per undirected pending segment when the Director is on for the book, except for
+an observed job rate, which already includes it (``jobs.active_seconds`` counts the Director).
+
+``runtime_context`` runs a fixed number of queries whatever the number of books; ``book_runtime`` then runs none.
+"""
+from __future__ import annotations
+
+import statistics
+
+from .db import row, rows
+from .util import loads
+from .util import now as _now
+
+MIN_SAMPLES = 20      # fewer measured segments than this: no estimate
+OBSERVED_MIN = 10     # a job's own pace is trusted after this many segments
+WINDOW = 200          # most recent segments considered per rate
+ACTIVE = ("queued", "running", "paused")
+DONE = ("completed", "failed", "cancelled")
+
+
+# ------------------------------------------------------------------------------------------------------------- rates
+
+
+def global_rate(conn) -> dict:
+    """Median wall seconds per segment over the 200 most recent segments, all books/voices/engines (the old ``_segment_seconds``)."""
+    data = rows(conn, """SELECT a.segment_id, SUM(a.finished_at - a.created_at) t FROM attempts a
+                         WHERE a.status IN ('done','error') AND a.finished_at IS NOT NULL GROUP BY a.segment_id ORDER BY MAX(a.id) DESC LIMIT ?""", (WINDOW,))
+    vals = [d["t"] for d in data if d["t"] is not None and d["t"] >= 0]
+    if not vals:
+        return {"samples": 0, "median_s": None}
+    return {"samples": len(vals), "median_s": round(statistics.median(vals), 2)}
+
+
+def model_rates(conn) -> dict[str, dict]:
+    """{model_id: {"samples", "median_s"}} from the most recent attempts (a bounded scan; one query)."""
+    data = rows(conn, """SELECT model, SUM(finished_at - created_at) t FROM (
+                           SELECT a.id, a.segment_id, COALESCE(a.model_id, vv.model_id) AS model, a.created_at, a.finished_at
+                           FROM attempts a LEFT JOIN voice_versions vv ON vv.id = a.voice_version_id
+                           WHERE a.status IN ('done','error') AND a.finished_at IS NOT NULL ORDER BY a.id DESC LIMIT ?)
+                         WHERE model IS NOT NULL GROUP BY model, segment_id ORDER BY MAX(id) DESC""", (WINDOW * 20,))
+    per: dict[str, list[float]] = {}
+    for d in data:
+        vals = per.setdefault(d["model"], [])
+        if len(vals) < WINDOW and d["t"] is not None and d["t"] >= 0:
+            vals.append(d["t"])
+    return {m: {"samples": len(v), "median_s": round(statistics.median(v), 2)} for m, v in per.items() if v}
+
+
+# ------------------------------------------------------------------------------------------------------------- context
+
+
+def runtime_context(conn, now: float | None = None, settings=None) -> dict:
+    """Everything the estimates need, gathered once per request with a fixed number of queries (independent of the number of books).
+
+    Keys: now, rates {model_id: median_s}, rate_samples {model_id: n}, global (median_s), samples (n), queue_order [book_id],
+    running_remaining {book_id: seconds}, active {book_id: runtime dict}, pending/total {book_id: n}, models {voice_version_id: model_id},
+    director {book_id: {"s_per_segment", "undirected"}}, finished {book_id: {...}}.
+    """
+    t = _now() if now is None else now
+    g = global_rate(conn)
+    mr = model_rates(conn)
+    ctx: dict = {"now": t, "global": g["median_s"], "samples": g["samples"], "rates": {m: v["median_s"] for m, v in mr.items()},
+                 "rate_samples": {m: v["samples"] for m, v in mr.items()}, "queue_order": [], "running_remaining": {}, "active": {},
+                 "settings_director": bool(getattr(getattr(settings, "narrative", None), "director_enabled", False))}
+    pending: dict[int, int] = {}
+    total: dict[int, int] = {}
+    for r in rows(conn, "SELECT book_id, COUNT(*) n, SUM(CASE WHEN status IN ('pending','synthesizing') THEN 1 ELSE 0 END) p FROM segments GROUP BY book_id"):
+        total[r["book_id"]], pending[r["book_id"]] = r["n"], r["p"] or 0
+    ctx["pending"], ctx["total"] = pending, total
+    ctx["models"] = {r["id"]: r["model_id"] for r in rows(conn, "SELECT id, model_id FROM voice_versions")}
+    # Director seconds per directed segment, and how many pending segments still need directing (only when it has run anywhere)
+    director: dict[int, dict] = {}
+    stage = rows(conn, "SELECT book_id, stats_json FROM analysis_stages WHERE stage='director'")
+    per_seg = {}
+    for s in stage:
+        st = loads(s["stats_json"], {}) or {}
+        directed, secs = st.get("directed") or 0, st.get("seconds") or 0
+        if directed > 0 and secs > 0:
+            per_seg[s["book_id"]] = secs / directed
+    if per_seg:
+        for r in rows(conn, """SELECT s.book_id, COUNT(*) n FROM segments s WHERE s.status IN ('pending','synthesizing')
+                               AND NOT EXISTS (SELECT 1 FROM directions d WHERE d.segment_id = s.id) GROUP BY s.book_id"""):
+            if r["book_id"] in per_seg:
+                director[r["book_id"]] = {"s_per_segment": per_seg[r["book_id"]], "undirected": r["n"]}
+    ctx["director"] = director
+    # finished books: actual processing time per book across all of its book jobs; the latest job decides "completed"
+    fin: dict[int, dict] = {}
+    for r in rows(conn, """SELECT book_id, COUNT(*) runs, MAX(id) last_id,
+                                  SUM(CASE WHEN active_seconds > 0 THEN active_seconds
+                                           WHEN started_at IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= started_at THEN finished_at - started_at
+                                           ELSE 0 END) secs,
+                                  SUM(CASE WHEN active_seconds <= 0 AND started_at IS NOT NULL AND finished_at IS NOT NULL AND finished_at >= started_at
+                                           THEN 1 ELSE 0 END) legacy
+                           FROM jobs WHERE kind='book' AND book_id IS NOT NULL AND status IN ('completed','failed','cancelled') GROUP BY book_id"""):
+        fin[r["book_id"]] = {"runs": r["runs"], "secs": float(r["secs"] or 0), "legacy": r["legacy"] or 0, "last_id": r["last_id"], "completed": 0}
+    for r in rows(conn, "SELECT book_id, COUNT(*) n FROM jobs WHERE kind='book' AND status='completed' GROUP BY book_id"):
+        if r["book_id"] in fin:
+            fin[r["book_id"]]["completed"] = r["n"]
+    ctx["finished"] = fin
+    # active jobs, in the order the worker will serve them: running, then queued by position, then paused (which do not advance)
+    jobs = rows(conn, """SELECT j.id, j.book_id, j.status, j.position, j.started_at, j.active_seconds, b.voice_version_id, b.narrative_json
+                         FROM jobs j JOIN books b ON b.id = j.book_id WHERE j.kind='book' AND j.status IN ('queued','running','paused')
+                         ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, j.position, j.id""")
+    done_by_job = {r["jid"]: r["n"] for r in rows(conn, """
+        SELECT j.id jid, COUNT(DISTINCT a.segment_id) n FROM jobs j JOIN segments s ON s.book_id = j.book_id JOIN attempts a ON a.segment_id = s.id
+        WHERE j.kind='book' AND j.status IN ('running','paused','queued') AND j.started_at IS NOT NULL AND a.status='done' AND a.finished_at >= j.started_at
+        GROUP BY j.id""")} if jobs else {}
+    offset: float | None = 0.0  # seconds of work ahead of the next queued job; None once something ahead has no estimate
+    for j in jobs:
+        bid = j["book_id"]
+        ctx["queue_order"].append(bid)
+        observed = None
+        n_done = done_by_job.get(j["id"], 0)
+        if j["status"] == "running" and n_done >= OBSERVED_MIN and (j["active_seconds"] or 0) > 0:
+            observed = ((j["active_seconds"] or 0) / n_done, n_done)
+        rate, basis, work = _work(ctx, j, pending.get(bid, 0), observed)
+        rt = _blank("queued" if j["status"] != "running" else "running", basis)
+        if j["status"] == "running":
+            if work is not None:
+                rt.update(remaining_s=work, finish_at=t + work, estimated=True)
+                ctx["running_remaining"][bid] = work
+            offset = None if (work is None or offset is None) else offset + work
+        elif j["status"] == "queued":
+            if work is not None:
+                rt["total_est_s"] = work
+                if offset is not None:
+                    rt.update(starts_at=t + offset, finish_at=t + offset + work)
+            offset = None if (work is None or offset is None) else offset + work
+        else:  # paused: waits for a manual resume, so it neither starts on its own nor delays what is behind it
+            rt["basis"] = "paused, so it is not advancing; " + basis
+            if work is not None:
+                rt["total_est_s"] = work
+        ctx["active"][bid] = rt
+    return ctx
+
+
+def _blank(state: str, basis: str = "") -> dict:
+    return {"state": state, "processing_s": None, "remaining_s": None, "finish_at": None, "starts_at": None, "total_est_s": None, "estimated": True, "basis": basis}
+
+
+def _pick_rate(ctx: dict, model: str | None) -> tuple[float | None, str]:
+    """(seconds per segment, basis) from the model's median, else the global median, else (None, 'estimate after N more segments')."""
+    if model and ctx["rate_samples"].get(model, 0) >= MIN_SAMPLES:
+        r = ctx["rates"][model]
+        return r, f"typical pace on {model}: {r:g} s per segment (median of the last {ctx['rate_samples'][model]} segments)"
+    if ctx["samples"] >= MIN_SAMPLES and ctx["global"] is not None:
+        return ctx["global"], f"typical pace across all voices: {ctx['global']:g} s per segment (median of the last {ctx['samples']} segments)"
+    return None, f"estimate after {max(1, MIN_SAMPLES - ctx['samples'])} more segments"
+
+
+def _director_enabled(ctx: dict, narrative_json) -> bool:
+    ov = loads(narrative_json, {}) if isinstance(narrative_json, str) or narrative_json is None else (narrative_json or {})
+    if isinstance(ov, dict) and isinstance(ov.get("director_enabled"), bool):
+        return ov["director_enabled"]
+    return ctx.get("settings_director", False)
+
+
+def _work(ctx: dict, book: dict, pending: int, observed: tuple[float, int] | None = None) -> tuple[float | None, str, float | None]:
+    """(rate, basis, seconds of work for ``pending`` segments) for one book. ``book`` needs voice_version_id and narrative_json."""
+    if observed:
+        rate, n = observed
+        return rate, f"this job's own pace so far: {rate:.1f} s per segment over {n} segments (includes any Director time)", pending * rate
+    model = ctx["models"].get(book.get("voice_version_id"))
+    rate, basis = _pick_rate(ctx, model)
+    if rate is None:
+        return None, basis, None
+    work = pending * rate
+    d = ctx["director"].get(book.get("book_id", book.get("id")))
+    if d and d["undirected"] and _director_enabled(ctx, book.get("narrative_json")):
+        extra = d["undirected"] * d["s_per_segment"]
+        work += extra
+        basis += f"; plus {d['s_per_segment']:.1f} s of Director time for each of {d['undirected']} undirected segments"
+    return rate, basis, work
+
+
+def book_runtime(conn, book: dict, ctx_info: dict | None = None) -> dict:
+    """The runtime dict for one book (see the module docstring). ``ctx_info`` from :func:`runtime_context`, built lazily when omitted."""
+    ctx = ctx_info if ctx_info is not None else runtime_context(conn)
+    bid = book["id"]
+    active = ctx["active"].get(bid)
+    if active is not None:
+        return dict(active)
+    pend = ctx["pending"].get(bid, 0)
+    if pend == 0:
+        f = ctx["finished"].get(bid)
+        if f and f["completed"] and f["secs"] >= 0:
+            return _finished(f)
+        return {**_blank("idle", "nothing left to render"), "estimated": False}
+    rate_work = _work(ctx, book, pend)
+    rt = _blank("idle", rate_work[1])
+    if rate_work[2] is not None:
+        rt["total_est_s"] = rate_work[2]
+    return rt
+
+
+def _finished(f: dict) -> dict:
+    basis = f"actual processing time across {f['runs']} run{'s' if f['runs'] != 1 else ''} (waiting and paused time excluded)"
+    if f["legacy"]:
+        basis += f"; {f['legacy']} older run{'s were' if f['legacy'] != 1 else ' was'} timed from start to finish"
+    return {**_blank("finished", basis), "processing_s": f["secs"], "estimated": False}
+
+
+def job_runtime(conn, job: dict, ctx_info: dict) -> dict:
+    """Runtime of one queue job. Active jobs get their book's live estimate; a finished job gets its actual processing time (the book's
+    whole processing time when this is its latest completed run and the book is fully rendered)."""
+    ctx = ctx_info
+    if job["status"] in ACTIVE:
+        return book_runtime(conn, {"id": job["book_id"]}, ctx)
+    secs = float(job.get("active_seconds") or 0)
+    legacy = False
+    if secs <= 0 and job.get("started_at") and job.get("finished_at") and job["finished_at"] >= job["started_at"]:
+        secs, legacy = float(job["finished_at"] - job["started_at"]), True
+    f = ctx["finished"].get(job["book_id"])
+    if job["status"] == "completed" and f and ctx["pending"].get(job["book_id"], 0) == 0:
+        return _finished(f)
+    verb = {"completed": "processing time of this run", "failed": "time spent before it failed", "cancelled": "time spent before it was cancelled"}[job["status"]]
+    return {**_blank("finished", f"actual {verb}" + ("; timed from start to finish because it pre-dates exact timing" if legacy else "")),
+            "processing_s": secs, "estimated": False}
+__STUDIO_EOF_5313c147b6af__
 cat > "$DEST/studio/scheduler.py" <<'__STUDIO_EOF_0827980c61c8__'
 """QueueScheduler implementation used to drain the queue for an update.
 
@@ -14967,7 +15654,7 @@ class SecretStore:
             out[slot] = {"label": label, "configured": has, "updated_at": entry.get("updated_at") if has else None}
         return out
 __STUDIO_EOF_ae0d5bdc74d1__
-cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_1cd9abff7999__'
+cat > "$DEST/studio/services.py" <<'__STUDIO_EOF_909689d4ec74__'
 """Service layer shared by the web API, the CLI and the smoke test.
 
 Every state change goes through here, inside a transaction, with an audit trail.
@@ -14984,6 +15671,7 @@ import uuid
 from pathlib import Path
 
 from . import audio as A
+from . import runtime as R
 from .assembly import active_release, chapter_readiness
 from .chunker import build_segments
 from .narrative import ab as N_ab
@@ -15040,23 +15728,42 @@ def ensure_builtin_voices(ctx) -> None:
             conn.execute("UPDATE voices SET current_version_id=? WHERE id=?", (vvid, vid))
 
 
-def _voice_dict(conn, v: dict) -> dict:
-    vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],)) or {}
-    used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
-    return {
+def _source_ref(s: dict | None) -> dict | None:
+    return {"id": s["id"], "name": s["name"], "archived": bool(s["archived"])} if s else None
+
+
+def _voice_dict(conn, v: dict, vv: dict | None = None, used: int | None = None, designs: list[dict] | None = None) -> dict:
+    """``vv`` / ``used`` / ``designs`` may be preloaded by a list call so that N voices cost a constant number of queries."""
+    if vv is None:
+        vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (v["current_version_id"],)) or {}
+    if used is None:
+        used = scalar(conn, "SELECT COUNT(*) FROM books WHERE voice_id=? AND archived=0", (v["id"],), 0)
+    consent = loads(vv.get("consent_json"), None)
+    out = {
         "id": v["id"], "uid": v["uid"], "name": v["name"], "kind": v["kind"], "description": v["description"], "builtin": bool(v["builtin"]),
         "archived": bool(v["archived"]), "created_at": v["created_at"], "books_using": used, "pace": float(v.get("pace") or 1.0),
         "version": {"id": vv.get("id"), "version": vv.get("version"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                     "language": vv.get("language"), "instruct": vv.get("instruct"), "ref_text": vv.get("ref_text"),
                     "ref_duration_s": vv.get("ref_duration_s"), "has_reference": bool(vv.get("ref_audio_path")),
-                    "consent": loads(vv.get("consent_json"), None), "created_at": vv.get("created_at")},
+                    "consent": consent, "created_at": vv.get("created_at")},
+        "derived_from": (consent or {}).get("derived_from") or None,
     }
+    if v["kind"] == "clone":
+        if designs is None:
+            out["source_voice"] = _source_ref(clone_source_voice(conn, v))
+        else:
+            out["source_voice"] = _source_ref(_pick_source(consent or {}, designs))
+    return out
 
 
 def list_voices(ctx, include_archived: bool = False) -> list[dict]:
+    """A constant number of queries however many voices exist (versions, book counts and clone sources are batched)."""
     with ctx.db.session() as conn:
         vs = rows(conn, "SELECT * FROM voices " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY builtin DESC, name")
-        return [_voice_dict(conn, v) for v in vs]
+        vvs = {r["id"]: r for r in rows(conn, "SELECT * FROM voice_versions WHERE id IN (SELECT current_version_id FROM voices)")}
+        used = {r["voice_id"]: r["n"] for r in rows(conn, "SELECT voice_id, COUNT(*) AS n FROM books WHERE archived=0 GROUP BY voice_id")}
+        designs = rows(conn, "SELECT id, name, archived FROM voices WHERE kind='design' ORDER BY archived, id DESC")
+        return [_voice_dict(conn, v, vvs.get(v["current_version_id"]) or {}, used.get(v["id"], 0), designs) for v in vs]
 
 
 def get_voice(ctx, voice_id: int) -> dict:
@@ -15200,11 +15907,91 @@ def update_voice(ctx, voice_id: int, instruct: str | None = None, speaker: str |
                                           consent_json, ? FROM voice_versions WHERE id=?""",
                                 (ver, new_speaker, new_instruct, now(), cur["id"])).lastrowid
             conn.execute("UPDATE voices SET current_version_id=?, updated_at=? WHERE id=?", (vvid, now(), voice_id))
+            if v["kind"] == "design" and description is None:  # a designed voice's card summary IS its description: keep it current
+                conn.execute("UPDATE voices SET description=? WHERE id=?", (new_instruct[:300], voice_id))
             ctx.audit(conn, "voice", voice_id, "new_version", {"version": ver, "instruct": new_instruct, "speaker": new_speaker})
     out = get_voice(ctx, voice_id)
     with ctx.db.session() as conn:
-        out["books_on_older_version"] = rows(conn, "SELECT id, title FROM books WHERE voice_id=? AND voice_version_id<>? AND archived=0",
+        out["books_on_older_version"] = rows(conn, """SELECT b.id, b.title, vv.version AS voice_version FROM books b
+                                                      LEFT JOIN voice_versions vv ON vv.id=b.voice_version_id
+                                                      WHERE b.voice_id=? AND b.voice_version_id<>? AND b.archived=0""",
                                             (voice_id, out["version"]["id"]))
+    return out
+
+
+def _derive_voice(ctx, conn, src: dict, name: str, instruct: str | None, speaker: str | None, description: str | None,
+                  derived: dict, action: str, actor: str) -> int:
+    """Insert a NEW non-built-in voice (version 1) of the same kind/model/language as ``src``, starting from src's CURRENT
+    version. ``instruct``/``speaker`` of None mean "copy"; an empty ``instruct`` clears a preset's delivery instruction."""
+    cur = row(conn, "SELECT * FROM voice_versions WHERE id=?", (src["current_version_id"],))
+    if not cur:
+        raise ServiceError("Voice has no current version.", 409)
+    new_instruct = cur["instruct"] if instruct is None else (instruct.strip() or None)
+    new_speaker = cur["speaker"]
+    if src["kind"] == "preset":
+        new_speaker = cur["speaker"] if speaker is None else speaker
+        if new_speaker not in PRESET_SPEAKERS:
+            raise ServiceError(f"Unsupported speaker '{new_speaker}'. Supported: {', '.join(PRESET_SPEAKERS)}", 422)
+    elif speaker is not None:
+        raise ServiceError("Only preset voices have a speaker setting.", 422)
+    if src["kind"] == "design" and not (new_instruct and 10 <= len(new_instruct) <= 1000):
+        raise ServiceError("A designed voice needs a description of 10-1000 characters.", 422)
+    name = _check_name(conn, name)
+    old = loads(cur["consent_json"], {}) or {}
+    consent = {k: old[k] for k in ("type", "note") if old.get(k)}
+    consent.setdefault("type", "designed synthetic voice" if src["kind"] == "design" else "built-in synthetic speaker")
+    consent["derived_from"] = derived
+    if description is not None and description.strip():
+        summary = description.strip()[:300]
+    elif src["kind"] == "design":
+        summary = new_instruct[:300]
+    else:
+        summary = f"Preset speaker {new_speaker}"
+    vid = conn.execute("INSERT INTO voices(uid, name, kind, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                       (new_uid("voice"), name, src["kind"], summary, now(), now())).lastrowid
+    vvid = conn.execute("INSERT INTO voice_versions(voice_id, version, model_id, speaker, language, instruct, consent_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (vid, 1, cur["model_id"], new_speaker, cur["language"], new_instruct, dumps(consent), now())).lastrowid
+    conn.execute("UPDATE voices SET current_version_id=?, pace=? WHERE id=?", (vvid, float(src.get("pace") or 1.0), vid))
+    ctx.audit(conn, "voice", vid, action, {"derived_from": derived, "speaker": new_speaker, "instruct": new_instruct}, actor)
+    return vid
+
+
+def duplicate_voice(ctx, voice_id: int, name: str, instruct: str | None = None, speaker: str | None = None,
+                    description: str | None = None, actor: str = "operator") -> dict:
+    """Copy a preset or designed voice (built-ins included) into a new, editable, non-built-in voice, optionally with a different
+    delivery instruction / description / speaker. The original and its versions are not touched."""
+    with ctx.db.tx() as conn:
+        src = row(conn, "SELECT * FROM voices WHERE id=?", (voice_id,))
+        if not src:
+            raise ServiceError("Voice not found", 404)
+        if src["kind"] == "clone":
+            raise ServiceError("A cloned voice is defined by its reference clip and cannot be duplicated with new instructions. "
+                               "Use 'Retune' on a clone made from a designed voice, or upload a new reference clip.", 422)
+        cur = row(conn, "SELECT version FROM voice_versions WHERE id=?", (src["current_version_id"],)) or {}
+        vid = _derive_voice(ctx, conn, src, name, instruct, speaker, description,
+                            {"relation": "copy", "voice_id": src["id"], "voice_name": src["name"], "version": cur.get("version")}, "duplicate", actor)
+    return get_voice(ctx, vid)
+
+
+def retune_from_design(ctx, clone_voice_id: int, name: str, instruct: str | None = None, actor: str = "operator") -> dict:
+    """A promoted clone cannot take instructions, so retuning means going back to the designed voice it came from: create a new
+    designed voice from that source's current description (or ``instruct``), ready for new previews and another promotion."""
+    with ctx.db.tx() as conn:
+        c = row(conn, "SELECT * FROM voices WHERE id=?", (clone_voice_id,))
+        if not c:
+            raise ServiceError("Voice not found", 404)
+        if c["kind"] != "clone":
+            raise ServiceError("Retune applies to cloned voices made from a designed voice; use Duplicate for other voices.", 422)
+        src = clone_source_voice(conn, c)
+        if not src:
+            raise ServiceError("No source design voice is recorded for this clone; duplicate a design voice manually.", 422)
+        cur = row(conn, "SELECT version FROM voice_versions WHERE id=?", (src["current_version_id"],)) or {}
+        vid = _derive_voice(ctx, conn, src, name, instruct, None, None,
+                            {"relation": "retune", "voice_id": src["id"], "voice_name": src["name"], "version": cur.get("version"),
+                             "source_voice_id": src["id"], "clone_voice_id": c["id"], "clone_name": c["name"]}, "retune", actor)
+        source = _source_ref(src)
+    out = get_voice(ctx, vid)
+    out["source"] = source
     return out
 
 
@@ -15430,6 +16217,24 @@ def _is_synthetic_consent(consent: dict) -> bool:
     return str(consent.get("rights_holder") or "").startswith(SYNTHETIC_HOLDER)
 
 
+def _holder_source_name(consent: dict) -> str | None:
+    m = re.search(r"\('(.+)'\)\s*$", str(consent.get("rights_holder") or ""))
+    return m.group(1) if m else None
+
+
+def _pick_source(consent: dict, designs: list[dict]) -> dict | None:
+    """In-memory twin of clone_source_voice for list calls. ``designs`` = all design voices ordered by (archived, id DESC)."""
+    if not _is_synthetic_consent(consent):
+        return None
+    sid = consent.get("source_voice_id")
+    if sid:
+        hit = next((d for d in designs if d["id"] == sid), None)
+        if hit:
+            return hit
+    nm = _holder_source_name(consent)
+    return next((d for d in designs if d["name"] == nm), None) if nm else None
+
+
 def clone_source_voice(conn, v: dict) -> dict | None:
     """The designed voice a clone was promoted from (archived ones included), or None for human-recorded clones.
     Clones promoted before v0.7.0 only name it inside ``rights_holder``."""
@@ -15440,9 +16245,9 @@ def clone_source_voice(conn, v: dict) -> dict | None:
     if consent.get("source_voice_id"):
         sv = row(conn, "SELECT * FROM voices WHERE id=? AND kind='design'", (consent["source_voice_id"],))
     if not sv:
-        m = re.search(r"\('(.+)'\)\s*$", str(consent.get("rights_holder") or ""))
-        if m:
-            sv = row(conn, "SELECT * FROM voices WHERE name=? AND kind='design' ORDER BY archived, id DESC", (m.group(1),))
+        nm = _holder_source_name(consent)
+        if nm:
+            sv = row(conn, "SELECT * FROM voices WHERE name=? AND kind='design' ORDER BY archived, id DESC", (nm,))
     return sv
 
 
@@ -15816,12 +16621,19 @@ def display_title(title: str, narrator: str | None) -> str:
 
 
 def _book_stats(conn, book_ids: list[int] | None = None) -> dict[int, dict]:
-    q = "SELECT book_id, status, COUNT(*) n FROM segments" + (f" WHERE book_id IN ({','.join('?' * len(book_ids))})" if book_ids else "") + " GROUP BY book_id, status"
+    """book_id -> {segment status: count, "_audio_s": seconds of selected audio}. ``book_ids=None`` means every book; a list (even an empty one)
+    limits BOTH queries to those books."""
+    if book_ids is not None:
+        book_ids = sorted({int(i) for i in book_ids})
+        if not book_ids:
+            return {}
+    marks = ",".join("?" * len(book_ids)) if book_ids is not None else ""
+    q = "SELECT book_id, status, COUNT(*) n FROM segments" + (f" WHERE book_id IN ({marks})" if book_ids is not None else "") + " GROUP BY book_id, status"
     stats: dict[int, dict] = {}
     for r in rows(conn, q, book_ids or ()):
         stats.setdefault(r["book_id"], {})[r["status"]] = r["n"]
-    durs = rows(conn, """SELECT s.book_id, SUM(a.duration_s) d FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id
-                         GROUP BY s.book_id""")
+    durs = rows(conn, """SELECT s.book_id, SUM(a.duration_s) d FROM segments s JOIN attempts a ON a.id = s.selected_attempt_id"""
+                + (f" WHERE s.book_id IN ({marks})" if book_ids is not None else "") + " GROUP BY s.book_id", book_ids or ())
     for d in durs:
         stats.setdefault(d["book_id"], {})["_audio_s"] = d["d"] or 0.0
     return stats
@@ -15832,7 +16644,11 @@ def _progress(st: dict) -> float:
     return round((st.get("passed", 0) + st.get("flagged", 0) + st.get("approved", 0)) / total, 4) if total else 0.0
 
 
-def _book_summary(conn, b: dict, st: dict) -> dict:
+def _book_summary(conn, b: dict, st: dict, rt_ctx: dict | None | bool = None) -> dict:
+    """``rt_ctx``: a runtime.runtime_context built once per request (built lazily here when a caller has none); ``False`` leaves the
+    ``runtime`` field out (the light Review payload does not show processing time)."""
+    if rt_ctx is None:
+        rt_ctx = R.runtime_context(conn)
     total = sum(v for k, v in st.items() if not k.startswith("_"))
     produced = total - st.get("pending", 0) - st.get("synthesizing", 0)
     job = row(conn, "SELECT id, status, paused_reason, error, current_segment_sid, retries FROM jobs WHERE book_id=? AND kind='book' ORDER BY id DESC LIMIT 1", (b["id"],))
@@ -15852,6 +16668,7 @@ def _book_summary(conn, b: dict, st: dict) -> dict:
         "pending": st.get("pending", 0) + st.get("synthesizing", 0), "progress": round(produced / total, 4) if total else 0.0,
         "est_duration_s": est, "audio_duration_s": round(st.get("_audio_s", 0.0), 1), "retries": retries,
         "job": job, "current_chapter": cur_ch, "released": b["state"] == "approved",
+        **({"runtime": R.book_runtime(conn, b, rt_ctx)} if rt_ctx is not False else {}),
     }
 
 
@@ -15859,17 +16676,62 @@ def list_books(ctx, include_archived: bool = False) -> list[dict]:
     with ctx.db.session() as conn:
         books = rows(conn, "SELECT * FROM books " + ("" if include_archived else "WHERE archived=0 ") + "ORDER BY created_at DESC")
         stats = _book_stats(conn)
-        return [_book_summary(conn, b, stats.get(b["id"], {})) for b in books]
+        rt_ctx = R.runtime_context(conn, now(), ctx.settings())
+        return [_book_summary(conn, b, stats.get(b["id"], {}), rt_ctx) for b in books]
 
 
-def get_book(ctx, book_id: int) -> dict:
+def _cover_version(cover_path) -> int:
+    """Integer mtime of the cover file, or 0 when there is none."""
+    try:
+        return int(Path(cover_path).stat().st_mtime) if cover_path else 0
+    except OSError:
+        return 0
+
+
+def _chapter_status_counts(conn, book_id: int) -> dict[int, dict]:
+    """chapter_id -> {segment status: count} for a whole book in one GROUP BY."""
+    out: dict[int, dict] = {}
+    for r in rows(conn, "SELECT chapter_id, status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY chapter_id, status", (book_id,)):
+        out.setdefault(r["chapter_id"], {})[r["status"]] = r["n"]
+    return out
+
+
+def _chapter_row(ch: dict, st: dict) -> dict:
+    return {"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
+            "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
+            "est_duration_s": ch["est_duration_s"], "status_counts": st}
+
+
+def get_book_review(ctx, book_id: int) -> dict:
+    """LIGHT book payload for the Review page (GET /api/books/{id}?view=review): the summary fields and the chapter list, with NO
+    readiness / release check / exports / logs / utility jobs / narrative status / manuscript manifest. Key names equal get_book's.
+
+    Keys: id, uid, title, author, state, last_error, work_uid, narrator, display_title, version_count, created_at, voice, voice_kind, source,
+    format, segments, produced, passed, flagged, approved, pending, progress, est_duration_s, audio_duration_s, retries, job,
+    current_chapter, released; and chapters = [{id, index, title, words, segments, title_overridden, original_title, est_duration_s,
+    status_counts}]. The chapters carry no missing_audio / render_current / renders (those need the per-file readiness check)."""
     with ctx.db.session() as conn:
         b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
         if not b:
             raise ServiceError("Book not found", 404)
-        out = _book_summary(conn, b, _book_stats(conn, [book_id]).get(book_id, {}))
+        out = _book_summary(conn, b, _book_stats(conn, [book_id]).get(book_id, {}), False)
+        counts = _chapter_status_counts(conn, book_id)
+        out["chapters"] = [_chapter_row(ch, counts.get(ch["id"], {})) for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))]
+    return out
+
+
+def get_book(ctx, book_id: int) -> dict:
+    """Full book page payload. Costs a constant number of queries (independent of the segment count): the per-segment take lookups and
+    file checks are batched in assembly.chapter_readiness, which runs once and also feeds the release check."""
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        if not b:
+            raise ServiceError("Book not found", 404)
+        stats = _book_stats(conn, [book_id]).get(book_id, {})
+        out = _book_summary(conn, b, stats, R.runtime_context(conn, now(), ctx.settings()))
         out.update({k: b[k] for k in ("narrator_credit", "publisher", "year", "description", "language", "genre", "instructions", "synth_fingerprint", "archived")})
         out["has_cover"] = bool(b["cover_path"] and Path(b["cover_path"]).exists())
+        out["cover_version"] = _cover_version(b["cover_path"])  # cache-buster for /media/cover/<id>: changes only when the file does
         out["settings"] = loads(b["settings_json"], {})
         out["storage"] = loads(b["storage_json"], {})
         vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (b["voice_version_id"],)) or {}
@@ -15878,19 +16740,18 @@ def get_book(ctx, book_id: int) -> dict:
                                "current_version_id": v.get("current_version_id"), "model_id": vv.get("model_id"), "speaker": vv.get("speaker"),
                                "instruct": vv.get("instruct")}
         out["voice_outdated"] = bool(v and v.get("current_version_id") != b["voice_version_id"])
-        sibs = siblings(conn, b)
+        sibs = rows(conn, """SELECT x.id, x.state, x.archived, x.created_at, (SELECT name FROM voices vo WHERE vo.id=x.voice_id) AS narrator
+                             FROM books x WHERE COALESCE(x.work_uid, x.uid)=? ORDER BY x.created_at, x.id""", (work_key(b),))
         sib_stats = _book_stats(conn, [x["id"] for x in sibs]) if len(sibs) > 1 else {}
-        out["versions"] = [{"id": x["id"], "narrator": (row(conn, "SELECT name FROM voices WHERE id=?", (x["voice_id"],)) or {}).get("name"), "state": x["state"],
+        out["versions"] = [{"id": x["id"], "narrator": x["narrator"], "state": x["state"],
                             "archived": bool(x["archived"]), "current": x["id"] == book_id, "created_at": x["created_at"],
                             "progress": _progress(sib_stats.get(x["id"], {}))} for x in sibs]
-        ready = chapter_readiness(conn, b, ctx)
+        ready = chapter_readiness(conn, b, ctx)  # once: feeds both the chapter rows and the release check below
+        counts = _chapter_status_counts(conn, book_id)
         out["chapters"] = []
         for r in ready:
             ch = r["chapter"]
-            st = {x["status"]: x["n"] for x in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE chapter_id=? GROUP BY status", (ch["id"],))}
-            out["chapters"].append({"id": ch["id"], "index": ch["idx"], "title": ch["title"], "words": ch["word_count"], "segments": ch["segment_count"],
-                                    "title_overridden": ch["original_title"] is not None, "original_title": ch["original_title"] or ch["title"],
-                                    "est_duration_s": ch["est_duration_s"], "status_counts": st, "missing_audio": len(r["problems"]),
+            out["chapters"].append({**_chapter_row(ch, counts.get(ch["id"], {})), "missing_audio": len(r["problems"]),
                                     "render_current": r["render_current"],
                                     "renders": {k: {"id": v_["id"], "duration_s": v_["duration_s"], "draft": bool(v_["draft"]), "created_at": v_["created_at"],
                                                     "current": r["render_current"]} for k, v_ in r["renders"].items()}})
@@ -15899,10 +16760,10 @@ def get_book(ctx, book_id: int) -> dict:
                              "manifest": loads(m.get("parse_report_json"), {})}
         out["exports"] = rows(conn, "SELECT id, kind, label, draft, size_bytes, duration_s, created_at FROM exports WHERE book_id=? ORDER BY id DESC LIMIT 50", (book_id,))
         out["release"] = active_release(conn, book_id)
-        out["release_check"] = release_check_conn(conn, b, ctx)
+        out["release_check"] = release_check_conn(conn, b, ctx, ready=ready, counts={k: n for k, n in stats.items() if not k.startswith("_")})
         out["logs"] = rows(conn, "SELECT id, level, message, created_at FROM job_logs WHERE book_id=? AND level<>'debug' ORDER BY id DESC LIMIT 40", (book_id,))
         out["utility_jobs"] = rows(conn, "SELECT id, kind, status, error, result_json, created_at, finished_at FROM jobs WHERE book_id=? AND kind IN ('assemble','export','analyze') ORDER BY id DESC LIMIT 10", (book_id,))
-    out["narrative"] = N_store.narrative_status(ctx, book_id)
+        out["narrative"] = N_store.narrative_status(ctx, book_id, conn)
     return out
 
 
@@ -16072,48 +16933,118 @@ def enqueue_book(ctx, book_id: int, front: bool = False) -> dict:
     return j
 
 
-def list_queue(ctx) -> dict:
+QUEUE_WINDOW_DAYS = 30        # finished book jobs older than this drop off the Queue page
+QUEUE_PAGE_MAX = 50
+EARLIER_RUNS_MAX = 20
+_DONE_SQL = "('completed','failed','cancelled')"
+
+
+def _page(offset, limit) -> tuple[int, int]:
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit if limit is not None else 10)
+    except (TypeError, ValueError):
+        limit = 10
+    return offset, max(1, min(QUEUE_PAGE_MAX, limit))
+
+
+def _queue_entry(j: dict, st: dict, rt: dict, retries: int, last_log, t: float) -> dict:
+    total = sum(v for k, v in st.items() if not k.startswith("_"))
+    remaining = st.get("pending", 0) + st.get("synthesizing", 0)
+    # eta_s / eta_finish_s are the pre-v0.8.0 fields; they now come from the same estimate the runtime dict carries
+    eta = eta_finish = None
+    if j["status"] in ("queued", "running"):
+        eta = rt["remaining_s"] if j["status"] == "running" else rt["total_est_s"]
+        eta_finish = (rt["finish_at"] - t) if (eta is not None and rt["finish_at"] is not None) else None
+    return {"id": j["id"], "book_id": j["book_id"], "title": j["title"], "status": j["status"], "position": j["position"],
+            "paused_reason": j["paused_reason"], "error": j["error"], "retries": j["retries"], "segment_retries": retries,
+            "current_segment_sid": j["current_segment_sid"], "created_at": j["created_at"], "started_at": j["started_at"],
+            "finished_at": j["finished_at"], "segments": total, "remaining": remaining, "flagged": st.get("flagged", 0),
+            "progress": round((total - remaining) / total, 4) if total else 0, "eta_s": eta, "eta_finish_s": eta_finish,
+            "active_seconds": round(float(j["active_seconds"] or 0), 1), "runtime": rt,
+            "pause_requested": bool(j["pause_requested"]), "cancel_requested": bool(j["cancel_requested"]), "last_log": last_log}
+
+
+def list_queue(ctx, finished_offset: int = 0, finished_limit: int = 10, utility_offset: int = 0, utility_limit: int = 10) -> dict:
+    """The Queue page: every active (queued/running/paused) book job, ONE "recently finished" entry per book (its latest finished run, with the
+    book's earlier finished runs folded into ``earlier_runs``) and the assemble/export/preview/analyze jobs; the last two are paginated."""
+    f_off, f_lim = _page(finished_offset, finished_limit)
+    u_off, u_lim = _page(utility_offset, utility_limit)
+    t = now()
+    cut = t - QUEUE_WINDOW_DAYS * 86400
+    fin_when = "COALESCE(j.finished_at, j.updated_at)"
     with ctx.db.session() as conn:
-        jobs = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title, b.uid FROM jobs j LEFT JOIN books b ON b.id=j.book_id
-                             WHERE j.kind='book' AND (j.status IN ('queued','running','paused') OR j.updated_at > ?)
-                             ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, j.position, j.id""",
-                    (now() - 7 * 86400,))
+        active = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title FROM jobs j LEFT JOIN books b ON b.id=j.book_id
+                               WHERE j.kind='book' AND j.status IN ('queued','running','paused')
+                               ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END, j.position, j.id""")
+        latest = f"""SELECT j2.id FROM jobs j2 WHERE j2.book_id=j.book_id AND j2.kind='book' AND j2.status IN {_DONE_SQL}
+                     AND COALESCE(j2.finished_at, j2.updated_at) > ? ORDER BY COALESCE(j2.finished_at, j2.updated_at) DESC, j2.id DESC LIMIT 1"""
+        finished_total = scalar(conn, f"""SELECT COUNT(DISTINCT j.book_id) FROM jobs j WHERE j.kind='book' AND j.book_id IS NOT NULL
+                                         AND j.status IN {_DONE_SQL} AND {fin_when} > ?""", (cut,), 0)
+        finished = rows(conn, f"""SELECT j.*, {DISPLAY_TITLE_SQL} AS title FROM jobs j JOIN books b ON b.id=j.book_id
+                                 WHERE j.kind='book' AND j.status IN {_DONE_SQL} AND {fin_when} > ? AND j.id = ({latest})
+                                 ORDER BY {fin_when} DESC, j.id DESC LIMIT ? OFFSET ?""", (cut, cut, f_lim, f_off))
+        earlier: dict[int, list[dict]] = {}
+        if finished:
+            marks = ",".join("?" * len(finished))
+            for r in rows(conn, f"""SELECT j.id, j.book_id, j.status, j.created_at, j.started_at, j.finished_at, j.updated_at, j.active_seconds FROM jobs j
+                                   WHERE j.kind='book' AND j.book_id IN ({marks}) AND j.status IN {_DONE_SQL} AND {fin_when} > ? AND j.id NOT IN ({marks})
+                                   ORDER BY {fin_when} DESC, j.id DESC""", ([x["book_id"] for x in finished] + [cut] + [x["id"] for x in finished])):
+                lst = earlier.setdefault(r["book_id"], [])
+                if len(lst) < EARLIER_RUNS_MAX:
+                    lst.append(r)
+        utility_total = scalar(conn, "SELECT COUNT(*) FROM jobs WHERE kind IN ('assemble','export','preview','analyze')", (), 0)
         utility = rows(conn, f"""SELECT j.id, j.kind, j.status, j.error, j.book_id, {DISPLAY_TITLE_SQL} AS title, j.created_at, j.finished_at, j.payload_json
                                 FROM jobs j LEFT JOIN books b ON b.id=j.book_id WHERE j.kind IN ('assemble','export','preview','analyze')
-                                ORDER BY j.id DESC LIMIT 15""")
+                                ORDER BY j.id DESC LIMIT ? OFFSET ?""", (u_lim, u_off))
         per_seg = _segment_seconds(conn)
-        stats = _book_stats(conn, [j["book_id"] for j in jobs if j["book_id"]]) if jobs else {}
-        out = []
-        cumulative = 0.0
-        for j in jobs:
+        rt_ctx = R.runtime_context(conn, t, ctx.settings())
+        book_ids = sorted({j["book_id"] for j in active + finished if j["book_id"]})
+        stats = _book_stats(conn, book_ids) if book_ids else {}
+        # how much each shown run actually rendered: distinct segments with an attempt that started during the run
+        runs = [r for lst in earlier.values() for r in lst] + finished
+        rendered: dict[int, int] = {}
+        if runs:
+            marks = ",".join("?" * len(runs))
+            rendered = {r["id"]: r["n"] for r in rows(conn, f"""
+                SELECT j.id, COUNT(DISTINCT a.segment_id) n FROM jobs j JOIN segments s ON s.book_id = j.book_id JOIN attempts a ON a.segment_id = s.id
+                WHERE j.id IN ({marks}) AND a.created_at >= COALESCE(j.started_at, j.created_at) AND a.created_at <= COALESCE(j.finished_at, j.updated_at)
+                GROUP BY j.id""", [r["id"] for r in runs])}
+
+        def entry(j: dict) -> dict:
             st = stats.get(j["book_id"], {})
-            total = sum(v for k, v in st.items() if not k.startswith("_"))
-            remaining = st.get("pending", 0) + st.get("synthesizing", 0)
-            eta = None
-            if per_seg["samples"] >= 20 and j["status"] in ("queued", "running"):
-                eta = remaining * per_seg["median_s"]
-                cumulative += eta
             last_log = row(conn, "SELECT message, level, created_at FROM job_logs WHERE job_id=? AND level<>'debug' ORDER BY id DESC LIMIT 1", (j["id"],))
             retries = scalar(conn, "SELECT COUNT(*) FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.attempt_no>1", (j["book_id"],), 0)
-            out.append({"id": j["id"], "book_id": j["book_id"], "title": j["title"], "status": j["status"], "position": j["position"],
-                        "paused_reason": j["paused_reason"], "error": j["error"], "retries": j["retries"], "segment_retries": retries,
-                        "current_segment_sid": j["current_segment_sid"], "created_at": j["created_at"], "started_at": j["started_at"],
-                        "finished_at": j["finished_at"], "segments": total, "remaining": remaining, "flagged": st.get("flagged", 0),
-                        "progress": round((total - remaining) / total, 4) if total else 0, "eta_s": eta,
-                        "eta_finish_s": cumulative if eta is not None else None, "pause_requested": bool(j["pause_requested"]),
-                        "cancel_requested": bool(j["cancel_requested"]), "last_log": last_log})
+            return _queue_entry(j, st, R.job_runtime(conn, j, rt_ctx), retries, last_log, t)
+
+        def run_summary(r: dict, total_segments: int) -> dict:
+            n = rendered.get(r["id"], 0)
+            secs = float(r["active_seconds"] or 0)
+            if secs <= 0 and r["started_at"] and r["finished_at"] and r["finished_at"] >= r["started_at"]:
+                secs = float(r["finished_at"] - r["started_at"])
+            return {"id": r["id"], "status": r["status"], "finished_at": r["finished_at"] or r["updated_at"], "segments_rendered": n,
+                    "active_seconds": round(secs, 1), "kind_hint": "full pass" if total_segments and n * 2 >= total_segments else "touch-up"}
+
+        out = [entry(j) for j in active]
+        done_entries = []
+        for j in finished:
+            e = entry(j)
+            total = e["segments"]
+            e["latest_run"] = run_summary(j, total)
+            e["earlier_runs"] = [run_summary(r, total) for r in earlier.get(j["book_id"], [])]
+            done_entries.append(e)
         for u in utility:
             u["payload"] = loads(u.pop("payload_json"), {})
-        return {"jobs": out, "utility": utility, "throughput": per_seg}
+    return {"jobs": out + done_entries, "active": out, "finished": done_entries, "finished_total": finished_total,
+            "finished_offset": f_off, "finished_limit": f_lim, "window_days": QUEUE_WINDOW_DAYS,
+            "utility": utility, "utility_total": utility_total, "utility_offset": u_off, "utility_limit": u_lim, "throughput": per_seg}
 
 
 def _segment_seconds(conn) -> dict:
-    data = rows(conn, """SELECT a.segment_id, SUM(a.finished_at - a.created_at) t FROM attempts a
-                         WHERE a.status IN ('done','error') AND a.finished_at IS NOT NULL GROUP BY a.segment_id ORDER BY MAX(a.id) DESC LIMIT 200""")
-    vals = [d["t"] for d in data if d["t"] is not None and d["t"] >= 0]
-    if not vals:
-        return {"samples": 0, "median_s": None}
-    return {"samples": len(vals), "median_s": round(statistics.median(vals), 2)}
+    return R.global_rate(conn)
 
 
 def reorder_queue(ctx, job_ids: list[int]) -> dict:
@@ -16471,10 +17402,15 @@ def segment_detail(ctx, segment_id: int) -> dict:
         reviews = rows(conn, "SELECT action, detail_json, actor, created_at FROM review_actions WHERE segment_id=? ORDER BY id DESC", (segment_id,))
         prev_id = scalar(conn, "SELECT id FROM segments WHERE book_id=? AND id<? ORDER BY id DESC LIMIT 1", (s["book_id"], segment_id))
         next_id = scalar(conn, "SELECT id FROM segments WHERE book_id=? AND id>? ORDER BY id LIMIT 1", (s["book_id"], segment_id))
-        render = row(conn, "SELECT segment_map_json FROM chapter_renders WHERE chapter_id=? AND kind='wav'", (s["chapter_id"],))
-    timing = None
-    if render:
-        timing = next((m for m in loads(render["segment_map_json"], []) if m["sid"] == s["sid"]), None)
+        timing = None
+        try:  # find this segment's entry inside SQLite: the whole chapter map (hundreds of entries) is not decoded into Python objects
+            hit = row(conn, """SELECT j.value AS entry FROM chapter_renders r, json_each(r.segment_map_json) j
+                               WHERE r.chapter_id=? AND r.kind='wav' AND json_extract(j.value, '$.sid')=? LIMIT 1""", (s["chapter_id"], s["sid"]))
+            timing = loads(hit["entry"], None) if hit else None
+        except Exception:  # SQLite built without JSON1: decode the map the old way
+            render = row(conn, "SELECT segment_map_json FROM chapter_renders WHERE chapter_id=? AND kind='wav'", (s["chapter_id"],))
+            if render:
+                timing = next((m for m in loads(render["segment_map_json"], []) if m["sid"] == s["sid"]), None)
     out_atts = []
     for a in atts:
         asr = loads(a["asr_json"], {}) or {}
@@ -16526,7 +17462,7 @@ def approve_segment(ctx, segment_id: int, note: str | None = None, actor: str = 
     return {"ok": True, "status": "approved", "segment_id": segment_id}
 
 
-def regenerate_segment(ctx, segment_id: int, note: str | None = None) -> dict:
+def regenerate_segment(ctx, segment_id: int, note: str | None = None, extra: dict | None = None) -> dict:
     with ctx.db.tx() as conn:
         s, b = _seg_and_book(conn, segment_id)
         if s["status"] in ("pending", "synthesizing"):
@@ -16534,10 +17470,43 @@ def regenerate_segment(ctx, segment_id: int, note: str | None = None) -> dict:
         conn.execute("UPDATE segments SET round=round+1, attempts_used=0, status='pending', selected_attempt_id=NULL, flag_reason=NULL, updated_at=? WHERE id=?",
                      (now(), segment_id))
         conn.execute("DELETE FROM chapter_renders WHERE chapter_id=?", (s["chapter_id"],))
-        _review(conn, ctx, s, "regenerate", {"previous_status": s["status"], "previous_attempt": s["selected_attempt_id"], "note": note})
+        _review(conn, ctx, s, "regenerate", {"previous_status": s["status"], "previous_attempt": s["selected_attempt_id"], "note": note, **(extra or {})})
         _revoke(conn, ctx, s["book_id"], f"segment {s['sid']} regenerated")
     enqueue_book(ctx, s["book_id"], front=True)
     return {"ok": True, "status": "pending", "segment_id": segment_id}
+
+
+def regenerate_with_direction(ctx, segment_id: int, direction: dict, note: str | None = None, actor: str = "operator") -> dict:
+    """Regenerate one segment with a direction from the editor (for example emotion anger, intensity 5, delivery "shouting").
+
+    The direction is ALWAYS kept as the segment's own user direction (the same record ``PATCH /api/segments/{id}/narrative`` writes); there is
+    no one-shot mode, so later re-renders of the segment keep sounding the same. It is visible and clearable in Inspect and in the Review
+    panel. Fields left out keep their stored value; a field given as None is cleared. The result carries ``delivery``: what the segment's
+    voice kind will actually be given (see narrative.store.delivery_summary)."""
+    patch = N_store.validate_direction(direction)
+    if patch.get("emotion") and patch["emotion"] != "neutral" and patch.get("intensity") is None and "intensity" not in patch:
+        patch["intensity"] = 3  # an emotion without a strength would otherwise inherit whatever the rules engine guessed
+    if not patch:
+        out = regenerate_segment(ctx, segment_id, note)
+    else:
+        N_store.set_segment_narrative(ctx, segment_id, patch, actor)
+        with ctx.db.tx() as conn:
+            s, _b = _seg_and_book(conn, segment_id)
+            queued = s["status"] in ("pending", "synthesizing")
+            if queued:  # the new direction already changed the take's key, so the segment went back to pending by itself
+                _review(conn, ctx, s, "regenerate", {"note": note, "direction": patch, "reason": "direction changed"}, actor)
+        if queued:
+            try:
+                enqueue_book(ctx, s["book_id"], front=True)  # idempotent; the segment may be pending without a job (a cascade reset)
+            except ServiceError:
+                pass
+            out = {"ok": True, "status": s["status"], "segment_id": segment_id}
+        else:
+            out = regenerate_segment(ctx, segment_id, note, {"direction": patch})
+    with ctx.db.session() as conn:
+        s, b = _seg_and_book(conn, segment_id)
+        out["delivery"] = N_store.delivery_summary(conn, ctx, s, b)
+    return out
 
 
 def set_override(ctx, segment_id: int, text: str | None, regenerate: bool = True) -> dict:
@@ -16591,15 +17560,19 @@ def set_note(ctx, segment_id: int, note: str | None) -> dict:
 # ====================================================================== release
 
 
-def release_check_conn(conn, b: dict, ctx=None) -> dict:
-    counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (b["id"],))}
+def release_check_conn(conn, b: dict, ctx=None, ready: list[dict] | None = None, counts: dict | None = None) -> dict:
+    """Release blockers. ``ready`` (assembly.chapter_readiness output) and ``counts`` (segment status counts) may be passed by a caller that
+    already computed them for the same book in the same transaction; the result is identical, without repeating the per-file checks."""
+    if counts is None:
+        counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (b["id"],))}
     blockers = []
     pend = counts.get("pending", 0) + counts.get("synthesizing", 0)
     if pend:
         blockers.append(f"{pend} segment(s) have no audio yet.")
     if counts.get("flagged", 0):
         blockers.append(f"{counts['flagged']} segment(s) are flagged by automatic QA - approve, fix or regenerate them.")
-    ready = chapter_readiness(conn, b, ctx)
+    if ready is None:
+        ready = chapter_readiness(conn, b, ctx)
     missing = sum(len(r["problems"]) for r in ready)
     if missing and not pend:
         blockers.append(f"{missing} segment(s) have missing or mismatched take files.")
@@ -16662,7 +17635,8 @@ def overview(ctx) -> dict:
         flags = rows(conn, f"""SELECT s.id, s.sid, s.flag_reason, s.book_id, {DISPLAY_TITLE_SQL} AS title, c.idx AS chapter_idx FROM segments s JOIN books b ON b.id=s.book_id
                               JOIN chapters c ON c.id=s.chapter_id WHERE s.status='flagged' AND b.archived=0 ORDER BY s.updated_at DESC LIMIT 25""")
         events = rows(conn, "SELECT id, kind, book_id, message, level, created_at FROM events ORDER BY id DESC LIMIT 25")
-        recent = [_book_summary(conn, b, stats.get(b["id"], {})) for b in books[:12]]
+        rt_ctx = R.runtime_context(conn, now(), ctx.settings())
+        recent = [_book_summary(conn, b, stats.get(b["id"], {}), rt_ctx) for b in books[:12]]
         worker = row(conn, "SELECT * FROM worker_state WHERE id=1")
         failed_jobs = rows(conn, f"SELECT j.id, j.book_id, j.error, {DISPLAY_TITLE_SQL} AS title FROM jobs j JOIN books b ON b.id=j.book_id WHERE j.status='failed' AND j.kind='book' ORDER BY j.id DESC LIMIT 10")
     total = sum(seg_counts.values())
@@ -16684,12 +17658,13 @@ def worker_status_from_row(ctx, w: dict | None) -> dict:
     hb = w.get("heartbeat_at")
     alive = bool(w.get("owner")) and hb is not None and now() - hb < 30
     return {"online": alive, "state": w.get("state") if alive else "offline", "message": w.get("message"), "pid": w.get("pid"),
-            "heartbeat_age_s": round(now() - hb, 1) if hb else None, "current_job_id": w.get("current_job_id") if alive else None,
+            "heartbeat_at": hb, "heartbeat_age_s": round(now() - hb, 1) if hb else None, "current_job_id": w.get("current_job_id") if alive else None,
             "current_segment_sid": w.get("current_segment_sid") if alive else None, "engine": ctx.engine_mode}
 
 
 def state_digest(ctx) -> dict:
-    """Cheap snapshot used by the SSE stream to detect changes."""
+    """Cheap snapshot used by the SSE stream to detect changes. Must be a pure function of stored state: nothing that
+    varies with the clock alone (ages, timestamps of "now") may appear here, or the stream emits an event every second."""
     with ctx.db.session() as conn:
         ev = scalar(conn, "SELECT MAX(id) FROM events", (), 0)
         seg = scalar(conn, "SELECT MAX(updated_at) FROM segments", (), 0)
@@ -16705,7 +17680,9 @@ def state_digest(ctx) -> dict:
                 total = sum(st.values())
                 done = total - st.get("pending", 0) - st.get("synthesizing", 0)
                 progress[a["book_id"]] = {"done": done, "total": total, "flagged": st.get("flagged", 0)}
-    ws = worker_status_from_row(ctx, w)
+    # heartbeat_age_s / heartbeat_at change on every beat; the digest must only move when something real changed.
+    # (online flips when the heartbeat goes stale, which is a real change.) /api/worker still returns the exact age.
+    ws = {k: v for k, v in worker_status_from_row(ctx, w).items() if k not in ("heartbeat_age_s", "heartbeat_at")}
     return {"events": ev, "segments": seg, "jobs": job, "attempts": att, "worker": ws, "active": active, "progress": progress,
             "worker_message": ws.get("message")}
 
@@ -16787,7 +17764,7 @@ def wait_for_job(ctx, job_id: int, timeout: float = 600.0, poll: float = 0.5) ->
             return j
         time.sleep(poll)
     raise ServiceError("Timed out waiting for job", 504)
-__STUDIO_EOF_1cd9abff7999__
+__STUDIO_EOF_909689d4ec74__
 cat > "$DEST/studio/smoke.py" <<'__STUDIO_EOF_ef48976df99c__'
 """Real-hardware smoke test for Apple Silicon (MLX). Run with ./smoke-test on the target Mac.
 
@@ -19809,7 +20786,7 @@ def add_version(ctx, book_id: int, voice_id: int, instructions: str | None = Non
 __STUDIO_EOF_533aecc73aba__
   mkdir -p "$DEST/studio/web"
 : > "$DEST/studio/web/__init__.py"
-cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_c68c80b13bf7__'
+cat > "$DEST/studio/web/app.py" <<'__STUDIO_EOF_99a2b45eba5a__'
 """FastAPI application: JSON API, SSE progress stream, range-capable media and the SPA."""
 from __future__ import annotations
 
@@ -19931,6 +20908,18 @@ class VoicePatchReq(_Req):
     description: Optional[str] = Field(None, max_length=300)
 
 
+class VoiceDuplicateReq(_Req):
+    name: str = Field(min_length=1, max_length=80)
+    instruct: Optional[str] = Field(None, max_length=1000)
+    speaker: Optional[str] = Field(None, max_length=40)
+    description: Optional[str] = Field(None, max_length=300)
+
+
+class VoiceRetuneReq(_Req):
+    name: str = Field(min_length=1, max_length=80)
+    instruct: Optional[str] = Field(None, max_length=1000)
+
+
 class PreviewReq(_Req):
     text: str = Field(min_length=3, max_length=600)
     instruct: Optional[str] = Field(None, max_length=1000)
@@ -19945,6 +20934,19 @@ class PromoteReq(_Req):
 
 class NoteReq(_Req):
     note: Optional[str] = Field(None, max_length=2000)
+
+
+class DirectionReq(_Req):
+    """Editor-supplied direction for one segment; a field sent as null is cleared."""
+    emotion: Optional[str] = Field(None, max_length=20)
+    intensity: Optional[int] = Field(None, ge=1, le=5)
+    pacing: Optional[str] = Field(None, max_length=20)
+    tension: Optional[int] = Field(None, ge=1, le=5)
+    delivery: Optional[str] = Field(None, max_length=240)
+
+
+class RegenReq(NoteReq):
+    direction: Optional[DirectionReq] = None
 
 
 class OverrideReq(_Req):
@@ -20381,7 +21383,10 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         return {"books": S.list_books(ctx, include_archived=archived)}
 
     @app.get("/api/books/{book_id}")
-    def api_book(book_id: int):
+    def api_book(book_id: int, view: str = ""):
+        # ?view=review -> light payload for the Review page (no readiness, release check, exports, logs, narrative; see services.get_book_review)
+        if view == "review":
+            return S.get_book_review(ctx, book_id)
         return S.get_book(ctx, book_id)
 
     @app.patch("/api/books/{book_id}")
@@ -20457,8 +21462,9 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
 
     # ------------------------------------------------------------------ queue
     @app.get("/api/queue")
-    def api_queue():
-        return S.list_queue(ctx)
+    def api_queue(finished_offset: int = Query(0, ge=0), finished_limit: int = Query(10, ge=1, le=50),
+                  utility_offset: int = Query(0, ge=0), utility_limit: int = Query(10, ge=1, le=50)):
+        return S.list_queue(ctx, finished_offset, finished_limit, utility_offset, utility_limit)
 
     @app.post("/api/queue")
     def api_enqueue(req: EnqueueReq):
@@ -20512,6 +21518,14 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
     @app.patch("/api/voices/{voice_id}")
     def api_voice_patch(voice_id: int, req: VoicePatchReq):
         return S.update_voice(ctx, voice_id, req.instruct, req.speaker, req.name, req.description)
+
+    @app.post("/api/voices/{voice_id}/duplicate")
+    def api_voice_duplicate(voice_id: int, req: VoiceDuplicateReq):
+        return S.duplicate_voice(ctx, voice_id, req.name, req.instruct, req.speaker, req.description)
+
+    @app.post("/api/voices/{voice_id}/retune")
+    def api_voice_retune(voice_id: int, req: VoiceRetuneReq):
+        return S.retune_from_design(ctx, voice_id, req.name, req.instruct)
 
     @app.post("/api/voices/{voice_id}/archive")
     def api_voice_archive(voice_id: int):
@@ -20605,7 +21619,9 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
         return S.approve_segment(ctx, segment_id, req.note)
 
     @app.post("/api/segments/{segment_id}/regenerate")
-    def api_seg_regen(segment_id: int, req: NoteReq):
+    def api_seg_regen(segment_id: int, req: RegenReq):
+        if req.direction is not None:
+            return S.regenerate_with_direction(ctx, segment_id, req.direction.model_dump(exclude_unset=True), req.note)
         return S.regenerate_segment(ctx, segment_id, req.note)
 
     @app.post("/api/segments/{segment_id}/override")
@@ -20808,7 +21824,7 @@ def create_app(ctx: Context | None = None, start_worker: bool | None = None, upd
                 "components": {k: package_version(k) for k in ("mlx", "mlx-audio", "mlx-whisper", "fastapi", "uvicorn", "numpy")}}
 
     return app
-__STUDIO_EOF_c68c80b13bf7__
+__STUDIO_EOF_99a2b45eba5a__
 cat > "$DEST/studio/web/auth.py" <<'__STUDIO_EOF_b70b0c22eb95__'
 """Authentication for LAN use: salted PBKDF2 passwords, signed stateless session cookies,
 roles (admin / operator) and login rate limiting. Users live in config/auth.json (0600)."""
@@ -21008,7 +22024,7 @@ def generate_password() -> str:
     alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
 __STUDIO_EOF_b70b0c22eb95__
-cat > "$DEST/studio/web/disk_api.py" <<'__STUDIO_EOF_1d6e667a2da2__'
+cat > "$DEST/studio/web/disk_api.py" <<'__STUDIO_EOF_b57b21a1c5f7__'
 """HTTP API for disk management (roadmap C3). Every route here is administrator-only (auth.ADMIN_RULES).
 Destructive routes need ``"confirm": true`` in the body; without it they answer 409 with a preview of what would be removed."""
 from __future__ import annotations
@@ -21047,8 +22063,10 @@ def register(app, ctx) -> None:
         return (getattr(request.state, "user", None) or {}).get("name", "operator")
 
     @app.get("/api/disk/usage")
-    def api_disk_usage():
-        return D.usage(ctx)
+    def api_disk_usage(refresh: int = 0):
+        # sync route (runs in the threadpool): walking the library is slow. Served from a 60 s cache unless ?refresh=1; the body carries
+        # measured_at / age_s / cached. Disk-changing actions drop the cache themselves.
+        return D.usage(ctx, max_age=D.USAGE_TTL_S, refresh=bool(refresh))
 
     @app.get("/api/disk/backups")
     def api_disk_backups():
@@ -21081,7 +22099,7 @@ def register(app, ctx) -> None:
     @app.post("/api/disk/db-backup")
     def api_disk_db_backup(request: Request):
         return D.backup_database(ctx, actor(request))
-__STUDIO_EOF_1d6e667a2da2__
+__STUDIO_EOF_b57b21a1c5f7__
 cat > "$DEST/studio/web/media.py" <<'__STUDIO_EOF_5578c285b43a__'
 """Static file responses with RFC 7233 single-range support (audio seeking in browsers)."""
 from __future__ import annotations
@@ -21191,7 +22209,7 @@ def ensure_inside(path: Path, roots: list[Path]) -> Path:
             return rp
     raise PermissionError("path outside registered storage")
 __STUDIO_EOF_5578c285b43a__
-cat > "$DEST/studio/web/narrative_api.py" <<'__STUDIO_EOF_b36bf505aa8f__'
+cat > "$DEST/studio/web/narrative_api.py" <<'__STUDIO_EOF_f7c4345f4ed1__'
 """HTTP API for semantic segmentation, the Narrative Director and the character directory.
 
 Thin endpoints only: the logic lives in ``studio.narrative``. Inference (LLM, TTS) never runs in a
@@ -21201,6 +22219,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
+from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import services as S
@@ -21386,6 +22405,14 @@ def register(app, ctx) -> None:
     def api_inspect(segment_id: int):
         return ST.inspect_segment(ctx, segment_id)
 
+    @app.get("/api/segments/{segment_id}/delivery-preview")
+    def api_delivery_preview(segment_id: int, emotion: Optional[str] = Query(None, max_length=20), intensity: Optional[str] = Query(None, max_length=2),
+                             pacing: Optional[str] = Query(None, max_length=20), tension: Optional[str] = Query(None, max_length=2),
+                             delivery: Optional[str] = Query(None, max_length=240)):
+        """What would reach the voice for these inputs, without saving anything. A parameter that is absent keeps the stored value; an empty one clears it."""
+        given = {k: v for k, v in (("emotion", emotion), ("intensity", intensity), ("pacing", pacing), ("tension", tension), ("delivery", delivery)) if v is not None}
+        return ST.preview_delivery(ctx, segment_id, given or None)
+
     @app.patch("/api/segments/{segment_id}/narrative")
     def api_seg_narrative(segment_id: int, req: SegNarrativeReq):
         return ST.set_segment_narrative(ctx, segment_id, req.model_dump(exclude_unset=True))
@@ -21461,7 +22488,7 @@ def narrative_metadata(ctx, book_id: int) -> dict:
                       "speaker": chars[s["character_id"]]["name"] if s["character_id"] in chars else None, "needs_review": bool(s["needs_review"]),
                       "status": s["status"], "duration_s": s["duration_s"], "wer": s["wer"], "direction": dirs.get(s["id"]), "instruct": s["instruct_used"]} for s in segs],
     }
-__STUDIO_EOF_b36bf505aa8f__
+__STUDIO_EOF_f7c4345f4ed1__
 cat > "$DEST/studio/web/pronunciation_api.py" <<'__STUDIO_EOF_ecfd1a546971__'
 """HTTP API for the pronunciation dictionary and per-voice pace (roadmap C2). Logic: ``studio.pronunciation``."""
 from __future__ import annotations
@@ -21656,7 +22683,7 @@ def install(app, ctx) -> None:
         return response
 __STUDIO_EOF_5cd414f9fcb1__
   mkdir -p "$DEST/studio/web/static"
-cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_cfe1d2c3c405__'
+cat > "$DEST/studio/web/static/app.css" <<'__STUDIO_EOF_d6cda8e2636b__'
 /* Audiobook Studio - accessible, responsive UI. Light & dark themes via tokens. */
 :root {
   --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f0f3f8; --border: #d8dee8; --text: #1b2232; --muted: #5a6478;
@@ -22080,7 +23107,120 @@ pre.notes { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--su
 .nav-dot[hidden] { display: none; }
 .ab-choice { border: 1px solid var(--border); border-radius: 8px; margin: .6rem 0; padding: .4rem .8rem; }
 .ab-choice .check { display: block; margin: .25rem 0; }
-__STUDIO_EOF_cfe1d2c3c405__
+
+/* ---------------------------------------------------------------- P2-F: page width, column caps, settings tabs */
+/* The page content is a centred column (page headers, cards and tables all sit inside #view) instead of stretching across a
+   wide monitor. The Review page is a two-pane workspace, so it may use more. Grids cap their column count with
+   max(Npx, (100% - gaps) / maxColumns) as the minimum track size; min(100%, ...) keeps one column from overflowing a phone. */
+[hidden] { display: none !important; }
+code { overflow-wrap: anywhere; }   /* long paths and ids must wrap instead of widening the page */
+#view { max-width: 1440px; margin-inline: auto; }
+#view:has(.review-layout) { max-width: 1680px; }
+.form-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); align-items: start; }
+.stats { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(170px, calc((100% - 4rem) / 6))), 1fr)); }
+.stats.compact { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(150px, calc((100% - 4rem) / 6))), 1fr)); }
+.voice-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(340px, calc((100% - 2rem) / 3))), 1fr)); }
+.takes { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(380px, calc((100% - 2rem) / 3))), 1fr)); }
+.ov-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, max(260px, calc((100% - 1.8rem) / 4))), 1fr)); }
+@media (max-width: 480px) { .stats, .stats.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .ov-grid { grid-template-columns: 1fr; } }
+
+.set-layout { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: 0 1.4rem; align-items: start; }
+.set-tabs { position: sticky; top: 72px; display: flex; flex-direction: column; gap: .15rem; }
+.set-tab { display: block; text-align: left; background: none; border: 0; border-left: 3px solid transparent; border-radius: 0 8px 8px 0; padding: .5rem .8rem;
+  font: inherit; font-weight: 600; color: var(--text); cursor: pointer; }
+.set-tab:hover { background: var(--surface-2); }
+.set-tab[aria-selected=true] { background: var(--accent-soft); color: var(--accent); border-left-color: var(--accent); }
+.set-tab-blurb { display: block; font-weight: 400; font-size: .78rem; color: var(--muted); line-height: 1.3; }
+.tab-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; background: var(--warn); margin-left: .4rem; vertical-align: middle; }
+.set-panels { min-width: 0; }
+.set-panel:focus-visible { outline-offset: 4px; }
+.set-card h2 { margin-bottom: .35rem; }
+.set-intro { margin: 0 0 .8rem; }
+.set-card .form-grid { margin-top: .4rem; }
+.lbl { display: block; }
+.hint { display: block; font-weight: 400; font-size: .8rem; color: var(--muted); margin-top: .1rem; }
+.set-overrides { margin-top: .6rem; }
+details.set-details > summary { font-size: 1.05rem; margin: 0 0 .5rem; }
+details.set-details:not([open]) > summary { margin-bottom: 0; }
+.is-off, .is-inactive { opacity: .55; }
+.set-bar { z-index: 6; flex-wrap: wrap; gap: .5rem 1rem; }
+.set-bar-btns { margin-left: auto; display: inline-flex; gap: .5rem; }
+.set-status { font-weight: 600; }
+.set-status.dirty { color: var(--warn); }
+@media (max-width: 900px) {
+  .set-layout { grid-template-columns: minmax(0, 1fr); }
+  .set-tabs { position: sticky; top: 56px; z-index: 7; flex-direction: row; overflow-x: auto; background: var(--bg); border-bottom: 1px solid var(--border); margin-bottom: 1rem; gap: .2rem; -webkit-overflow-scrolling: touch; }
+  .set-tab { flex: none; white-space: nowrap; border-left: 0; border-bottom: 3px solid transparent; border-radius: 8px 8px 0 0; }
+  .set-tab[aria-selected=true] { border-bottom-color: var(--accent); }
+  .set-tab-blurb { display: none; }
+}
+@media (max-width: 700px) { .set-note { display: none; } }
+
+/* ---------------------------------------------------------------- router loading state (v0.8) */
+#view { position: relative; }
+/* each navigation renders into its own host, hidden beside the old page until it is ready (see app.js route()) */
+.view-page.view-pending { position: absolute; top: 0; left: 0; width: 100%; visibility: hidden; pointer-events: none; }
+#view.view-stale > :not(.view-loading) { opacity: .5; pointer-events: none; transition: opacity .12s ease .1s; }
+.view-loading { position: absolute; top: 1.5rem; left: 50%; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: .6rem;
+  padding: .5rem 1rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 999px; font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.view-loading .spinner { width: 1.1em; height: 1.1em; }
+
+/* ---------------------------------------------------------------- pager (ui.js pager()) */
+.pager { display: flex; align-items: center; gap: .5rem; margin: .75rem 0; }
+.pager-range { color: var(--muted); font-size: .85rem; margin-right: auto; }
+
+/* ---------------------------------------------------------------- P2-B: Overview / Library processing-time line, attention cap, feed hint */
+.rt-line { margin-top: .25rem; color: var(--muted); }
+.rt .rt-k { font-weight: 600; }
+.rt-running { color: var(--info, inherit); }
+.attention.att-scroll { max-height: 320px; overflow: auto; }
+.feed-hint { min-height: 2rem; margin-bottom: .25rem; }
+.feed:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------- narrator studio: duplicate & retune (P2-G) */
+.voice-lineage { margin: -.25rem 0 .5rem; font-style: italic; }
+.voice-note { margin-top: .25rem; }
+.voice-note .form-actions { margin-top: .4rem; }
+.voice-new { outline: 3px solid var(--accent); outline-offset: 2px; animation: voice-flash 2.4s ease-out 1; }
+@keyframes voice-flash { from { background: var(--accent-soft); } to { background: var(--surface); } }
+@media (prefers-reduced-motion: reduce) { .voice-new { animation: none; } }
+
+/* ---------------------------------------------------------------- P2-A: book page live regions, disk page (v0.8.x) */
+#release-form[hidden], #view section.card[hidden] { display: none; }
+#bk-cover-slot { display: inline-flex; }
+#dk-age { margin-right: .5rem; }
+
+/* ---------------------------------------------------------------- P2-C queue: runtime estimates, finished rows, earlier runs */
+.rt { display: inline-block; font-size: .88rem; font-weight: 600; }
+.rt-running { color: var(--info); }
+.rt-queued, .rt-idle { color: var(--text); }
+.rt-paused { color: var(--warn); }
+.rt-finished { color: var(--good); }
+.rt-none { color: var(--muted); font-weight: 400; font-size: .82rem; }
+.qrow-done { padding: .55rem .4rem; }
+.qrow-done .q-title { margin-bottom: .1rem; }
+details.earlier { margin-top: .25rem; }
+details.earlier summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+.earlier-list { list-style: none; margin: .3rem 0 0; padding: 0 0 0 .8rem; border-left: 2px solid var(--border); font-size: .82rem; color: var(--muted); }
+.earlier-list li { padding: .1rem 0; }
+
+/* ---------------------------------------------------------------- Review: regenerate with direction (views/review.js) */
+.r-contents { display: contents; }
+.regen-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; margin: .8rem 0; }
+.regen-dir { background: var(--surface-2); border-radius: 8px; padding: .5rem .8rem; }
+.regen-dir > summary { cursor: pointer; font-weight: 600; padding: .2rem 0; }
+.regen-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; margin: .5rem 0; }
+.regen-form label { display: block; font-size: .85rem; font-weight: 600; }
+.regen-form select, .regen-form input { width: 100%; margin-top: .2rem; }
+.regen-form .regen-wide { grid-column: 1 / -1; }
+.regen-explain { border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; background: var(--surface); min-width: 0; }
+.regen-explain h3 { margin: 0 0 .3rem; font-size: .9rem; }
+.regen-explain ul { margin: .2rem 0 .4rem; padding-left: 1.2rem; }
+.regen-explain .instruct-text { font-style: italic; }
+@media (max-width: 900px) { .regen-wrap { grid-template-columns: 1fr; } }
+__STUDIO_EOF_d6cda8e2636b__
 cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 <!doctype html>
 <html lang="en">
@@ -22134,7 +23274,7 @@ cat > "$DEST/studio/web/static/index.html" <<'__STUDIO_EOF_31fd707206f2__'
 </html>
 __STUDIO_EOF_31fd707206f2__
   mkdir -p "$DEST/studio/web/static/js"
-cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_50cc0f10b83f__'
+cat > "$DEST/studio/web/static/js/app.js" <<'__STUDIO_EOF_e343455cc84d__'
 // App shell: hash router, live state stream (SSE with polling fallback), worker status.
 import { get, post, parseHash, setHTML, html, toastError, toast, dialog, busy, setSessionUser } from "./ui.js";
 import * as overview from "./views/overview.js";
@@ -22155,11 +23295,46 @@ const ROUTES = { overview, library, queue, voices, review, book, settings, about
 let cleanup = null;
 let currentKey = "";
 
+// ---- router ----------------------------------------------------------------------------------------------------------
+// Contract for views: `render(host, parts, query, nav)` fills `host` (use it like the old #view element) and may return a cleanup
+// function. `nav.signal` is an AbortSignal that fires when the user navigates away (pass it to GET requests that need cancelling;
+// do not use it for writes) and `nav.isCurrent()` says whether this navigation is still the latest.
+// Each navigation renders into its OWN host element, kept hidden beside the old page and swapped in only when render() resolves,
+// so a slow or superseded render can never paint over a newer page (its host is simply thrown away) and the old page stays
+// visible but dimmed (#view.view-stale) with a "Loading…" status (.view-loading) if the wait is longer than LOADING_MS.
+const LOADING_MS = 120;
+let navToken = 0;          // incremented by every route(); a render whose token is no longer current is stale
+let navAbort = null;       // AbortController for the render in flight
+let pendingNav = null;     // { host, timer } of the render in flight
+let paintedRouteId = null; // route string ("#/book/12", no query) of the page currently on screen
+
+function endLoading(view) {
+  if (pendingNav) { clearTimeout(pendingNav.timer); pendingNav = null; }
+  view.querySelectorAll(":scope > .view-loading").forEach((n) => n.remove());
+  view.classList.remove("view-stale");
+  view.removeAttribute("aria-busy");
+}
+
+function showLoading(view) {
+  if (view.querySelector(":scope > .view-loading")) return;
+  const el = document.createElement("div");
+  el.className = "view-loading";
+  el.setAttribute("role", "status");
+  el.setAttribute("aria-live", "polite");
+  el.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Loading…</span>';
+  view.appendChild(el);
+}
+
 async function route() {
+  const token = ++navToken;
   const { parts, query } = parseHash();
   const name = ROUTES[parts[0]] ? parts[0] : "overview";
   const key = location.hash;
+  const routeId = key.split("?")[0];
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
+  if (navAbort) navAbort.abort();
+  navAbort = new AbortController();
+  const nav = { signal: navAbort.signal, isCurrent: () => token === navToken };
   document.querySelectorAll("[data-nav]").forEach((a) => {
     const active = a.dataset.nav === name || ((name === "book" || name === "narrative") && a.dataset.nav === "library") || (name === "inspect" && a.dataset.nav === "review");
     a.classList.toggle("active", active);
@@ -22167,19 +23342,39 @@ async function route() {
   });
   closeNav();
   const view = document.getElementById("view");
-  const sameView = currentKey.split("?")[0].split("/")[1] === key.split("?")[0].split("/")[1];
   currentKey = key;
+  if (pendingNav) { clearTimeout(pendingNav.timer); pendingNav.host.remove(); pendingNav = null; } // a superseded render's page is discarded
+  const host = document.createElement("div");
+  host.className = "view-page view-pending";
+  view.prepend(host); // first in document order, so document.getElementById finds the new page's ids before the old page's
+  view.classList.add("view-stale");
+  view.setAttribute("aria-busy", "true");
+  pendingNav = { host, timer: setTimeout(() => { if (token === navToken) showLoading(view); }, LOADING_MS) };
+  let result = null;
   try {
-    cleanup = (await ROUTES[name].render(view, parts.slice(1), query)) || null;
+    result = (await ROUTES[name].render(host, parts.slice(1), query, nav)) || null;
   } catch (e) {
-    console.error(e);
-    setHTML(view, html`<div class="card error-card"><h1>Something went wrong</h1><p>${e.message || e}</p>
-      <p><a href="#/overview">Back to overview</a></p></div>`);
+    if (token === navToken) {
+      console.error(e);
+      setHTML(host, html`<div class="card error-card"><h1>Something went wrong</h1><p>${e.message || e}</p>
+        <p><a href="#/overview">Back to overview</a></p></div>`);
+    }
   }
-  if (!sameView) {
-    const h1 = view.querySelector("h1");
-    if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus({ preventScroll: false }); }
+  if (token !== navToken) { // the user moved on while this was rendering: release what it set up, and leave #view alone
+    if (typeof result === "function") { try { result(); } catch (e) { console.error(e); } }
+    return;
+  }
+  host.classList.remove("view-pending");
+  for (const n of Array.from(view.children)) if (n !== host) n.remove();
+  endLoading(view);
+  cleanup = typeof result === "function" ? result : null;
+  const routeChanged = routeId !== paintedRouteId;
+  paintedRouteId = routeId;
+  if (routeChanged) {
+    const h1 = host.querySelector("h1");
+    if (h1) { h1.setAttribute("tabindex", "-1"); h1.focus({ preventScroll: true }); }
     document.title = (h1 ? h1.textContent.trim() + " · " : "") + "Audiobook Studio";
+    window.scrollTo(0, 0);
   }
 }
 
@@ -22234,7 +23429,10 @@ function updateWorkerPill(w) {
   pill.className = "topbar-status " + (w.online ? (w.state === "idle" ? "st-idle" : "st-busy") : "st-off");
   const label = w.online ? (w.state === "idle" ? "GPU worker idle" : `Working: ${w.message || w.state}`) : "GPU worker offline";
   pill.querySelector(".label").textContent = label;
-  pill.title = w.online ? `Worker pid ${w.pid}, heartbeat ${w.heartbeat_age_s}s ago` : "No worker heartbeat. Restart it from System & Licenses.";
+  // The live digest carries no heartbeat age (it would change every second); /api/worker and the overview do. Prefer the server's own
+  // age (no clock skew), else derive it from heartbeat_at, else omit the seconds.
+  const age = typeof w.heartbeat_age_s === "number" ? w.heartbeat_age_s : (typeof w.heartbeat_at === "number" ? Math.max(0, Math.round(Date.now() / 1000 - w.heartbeat_at)) : null);
+  pill.title = w.online ? `Worker pid ${w.pid}${age === null ? "" : `, heartbeat ${age}s ago`}` : "No worker heartbeat. Restart it from System & Licenses.";
   const eb = document.getElementById("engine-badge");
   if (w.engine === "mock") { eb.hidden = false; eb.textContent = "MOCK ENGINE – test tones, not narration"; }
   else eb.hidden = true;
@@ -22253,6 +23451,7 @@ function stopStream() { if (es) { es.close(); es = null; } stopPolling(); }
 
 function showLogin(message) {
   stopStream();
+  navToken++; endLoading(document.getElementById("view")); // any render still in flight is now stale and must not paint over the sign-in card
   if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
   document.body.classList.add("signed-out");
   document.getElementById("user-box").hidden = true;
@@ -22278,6 +23477,7 @@ function showLogin(message) {
 
 function showForcedPasswordChange() {
   stopStream();
+  navToken++; endLoading(document.getElementById("view"));
   document.body.classList.add("signed-out");
   document.getElementById("user-box").hidden = true;
   document.getElementById("worker-pill").hidden = true;
@@ -22364,7 +23564,7 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) => { if (e.reason && e.reason.name !== "AbortError" && !e.reason.status) console.error(e.reason); });
   start().catch(toastError);
 });
-__STUDIO_EOF_50cc0f10b83f__
+__STUDIO_EOF_e343455cc84d__
 cat > "$DEST/studio/web/static/js/recorder-worklet.js" <<'__STUDIO_EOF_48f833f8fc07__'
 // AudioWorklet: forwards raw microphone samples to the page. No processing is applied.
 class CaptureProcessor extends AudioWorkletProcessor {
@@ -22497,7 +23697,65 @@ export function envelope(samples, buckets = 400) {
   return out;
 }
 __STUDIO_EOF_7fa1aaef3b74__
-cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_b372e2eb1a71__'
+cat > "$DEST/studio/web/static/js/runtime.js" <<'__STUDIO_EOF_8f54ce170796__'
+// Formatting for the server's `runtime` dicts (studio/runtime.py): estimated time left / queued estimate / actual processing time.
+// The ONLY place that turns a runtime dict into text. Views call fmtRuntime(book.runtime) and never format these themselves.
+import { html } from "./ui.js";
+
+/** Seconds as "3 h 12 m" (>= 1 h, rounded to the minute), "5 m 10 s" (>= 1 min) or "45 s". Unknown -> "–". */
+export function fmtSpan(seconds) {
+  if (seconds === null || seconds === undefined || isNaN(seconds)) return "–";
+  const r = Math.round(Math.max(0, Number(seconds)));
+  if (r >= 3570) {  // 59 m 30 s and up reads as hours; rounded to the minute
+    const total = Math.round(r / 60);
+    return `${Math.floor(total / 60)} h ${String(total % 60).padStart(2, "0")} m`;
+  }
+  if (r >= 60) return `${Math.floor(r / 60)} m ${String(r % 60).padStart(2, "0")} s`;
+  return `${r} s`;
+}
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Epoch seconds as local 24-hour "14:30"; "Thu 14:30" when more than 12 h from now. Unknown -> "–". */
+export function fmtClock(epoch) {
+  if (epoch === null || epoch === undefined || isNaN(epoch)) return "–";
+  const d = new Date(epoch * 1000);
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return Math.abs(d.getTime() - Date.now()) > 12 * 3600 * 1000 ? `${DAYS[d.getDay()]} ${hm}` : hm;
+}
+
+/**
+ * HTML fragment for a runtime dict; absent/null -> empty. `basis` is the tooltip. opts.compact gives the short form for tight spots
+ * (no "about", no start/finish clock).
+ *   running  "about 1 h 20 m left · done about 14:30"
+ *   queued   "about 2 h 05 m processing · starts about 15:40"   (paused: "paused · about 2 h 05 m processing once resumed")
+ *   finished "processed in 3 h 12 m"
+ *   idle     "about 40 m to narrate"
+ * With no rate data yet the server's basis ("estimate after N more segments") is shown instead of a number.
+ */
+export function fmtRuntime(rt, opts = {}) {
+  if (!rt || !rt.state) return html``;
+  const c = !!opts.compact, about = c ? "" : "about ";
+  // the tooltip keeps PROCESSING time apart from AUDIO length (both are shown on the same rows)
+  const tip = `Processing time, not audio length. ${rt.state === "finished" ? "Actual" : "Estimate"}${rt.basis ? ": " + rt.basis : ""}.`;
+  const wrap = (cls, text) => html`<span class="rt rt-${cls}" title="${tip}">${text}</span>`;
+  const basis = rt.basis || "";
+  const none = () => (basis.startsWith("estimate after") ? wrap("none", c ? "no estimate yet" : basis) : html``);
+  if (rt.state === "finished") return rt.processing_s === null || rt.processing_s === undefined ? html`` : wrap("finished", `processed in ${fmtSpan(rt.processing_s)}`);
+  if (rt.state === "running") {
+    if (rt.remaining_s === null || rt.remaining_s === undefined) return none();
+    return wrap("running", `${about}${fmtSpan(rt.remaining_s)} left` + (!c && rt.finish_at ? ` · done about ${fmtClock(rt.finish_at)}` : ""));
+  }
+  if (rt.state === "queued") {
+    const paused = basis.startsWith("paused");
+    if (rt.total_est_s === null || rt.total_est_s === undefined) return paused ? wrap("paused", "paused") : none();
+    if (paused) return wrap("paused", c ? `paused · ${fmtSpan(rt.total_est_s)}` : `paused · about ${fmtSpan(rt.total_est_s)} processing once resumed`);
+    return wrap("queued", `${about}${fmtSpan(rt.total_est_s)} processing` + (!c && rt.starts_at ? ` · starts about ${fmtClock(rt.starts_at)}` : ""));
+  }
+  if (rt.total_est_s === null || rt.total_est_s === undefined) return none();
+  return wrap("idle", `${about}${fmtSpan(rt.total_est_s)} to narrate`);
+}
+__STUDIO_EOF_8f54ce170796__
+cat > "$DEST/studio/web/static/js/ui.js" <<'__STUDIO_EOF_784ffc31a298__'
 // Shared UI helpers: auto-escaping templates, API client, formatting, toasts, dialogs.
 
 export class Raw { constructor(s) { this.s = s; } toString() { return this.s; } }
@@ -22531,6 +23789,105 @@ export function applyBars(root) {
     const v = Math.max(0, Math.min(100, Number(el.dataset.pct) || 0));
     el.style.width = v + "%";
   });
+}
+
+// ------------------------------------------------------------ in-place repaint (live views)
+const tplString = (tpl) => (tpl instanceof Raw ? tpl.s : esc(String(tpl)));
+/** Rendered markup of a template (what setHTML would assign). Pure. */
+export const htmlOf = tplString;
+
+/**
+ * patchHTML(el, tpl): like setHTML(el, tpl) but survives a live repaint. Contract:
+ *  - Preserved: scrollTop/scrollLeft of `el` and of every scrollable descendant that has an `id` (restored by id);
+ *    keyboard focus and the text selection of the focused element, if it has an `id` that exists again afterwards;
+ *    the open/closed state of every <details id="..."> (restored by id, so a section the user opened stays open).
+ *  - NOT preserved: elements without an id, typed-but-unsaved form values (use snapshotForm/applyForm), <audio> position/paused
+ *    state (views must skip the refresh while something is playing).
+ *  - Give anything the user can scroll, focus or open a stable id in your template and it will survive repaints.
+ * Returns el.
+ */
+export function patchHTML(el, tpl) {
+  const scrolls = new Map();
+  const note = (node) => { if (node.id && (node.scrollTop || node.scrollLeft)) scrolls.set(node.id, [node.scrollTop, node.scrollLeft]); };
+  const opens = new Map();
+  for (const node of el.querySelectorAll("[id]")) {
+    note(node);
+    if (String(node.tagName).toUpperCase() === "DETAILS") opens.set(node.id, !!node.open);
+  }
+  const selfTop = el.scrollTop || 0, selfLeft = el.scrollLeft || 0;
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  let focus = null;
+  if (active && active !== el && active.id && el.contains(active)) {
+    focus = { id: active.id };
+    try { if (typeof active.selectionStart === "number") focus.sel = [active.selectionStart, active.selectionEnd, active.selectionDirection]; } catch { /* input types without selection */ }
+  }
+  setHTML(el, tpl);
+  const byId = new Map();
+  for (const node of el.querySelectorAll("[id]")) byId.set(node.id, node);
+  for (const [id, open] of opens) { const n = byId.get(id); if (n) n.open = open; }
+  if (selfTop) el.scrollTop = selfTop;
+  if (selfLeft) el.scrollLeft = selfLeft;
+  for (const [id, [top, left]] of scrolls) { const n = byId.get(id); if (n) { n.scrollTop = top; n.scrollLeft = left; } }
+  if (focus) {
+    const n = byId.get(focus.id);
+    if (n && typeof n.focus === "function") {
+      n.focus({ preventScroll: true });
+      if (focus.sel) { try { n.setSelectionRange(focus.sel[0], focus.sel[1], focus.sel[2] || "none"); } catch { /* not a text control any more */ } }
+    }
+  }
+  return el;
+}
+
+const regionLast = new WeakMap();
+/**
+ * patchRegions(root, regions): regions = { "css selector": (el, i) => template }. For every element in `root` matching a selector
+ * the template is rendered and patchHTML'd into it ONLY if the markup differs from what this helper painted there last time
+ * (previous markup is kept in a WeakMap, so unchanged data touches no DOM at all). An element this helper has not painted yet is
+ * painted once. Returns the number of regions repainted.
+ */
+export function patchRegions(root, regions) {
+  let n = 0;
+  for (const [sel, fn] of Object.entries(regions)) {
+    root.querySelectorAll(sel).forEach((el, i) => {
+      const tpl = fn(el, i);
+      const str = tplString(tpl);
+      if (regionLast.get(el) === str) return;
+      regionLast.set(el, str);
+      patchHTML(el, tpl instanceof Raw ? tpl : new Raw(str));
+      n++;
+    });
+  }
+  return n;
+}
+
+/**
+ * pager(total, offset, limit, opts?): markup for "1–10 of 37" with Prev / Next buttons. No inline handlers; convention:
+ *   <nav class="pager" data-total data-limit>  ...  <button data-pager="prev|next" data-offset="<offset to go to>" [disabled]>
+ * Views delegate: wirePager(container, (newOffset) => { offset = newOffset; reload(); }) once per container (it listens on
+ * the container, so it keeps working after repaints). opts.noun (default "") adds a word after the total ("of 37 books").
+ * With total <= limit only the range text is shown (no buttons).
+ */
+export function pager(total, offset, limit, opts = {}) {
+  total = Math.max(0, Number(total) || 0); limit = Math.max(1, Number(limit) || 1);
+  offset = Math.min(Math.max(0, Number(offset) || 0), Math.max(0, total - 1));
+  const from = total ? offset + 1 : 0, to = Math.min(total, offset + limit);
+  const noun = opts.noun ? " " + opts.noun : "";
+  const range = html`<span class="pager-range" aria-live="polite">${from}–${to} of ${total}${noun}</span>`;
+  if (total <= limit) return html`<nav class="pager" aria-label="Pagination" data-total="${total}" data-limit="${limit}">${range}</nav>`;
+  const prev = Math.max(0, offset - limit), next = offset + limit;
+  return html`<nav class="pager" aria-label="Pagination" data-total="${total}" data-limit="${limit}">${range}
+    <button class="btn small" type="button" data-pager="prev" data-offset="${prev}" aria-label="Previous page" ${offset <= 0 ? raw("disabled") : ""}>Prev</button>
+    <button class="btn small" type="button" data-pager="next" data-offset="${next}" aria-label="Next page" ${next >= total ? raw("disabled") : ""}>Next</button></nav>`;
+}
+/** Delegate clicks on pager buttons inside `container`; calls handler(newOffset). Returns an unwire function. */
+export function wirePager(container, handler) {
+  const onClick = (e) => {
+    const b = e.target.closest && e.target.closest("button[data-pager]");
+    if (!b || b.disabled || !container.contains(b)) return;
+    handler(Number(b.dataset.offset) || 0, b.dataset.pager);
+  };
+  container.addEventListener("click", onClick);
+  return () => container.removeEventListener("click", onClick);
 }
 
 // The signed-in user, set by app.js. Mirrors the server: with sign-in off (loopback only) there is no user and everything is allowed.
@@ -22716,13 +24073,29 @@ export function parseHash() {
 }
 export function navigate(hash) { if (location.hash !== hash) location.hash = hash; }
 
-/** Subscribe to live state pushes (throttled). Returns an unsubscribe function. */
+/** True when two state payloads carry the same data (JSON string compare; the server emits stable key order). Pure. */
+export function sameState(a, b) {
+  if (a === b) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
+/**
+ * Subscribe to live state pushes. Returns an unsubscribe function. The callback receives the state payload and is
+ * called: on the first delivery; whenever the payload differs from the last one delivered to THIS subscriber; and on
+ * every polled-fallback payload (state.polled). Deliveries are throttled to at most one per minInterval ms.
+ */
 export function onState(fn, minInterval = 1500) {
-  let last = 0, timer = null, lastDetail = null;
-  const fire = () => { last = Date.now(); timer = null; fn(lastDetail); };
+  let last = 0, timer = null, lastDetail = null, delivered = null, hasDelivered = false;
+  const stale = (d) => hasDelivered && !(d && d.polled) && sameState(d, delivered);
+  const fire = () => {
+    timer = null;
+    if (stale(lastDetail)) return;
+    last = Date.now(); delivered = lastDetail; hasDelivered = true;
+    fn(lastDetail);
+  };
   const h = (e) => {
     lastDetail = e.detail;
-    if (timer) return;
+    if (timer || stale(lastDetail)) return;
     const wait = Math.max(0, minInterval - (Date.now() - last));
     timer = setTimeout(fire, wait);
   };
@@ -22734,7 +24107,7 @@ export function onState(fn, minInterval = 1500) {
 export function player(src, label, extraClass = "") {
   return html`<audio class="player ${extraClass}" controls preload="none" src="${src}" aria-label="${label}"></audio>`;
 }
-__STUDIO_EOF_b372e2eb1a71__
+__STUDIO_EOF_784ffc31a298__
   mkdir -p "$DEST/studio/web/static/js/views"
 cat > "$DEST/studio/web/static/js/views/about.js" <<'__STUDIO_EOF_dcc55ea8f77a__'
 // About page (version, credits, what this is), plus system health, worker control, QA limits and licences.
@@ -22801,12 +24174,55 @@ export async function render(view) {
   return () => view.removeEventListener("click", onClick);
 }
 __STUDIO_EOF_dcc55ea8f77a__
-cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_72391dfc31f0__'
+cat > "$DEST/studio/web/static/js/views/book.js" <<'__STUDIO_EOF_8cc9592465cb__'
 // Book page: metadata, narrator, chapters & players, assembly, exports, QA report, release signoff, storage.
-import { api, get, post, patch, html, setHTML, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, player, ApiError,
-  isAdmin, navigate, snapshotForm, applyForm } from "../ui.js";
+//
+// Two kinds of content (v0.8.1):
+//  * FORM cards (metadata, new-version / replace-narrator, release signoff, move) are drawn ONCE. A live update never touches them, so
+//    nothing the reader is typing is lost. They are re-seeded from the server only after the reader's own successful save (seedForm,
+//    which never overwrites a field the reader has changed since).
+//  * LIVE regions (header, version bar, banner, stats, narrative, chapters + players, exports, release status, voice info, storage, delete,
+//    log, cover) have a stable id and are repainted in place by patchRegions(), and only when their markup changed.
+import { api, get, post, patch, html, badge, progressBar, fmtDuration, fmtDate, fmtBytes, fmtAgo, toast, toastError, busy, dialog, confirmDialog, onState, player, ApiError,
+  isAdmin, navigate, setHTML, patchRegions } from "../ui.js";
 
-function narrativeCard(b, id) {
+// ------------------------------------------------------------------------------------------------ live templates (pure)
+const busyJobOf = (b) => b.utility_jobs.find((j) => ["queued", "running"].includes(j.status));
+const lastUtilOf = (b) => b.utility_jobs[0];
+
+function headTpl(b, id) {
+  const activeBookJob = b.job && ["queued", "running", "paused"].includes(b.job.status);
+  return html`<div class="page-head"><h1 id="bk-h1" tabindex="-1">${b.display_title}</h1>
+    <div class="head-actions">${badge(b.state)}
+      <a class="btn primary" id="bk-review" href="#/review/${id}?filter=${b.flagged ? "flagged" : "all"}">Review audio</a>
+      ${b.pending && !activeBookJob ? html`<button class="btn" id="bk-queue" data-act="queue">Queue generation</button>` : ""}</div></div>`;
+}
+
+function versionsTpl(b) {
+  if (b.versions.length <= 1) return "";
+  return html`<div class="card version-bar"><label>Narrator version
+      <select id="ver-pick">${b.versions.map((v) => html`<option value="${v.id}" ${v.current ? html`selected` : ""}>${v.narrator || "–"} · ${Math.round(v.progress * 100)}% rendered${v.archived ? " · archived" : ""}</option>`)}</select></label>
+    <span class="small muted">${b.versions.length} narrations of this manuscript. Each has its own audio, review and exports.</span></div>`;
+}
+
+function bannerTpl(b) {
+  return html`<div class="callout ${b.release ? "good" : "info"} small">${b.release
+    ? html`<strong>Approved for publication</strong> by ${b.release.approved_by} on ${fmtDate(b.release.approved_at)} (${b.release.listen_scope} listen). Exports made after approval are final; earlier ones stay labelled DRAFT.`
+    : html`<strong>Draft.</strong> Exports are labelled DRAFT until a human signs off below. This studio produces local publication candidates only – nothing is uploaded to Audible, ACX or any host.`}</div>`;
+}
+
+function statsTpl(b) {
+  return html`<div class="stats compact">
+      <div class="stat"><div class="stat-value">${b.produced}/${b.segments}</div><div class="stat-label">segments rendered</div>${progressBar(b.progress, "Rendered")}</div>
+      <div class="stat ${b.flagged ? "warn" : "good"}"><div class="stat-value">${b.flagged}</div><div class="stat-label">need review</div></div>
+      <div class="stat"><div class="stat-value">${b.passed}</div><div class="stat-label">QA passed</div></div>
+      <div class="stat approved"><div class="stat-value">${b.approved}</div><div class="stat-label">approved</div></div>
+      <div class="stat"><div class="stat-value">${fmtDuration(b.audio_duration_s)}</div><div class="stat-label">audio (est. ${fmtDuration(b.est_duration_s)})</div></div>
+    </div>
+    ${b.last_error ? html`<div class="callout bad small"><strong>Last error:</strong> ${b.last_error}</div>` : ""}`;
+}
+
+function narrativeTpl(b, id) {
   const n = b.narrative;
   if (!n) return "";
   return html`<section class="card" aria-labelledby="nar-sum-h"><h2 id="nar-sum-h">Narrative analysis</h2>
@@ -22818,91 +24234,187 @@ function narrativeCard(b, id) {
     <a class="btn" href="#/narrative/${id}">Open narrative page</a></section>`;
 }
 
-export async function render(view, parts) {
-  const id = Number(parts[0]);
-  let b = await get(`/api/books/${id}`);
-  let voices = (await get("/api/voices")).voices;
-  let painted = false;
-
-  const paint = () => {
-    const rc = b.release_check;
-    const busyJob = b.utility_jobs.find((j) => ["queued", "running"].includes(j.status));
-    const lastUtil = b.utility_jobs[0];
-    const activeBookJob = b.job && ["queued", "running", "paused"].includes(b.job.status);
-    // This page redraws while a job runs: keep a voice chosen but not yet submitted. Only from OUR earlier paint: the view element is reused
-    // when navigating to another book, and its old form must not leak into the new page.
-    const keepVer = painted ? snapshotForm(view.querySelector("#ver-form")) : null;
-    const replaceOpen = painted && !!view.querySelector("#replace-narrator[open]");
-    painted = true;
-    setHTML(view, html`<div class="page-head"><h1>${b.display_title}</h1>
-      <div class="head-actions">${badge(b.state)}
-        <a class="btn primary" href="#/review/${id}?filter=${b.flagged ? "flagged" : "all"}">Review audio</a>
-        ${b.pending && !activeBookJob ? html`<button class="btn" data-act="queue">Queue generation</button>` : ""}</div></div>
-    ${b.versions.length > 1 ? html`<div class="card version-bar"><label>Narrator version
-        <select id="ver-pick">${b.versions.map((v) => html`<option value="${v.id}" ${v.current ? html`selected` : ""}>${v.narrator || "–"} · ${Math.round(v.progress * 100)}% rendered${v.archived ? " · archived" : ""}</option>`)}</select></label>
-      <span class="small muted">${b.versions.length} narrations of this manuscript. Each has its own audio, review and exports.</span></div>` : ""}
-    <div class="callout ${b.release ? "good" : "info"} small">${b.release
-      ? html`<strong>Approved for publication</strong> by ${b.release.approved_by} on ${fmtDate(b.release.approved_at)} (${b.release.listen_scope} listen). Exports made after approval are final; earlier ones stay labelled DRAFT.`
-      : html`<strong>Draft.</strong> Exports are labelled DRAFT until a human signs off below. This studio produces local publication candidates only – nothing is uploaded to Audible, ACX or any host.`}</div>
-    <div class="stats compact">
-      <div class="stat"><div class="stat-value">${b.produced}/${b.segments}</div><div class="stat-label">segments rendered</div>${progressBar(b.progress, "Rendered")}</div>
-      <div class="stat ${b.flagged ? "warn" : "good"}"><div class="stat-value">${b.flagged}</div><div class="stat-label">need review</div></div>
-      <div class="stat"><div class="stat-value">${b.passed}</div><div class="stat-label">QA passed</div></div>
-      <div class="stat approved"><div class="stat-value">${b.approved}</div><div class="stat-label">approved</div></div>
-      <div class="stat"><div class="stat-value">${fmtDuration(b.audio_duration_s)}</div><div class="stat-label">audio (est. ${fmtDuration(b.est_duration_s)})</div></div>
-    </div>
-    ${b.last_error ? html`<div class="callout bad small"><strong>Last error:</strong> ${b.last_error}</div>` : ""}
-
-    ${narrativeCard(b, id)}
-    <section class="card" aria-labelledby="ch-h"><h2 id="ch-h">Chapters</h2>
-      <div class="form-actions"><button class="btn" data-act="assemble" ${busyJob ? html`disabled` : ""}>Assemble chapter masters (WAV + MP3)</button>
+function chaptersTpl(b, id) {
+  const busyJob = busyJobOf(b), lastUtil = lastUtilOf(b);
+  return html`<h2 id="ch-h">Chapters</h2>
+      <div class="form-actions"><button class="btn" id="bk-assemble" data-act="assemble" ${busyJob ? html`disabled` : ""}>Assemble chapter masters (WAV + MP3)</button>
         ${busyJob ? html`<span class="small muted"><span class="spinner" aria-hidden="true"></span> ${busyJob.kind} job #${busyJob.id} ${busyJob.status}…</span>` : ""}
         ${lastUtil && lastUtil.status === "failed" ? html`<span class="small err">Last ${lastUtil.kind} job: ${lastUtil.error}</span>` : ""}</div>
-      <div class="table-wrap"><table class="table">
+      <div class="table-wrap" id="bk-chapters-wrap"><table class="table">
         <thead><tr><th scope="col">#</th><th scope="col">Chapter</th><th scope="col">Segments</th><th scope="col">Master</th><th scope="col">Downloads</th></tr></thead>
         <tbody>${b.chapters.map((c) => {
           const sc = c.status_counts, mp3 = c.renders.mp3, wav = c.renders.wav;
           return html`<tr><td>${c.index}</td>
             <td><strong>${c.title}</strong>${c.title_overridden ? html` <span class="small muted">(renamed; original: ${c.original_title})</span>` : ""}
-              <div class="small"><button class="linklike" data-act="chapter-title" data-ch="${c.id}">Edit title</button> · <button class="linklike" data-act="chapter-regen" data-ch="${c.id}" ${busyJob ? html`disabled` : ""}>Regenerate chapter</button></div>
+              <div class="small"><button class="linklike" id="ch-title-${c.id}" data-act="chapter-title" data-ch="${c.id}">Edit title</button> · <button class="linklike" id="ch-regen-${c.id}" data-act="chapter-regen" data-ch="${c.id}" ${busyJob ? html`disabled` : ""}>Regenerate chapter</button></div>
               <div class="small muted">${c.words.toLocaleString()} words · est. ${fmtDuration(c.est_duration_s)}</div></td>
             <td class="small">${(sc.passed || 0) + (sc.approved || 0) + (sc.flagged || 0)}/${c.segments} rendered${sc.flagged ? html` · <a href="#/review/${id}?chapter=${c.id}&filter=flagged" class="warn-text">${sc.flagged} flagged</a>` : ""}
               ${c.missing_audio ? html`<div class="err">${c.missing_audio} missing – assembly blocked</div>` : ""}</td>
             <td>${mp3 ? html`${player(`/media/chapter/${c.id}.mp3`, `Chapter ${c.index} master`, "mini")}<div class="small muted">${fmtDuration(mp3.duration_s)} · ${mp3.draft ? "DRAFT" : "final"}${c.render_current ? "" : html` · <span class="warn-text">outdated</span>`}</div>` : html`<span class="small muted">not assembled</span>`}</td>
             <td class="small nowrap">${mp3 ? html`<a href="/media/chapter/${c.id}.mp3?download=1">MP3</a> · ` : ""}${wav ? html`<a href="/media/chapter/${c.id}.wav?download=1">WAV</a> · ` : ""}
-              <button class="linklike" data-act="chapter-m4b" data-ch="${c.id}" ${c.missing_audio ? html`disabled` : ""}>M4B</button></td></tr>`;
-        })}</tbody></table></div>
-    </section>
+              <button class="linklike" id="ch-m4b-${c.id}" data-act="chapter-m4b" data-ch="${c.id}" ${c.missing_audio ? html`disabled` : ""}>M4B</button></td></tr>`;
+        })}</tbody></table></div>`;
+}
 
-    <div class="grid-2">
-    <section class="card" aria-labelledby="ex-h"><h2 id="ex-h">Exports</h2>
+function blockedList(job) {
+  let r = {};
+  try { r = JSON.parse(job.result_json) || {}; } catch { r = {}; }
+  if (!r.blocked || !r.blocked.length) return "";
+  return html`<details id="bk-blocked" class="callout bad small" open><summary>Blocked: ${r.blocked.length} problem(s)</summary><ul>${r.blocked.slice(0, 40).map((x) => html`<li>Chapter ${x.chapter}: <code>${x.sid || ""}</code> ${x.problem || ""}</li>`)}</ul></details>`;
+}
+
+function exportsTpl(b) {
+  const busyJob = busyJobOf(b), lastUtil = lastUtilOf(b);
+  return html`<h2 id="ex-h">Exports</h2>
       <p class="small muted">Exports never omit missing segments: if any segment lacks usable audio the export is blocked and the gaps are listed. Outputs are verified with ffprobe (codec, duration, chapter markers).</p>
       <div class="form-actions">
-        <button class="btn primary" data-act="export-m4b" ${busyJob ? html`disabled` : ""}>Build ${b.release ? "final" : "DRAFT"} M4B (chapter-marked AAC)</button>
-        <button class="btn" data-act="export-zip" ${busyJob ? html`disabled` : ""}>Chapter MP3s (ZIP)</button>
-        <button class="btn" data-act="report">QA report (HTML + JSON)</button></div>
+        <button class="btn primary" id="bk-export-m4b" data-act="export-m4b" ${busyJob ? html`disabled` : ""}>Build ${b.release ? "final" : "DRAFT"} M4B (chapter-marked AAC)</button>
+        <button class="btn" id="bk-export-zip" data-act="export-zip" ${busyJob ? html`disabled` : ""}>Chapter MP3s (ZIP)</button>
+        <button class="btn" id="bk-report" data-act="report">QA report (HTML + JSON)</button></div>
       ${lastUtil && lastUtil.status === "failed" && lastUtil.result_json ? blockedList(lastUtil) : ""}
       ${b.exports.length ? html`<ul class="exports">${b.exports.map((e) => html`<li><a href="/media/export/${e.id}">${e.label}</a>
         ${e.draft ? html`<span class="badge tone-warn">DRAFT</span>` : html`<span class="badge tone-approved">final</span>`}
         <span class="small muted">${fmtBytes(e.size_bytes)}${e.duration_s ? " · " + fmtDuration(e.duration_s) : ""} · ${fmtAgo(e.created_at)}</span>
-        ${e.kind === "report_html" ? html` · <a class="small" href="/media/export/${e.id}?download=0" target="_blank" rel="noopener">view</a>` : ""}</li>`)}</ul>` : html`<p class="muted small">No exports yet.</p>`}
-    </section>
+        ${e.kind === "report_html" ? html` · <a class="small" href="/media/export/${e.id}?download=0" target="_blank" rel="noopener">view</a>` : ""}</li>`)}</ul>` : html`<p class="muted small">No exports yet.</p>`}`;
+}
+
+function releaseTpl(b) {
+  const rc = b.release_check;
+  return b.release
+    ? html`<p>Approved by <strong>${b.release.approved_by}</strong> · ${fmtDate(b.release.approved_at)} · ${b.release.listen_scope} listen.</p>
+        <button class="btn danger ghost" id="bk-revoke" data-act="revoke">Revoke approval</button>`
+    : html`${rc.ready ? html`<p class="good-text">All audio is accounted for and no automatic QA flags are open.</p>` : html`<p><strong>Not ready:</strong></p><ul class="blockers">${rc.blockers.map((x) => html`<li>${x}</li>`)}</ul>`}`;
+}
+
+function voiceTpl(b) {
+  return html`<p><strong>${b.voice_detail.name}</strong> (${b.voice_detail.kind}, v${b.voice_detail.version}) · <code class="small">${b.voice_detail.model_id}</code>
+        ${b.voice_detail.speaker ? html` · speaker ${b.voice_detail.speaker}` : ""}</p>
+      ${b.voice_outdated ? html`<p class="callout info small">This voice has a newer version. Switching regenerates the whole book.</p>` : ""}`;
+}
+
+const verNoteTpl = (b) => html`Starts a new version of this book (same text, chapters and characters) in a different voice. The ${b.voice_detail.name} narration stays exactly as it is.`;
+const fingerprintTpl = (b) => html`Book settings are a snapshot taken at import (fingerprint <code>${b.synth_fingerprint}</code>). Takes with another fingerprint are never mixed into this book.`;
+const storageTpl = (b) => html`${Object.entries(b.storage).map(([k, v]) => html`<dt>${k}</dt><dd><code>${v}</code></dd>`)}`;
+const archiveTpl = (b) => html`<button class="btn small ghost" id="bk-archive-btn" data-act="archive">${b.archived ? "Unarchive" : "Archive book"}</button>`;
+
+function deleteTpl(b) {
+  if (!isAdmin()) return "";
+  return html`<section class="card" aria-labelledby="del-h"><h2 id="del-h">Delete</h2>
+      <p class="small muted">Administrators only. Deleting removes the audio, exports and history for good and cannot be undone; use Disk &amp; Backups to back a book up first. A book with a queued, rendering or paused job cannot be deleted.</p>
+      ${b.versions.length > 1
+        ? html`<p class="small">This book has <strong>${b.versions.length} narrator versions</strong>. You can delete just this one, or the whole book.</p>
+          <button class="btn danger" type="button" id="bk-del-version" data-act="del-version">Delete the ${b.narrator} version…</button>
+          <button class="btn danger" type="button" id="bk-del-book" data-act="del-book">Remove book and all ${b.versions.length} versions…</button>`
+        : html`<button class="btn danger" type="button" id="bk-del-book" data-act="del-book">Remove this book…</button>`}
+    </section>`;
+}
+
+const logTpl = (b) => html`<h2 id="log-h">Project log</h2>
+      <ol class="feed small">${b.logs.map((l) => html`<li class="lvl-${l.level}"><span class="muted">${fmtAgo(l.created_at)}</span> ${l.message}</li>`)}</ol>`;
+
+// ------------------------------------------------------------------------------------------------ form helpers
+const seeds = new WeakMap();   // field -> the value the server last gave it (what "unchanged" means)
+const fieldsOf = (form) => Array.from(form.elements).filter((e) => e.name && e.type !== "submit" && e.type !== "button");
+function markSeeds(form) { if (form) fieldsOf(form).forEach((el) => seeds.set(el, el.value)); }
+/** True when the reader has changed any field of `form` since it was drawn or last seeded. */
+export function formDirty(form) { return !!form && fieldsOf(form).some((el) => el.type !== "file" && seeds.has(el) && el.value !== seeds.get(el)); }
+/**
+ * seedForm(form, values, submitted?): put server `values` into the named fields. A field is overwritten only if the reader has not
+ * touched it: after their own save `submitted` is what they sent (still equal to it = untouched since); otherwise untouched means equal
+ * to the last seeded value. Either way the baseline moves to the server value, so a field the reader kept editing stays dirty.
+ */
+export function seedForm(form, values, submitted) {
+  if (!form) return;
+  for (const [name, v] of Object.entries(values)) {
+    const el = form.elements.namedItem(name);
+    if (!el || !("value" in el) || typeof el.length === "number" && !el.tagName) continue;
+    const next = v === null || v === undefined ? "" : String(v);
+    const untouched = submitted ? el.value === String(submitted[name] ?? "") : el.value === seeds.get(el);
+    if (untouched) el.value = next;
+    seeds.set(el, next);
+  }
+}
+const META_FIELDS = ["title", "author", "narrator_credit", "publisher", "year", "genre", "description"];
+const metaValues = (b) => Object.fromEntries(META_FIELDS.map((k) => [k, b[k]]));
+
+// ------------------------------------------------------------------------------------------------ page
+export async function render(view, parts, query, nav) {
+  const id = Number(parts[0]);
+  const signal = nav && nav.signal;
+  // first paint: both requests in parallel
+  const [first, vs] = await Promise.all([get(`/api/books/${id}`, { signal }), get("/api/voices", { signal })]);
+  let b = first;
+  const voices = vs.voices;
+  let disposed = false, seq = 0, applied = 0, inflight = false, queued = false, coverBust = 0;
+
+  const regions = () => ({
+    "#bk-head": () => headTpl(b, id),
+    "#bk-versions": () => versionsTpl(b),
+    "#bk-banner": () => bannerTpl(b),
+    "#bk-stats": () => statsTpl(b),
+    "#bk-narrative": () => narrativeTpl(b, id),
+    "#bk-chapters": () => chaptersTpl(b, id),
+    "#bk-exports": () => exportsTpl(b),
+    "#bk-release-live": () => releaseTpl(b),
+    "#bk-voice": () => voiceTpl(b),
+    "#bk-ver-note": () => verNoteTpl(b),
+    "#bk-fingerprint": () => fingerprintTpl(b),
+    "#bk-cover-slot": () => (b.has_cover
+      ? html`<img class="cover" id="cover-img" src="/media/cover/${id}?v=${b.cover_version || 0}${coverBust ? "&u=" + coverBust : ""}" alt="Cover of ${b.title}">`
+      : html`<div class="cover placeholder" id="cover-img" aria-hidden="true">No cover</div>`),
+    "#bk-storage": () => storageTpl(b),
+    "#bk-archive": () => archiveTpl(b),
+    "#bk-delete": () => deleteTpl(b),
+    "#bk-log": () => logTpl(b),
+  });
+
+  const isField = (n) => n && ["input", "textarea", "select"].includes(String(n.tagName).toLowerCase());
+
+  /** Repaint the live regions whose markup changed. Never touches a form card. */
+  function patchLive() {
+    if (disposed) return;
+    const map = regions();
+    const playing = Array.from(view.querySelectorAll("#bk-chapters audio")).some((a) => !a.paused && !a.ended);
+    if (playing) delete map["#bk-chapters"];                      // never re-create a mini player while it plays
+    const ae = document.activeElement;
+    for (const sel of Object.keys(map)) {                         // a region holding the field the reader is in (the version picker) waits
+      const el = view.querySelector(sel);
+      if (el && ae && el !== ae && el.contains(ae) && isField(ae)) delete map[sel];
+    }
+    patchRegions(view, map);
+    const rf = view.querySelector("#release-form");               // the release form is drawn once; only its visibility / submit state follows the data
+    if (rf) {
+      rf.hidden = !!b.release;
+      const sub = rf.querySelector("button[type=submit]");
+      if (sub) sub.disabled = !b.release_check.ready;
+    }
+    document.title = `${b.display_title} · Audiobook Studio`;
+  }
+
+  setHTML(view, html`
+    <div id="bk-head"></div>
+    <div id="bk-versions"></div>
+    <div id="bk-banner"></div>
+    <div id="bk-stats"></div>
+    <div id="bk-narrative"></div>
+    <section class="card" id="bk-chapters" aria-labelledby="ch-h"></section>
+
+    <div class="grid-2">
+    <section class="card" id="bk-exports" aria-labelledby="ex-h"></section>
 
     <section class="card" aria-labelledby="rel-h"><h2 id="rel-h">Release signoff</h2>
-      ${b.release ? html`<p>Approved by <strong>${b.release.approved_by}</strong> · ${fmtDate(b.release.approved_at)} · ${b.release.listen_scope} listen.</p>
-        <button class="btn danger ghost" data-act="revoke">Revoke approval</button>`
-      : html`${rc.ready ? html`<p class="good-text">All audio is accounted for and no automatic QA flags are open.</p>` : html`<p><strong>Not ready:</strong></p><ul class="blockers">${rc.blockers.map((x) => html`<li>${x}</li>`)}</ul>`}
-        <form id="release-form" class="form">
-          <label>Approved by <input name="approved_by" required minlength="2" maxlength="120" autocomplete="name"></label>
-          <fieldset class="inline"><legend>Listening review performed</legend>
-            <label class="check"><input type="radio" name="listen_scope" value="full" checked> Full listen (recommended)</label>
-            <label class="check"><input type="radio" name="listen_scope" value="partial"> Partial / spot check</label></fieldset>
-          <label>Notes <input name="notes" maxlength="2000"></label>
-          <label class="check consent"><input type="checkbox" name="attest" required> I reviewed this audiobook, I hold the rights to the manuscript and the narrator voice,
-            and I approve these files as publication candidates. I understand automatic QA (Whisper agreement) is not proof of correct pronunciation or performance,
-            and that distributor requirements must be checked separately.</label>
-          <button class="btn primary" type="submit" ${rc.ready ? "" : html`disabled`}>Record release approval</button>
-        </form>`}
+      <div id="bk-release-live"></div>
+      <form id="release-form" class="form">
+        <label>Approved by <input name="approved_by" required minlength="2" maxlength="120" autocomplete="name"></label>
+        <fieldset class="inline"><legend>Listening review performed</legend>
+          <label class="check"><input type="radio" name="listen_scope" value="full" checked> Full listen (recommended)</label>
+          <label class="check"><input type="radio" name="listen_scope" value="partial"> Partial / spot check</label></fieldset>
+        <label>Notes <input name="notes" maxlength="2000"></label>
+        <label class="check consent"><input type="checkbox" name="attest" required> I reviewed this audiobook, I hold the rights to the manuscript and the narrator voice,
+          and I approve these files as publication candidates. I understand automatic QA (Whisper agreement) is not proof of correct pronunciation or performance,
+          and that distributor requirements must be checked separately.</label>
+        <button class="btn primary" type="submit">Record release approval</button>
+      </form>
     </section></div>
 
     <div class="grid-2">
@@ -22916,16 +24428,14 @@ export async function render(view, parts) {
         <label>Genre <input name="genre" maxlength="60" value="${b.genre}"></label></div>
         <label>Description <textarea name="description" rows="2" maxlength="4000">${b.description}</textarea></label>
         <button class="btn" type="submit">Save metadata</button></form>
-      <div class="cover-row">${b.has_cover ? html`<img class="cover" src="/media/cover/${id}?v=${Date.now()}" alt="Cover of ${b.title}">` : html`<div class="cover placeholder" aria-hidden="true">No cover</div>`}
+      <div class="cover-row"><span id="bk-cover-slot"></span>
         <label class="btn small">Upload cover (JPEG/PNG)<input type="file" id="cover-input" accept=".jpg,.jpeg,.png" class="sr-only"></label></div>
     </section>
 
     <section class="card" aria-labelledby="nar-h"><h2 id="nar-h">Narrator</h2>
-      <p><strong>${b.voice_detail.name}</strong> (${b.voice_detail.kind}, v${b.voice_detail.version}) · <code class="small">${b.voice_detail.model_id}</code>
-        ${b.voice_detail.speaker ? html` · speaker ${b.voice_detail.speaker}` : ""}</p>
-      ${b.voice_outdated ? html`<p class="callout info small">This voice has a newer version. Switching regenerates the whole book.</p>` : ""}
+      <div id="bk-voice"></div>
       <h3>Narrate with another voice</h3>
-      <p class="small muted">Starts a new version of this book (same text, chapters and characters) in a different voice. The ${b.voice_detail.name} narration stays exactly as it is.</p>
+      <p class="small muted" id="bk-ver-note"></p>
       <form id="ver-form" class="form">
         <label>Voice <select name="voice_id" required><option value="" disabled selected>Choose a narrator…</option>${voices.map((v) => html`<option value="${v.id}">${v.name} (${v.kind})${b.versions.some((x) => x.narrator === v.name) ? " – has a version" : ""}</option>`)}</select></label>
         <label>Delivery instructions <input name="instructions" maxlength="1000" value="${b.instructions}"></label>
@@ -22937,40 +24447,47 @@ export async function render(view, parts) {
           <label>Voice <select name="voice_id">${voices.map((v) => html`<option value="${v.id}" ${v.id === b.voice_detail.id ? html`selected` : ""}>${v.name} (${v.kind})</option>`)}</select></label>
           <label>Delivery instructions <input name="instructions" maxlength="1000" value="${b.instructions}"></label>
           <button class="btn" type="submit">Apply narrator change…</button></form></details>
-      <p class="small muted">Book settings are a snapshot taken at import (fingerprint <code>${b.synth_fingerprint}</code>). Takes with another fingerprint are never mixed into this book.</p>
-      <button class="btn ghost small" data-act="resnapshot">Apply current global settings to this book…</button>
+      <p class="small muted" id="bk-fingerprint"></p>
+      <button class="btn ghost small" id="bk-resnapshot" data-act="resnapshot">Apply current global settings to this book…</button>
     </section></div>
 
     <div class="grid-2">
     <section class="card" aria-labelledby="ms-h"><h2 id="ms-h">Manuscript manifest</h2>
       <p class="small">${b.manuscript.name} · ${b.manuscript.format} · ${fmtBytes(b.manuscript.size_bytes)} · <a href="/media/manuscript/${id}">download original</a><br>SHA-256 <code class="small">${b.manuscript.sha256}</code></p>
-      <details><summary>What is and is not narrated (${(b.manuscript.manifest.chapters || []).length} source sections)</summary>
+      <details id="manifest-details"><summary>What is and is not narrated (${(b.manuscript.manifest.chapters || []).length} source sections)</summary>
         <ul class="small">${(b.manuscript.manifest.chapters || []).map((c) => html`<li>${c.narrated ? "✓" : "✗"} ${c.title} (${c.words} words)${c.excluded_reason ? html` – <em>${c.excluded_reason}</em>` : ""}
           ${c.not_read.length ? html`<ul>${c.not_read.map((n) => html`<li class="muted">${n.reason}: ${n.text}</li>`)}</ul>` : ""}</li>`)}</ul></details>
     </section>
     <section class="card" aria-labelledby="st-h"><h2 id="st-h">Storage</h2>
-      <dl class="kv small">${Object.entries(b.storage).map(([k, v]) => html`<dt>${k}</dt><dd><code>${v}</code></dd>`)}</dl>
+      <dl class="kv small" id="bk-storage"></dl>
       <form id="move-form" class="form"><label>Move this project to another library root <input name="new_root" placeholder="/Volumes/AudiobooksSSD/Library" maxlength="4096"></label>
         <button class="btn small" type="submit">Copy, verify &amp; switch…</button>
         <p class="small muted">Files are copied and verified (size + SHA-256) before the database is switched. The old copy is kept; delete it yourself once satisfied.</p></form>
-      <button class="btn small ghost" data-act="archive">${b.archived ? "Unarchive" : "Archive book"}</button>
+      <div id="bk-archive"></div>
     </section></div>
 
-    ${isAdmin() ? html`<section class="card" aria-labelledby="del-h"><h2 id="del-h">Delete</h2>
-      <p class="small muted">Administrators only. Deleting removes the audio, exports and history for good and cannot be undone; use Disk &amp; Backups to back a book up first. A book with a queued, rendering or paused job cannot be deleted.</p>
-      ${b.versions.length > 1
-        ? html`<p class="small">This book has <strong>${b.versions.length} narrator versions</strong>. You can delete just this one, or the whole book.</p>
-          <button class="btn danger" type="button" data-act="del-version">Delete the ${b.narrator} version…</button>
-          <button class="btn danger" type="button" data-act="del-book">Remove book and all ${b.versions.length} versions…</button>`
-        : html`<button class="btn danger" type="button" data-act="del-book">Remove this book…</button>`}
-    </section>` : ""}
+    <div id="bk-delete"></div>
 
-    <section class="card" aria-labelledby="log-h"><h2 id="log-h">Project log</h2>
-      <ol class="feed small">${b.logs.map((l) => html`<li class="lvl-${l.level}"><span class="muted">${fmtAgo(l.created_at)}</span> ${l.message}</li>`)}</ol></section>`);
-    wire();
-    applyForm(view.querySelector("#ver-form"), keepVer);
-    if (replaceOpen) view.querySelector("#replace-narrator").open = true;
-  };
+    <section class="card" id="bk-log" aria-labelledby="log-h"></section>`);
+  const $ = (sel) => view.querySelector(sel);
+  patchLive();
+  ["#meta-form", "#ver-form", "#nar-form", "#release-form", "#move-form"].forEach((s) => markSeeds($(s)));
+
+  // ---- fetching: live refreshes never run over a newer response, and never repaint a form
+  async function load() {
+    const mine = ++seq;
+    const nb = await get(`/api/books/${id}`, { signal });
+    if (disposed || mine < applied) return null;
+    applied = mine; b = nb;
+    return nb;
+  }
+  async function reload() { try { if (await load()) patchLive(); } catch (e) { if (!e || e.name !== "AbortError") { /* transient */ } } }
+  async function refreshLive() {
+    if (disposed || (typeof document !== "undefined" && document.hidden)) return;
+    if (inflight) { queued = true; return; }
+    inflight = true;
+    try { await reload(); } finally { inflight = false; if (queued && !disposed) { queued = false; refreshLive(); } }
+  }
 
   /** Two-step admin delete: ask the server what would go (409 + preview), then require the name to be typed before sending confirm:true. */
   async function deleteFlow(path, { heading, typed, intro }) {
@@ -22989,24 +24506,27 @@ export async function render(view, parts) {
     return true;
   }
 
-  function blockedList(job) {
-    let r = {};
-    try { r = JSON.parse(job.result_json) || {}; } catch { r = {}; }
-    if (!r.blocked || !r.blocked.length) return "";
-    return html`<details class="callout bad small" open><summary>Blocked: ${r.blocked.length} problem(s)</summary><ul>${r.blocked.slice(0, 40).map((x) => html`<li>Chapter ${x.chapter}: <code>${x.sid || ""}</code> ${x.problem || ""}</li>`)}</ul></details>`;
+  /** A narrator change alters the voice, the instructions and the fingerprint. Show what the server kept in the replace-narrator form (what the
+   *  reader submitted, unless they typed more since) and in the new-version form's instructions (only if the reader has not touched it). */
+  function reseedNarratorForms(submitted) {
+    seedForm($("#nar-form"), { voice_id: b.voice_detail.id, instructions: b.instructions }, submitted);
+    seedForm($("#ver-form"), { instructions: b.instructions });
   }
 
-  const reload = async () => { b = await get(`/api/books/${id}`); paint(); };
-
   async function narratorChange(body, btn) {
+    const submitted = { voice_id: String(body.voice_id), instructions: body.instructions };
     try {
       await busy(btn, () => post(`/api/books/${id}/narrator`, body));
       toast("Narrator updated", "success");
+      await reload(); reseedNarratorForms(submitted);
+      return;
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.details && e.details.rendered_segments !== undefined) {
         if (await confirmDialog("Regenerate the whole book?", e.message, "Change narrator & regenerate", true)) {
           await busy(btn, () => post(`/api/books/${id}/narrator`, { ...body, confirm_invalidate: true }), "Narrator changed; all segments will be regenerated");
           await post("/api/queue", { book_id: id }).catch(() => {});
+          await reload(); reseedNarratorForms(submitted);
+          return;
         }
       }
     }
@@ -23014,9 +24534,7 @@ export async function render(view, parts) {
   }
 
   function wire() {
-    const pick = view.querySelector("#ver-pick");
-    if (pick) pick.addEventListener("change", () => navigate(`#/book/${pick.value}`));
-    view.querySelector("#ver-form").addEventListener("submit", async (e) => {
+    $("#ver-form").addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = new FormData(e.target);
       if (!fd.get("voice_id")) { toast("Choose a narrator for the new version.", "error"); e.target.voice_id.focus(); return; }
       const queue = !!(e.submitter && e.submitter.dataset.queue === "1");
@@ -23026,33 +24544,59 @@ export async function render(view, parts) {
         navigate(`#/book/${nb.id}`);
       } catch { /* toast shown */ }
     });
-    view.querySelector("#meta-form").addEventListener("submit", async (e) => {
-      e.preventDefault(); const fd = Object.fromEntries(new FormData(e.target).entries());
-      b = await busy(e.submitter, () => patch(`/api/books/${id}`, fd), "Metadata saved"); paint();
+    $("#meta-form").addEventListener("submit", async (e) => {
+      e.preventDefault(); const sent = Object.fromEntries(new FormData(e.target).entries());
+      try {
+        const nb = await busy(e.submitter, () => patch(`/api/books/${id}`, sent), "Metadata saved");
+        b = nb; applied = ++seq;
+        seedForm($("#meta-form"), metaValues(nb), sent);   // the reader's own save: show what the server kept (trimmed), keep anything typed since
+        patchLive();
+      } catch { /* toast shown */ }
     });
-    view.querySelector("#nar-form").addEventListener("submit", async (e) => {
+    $("#nar-form").addEventListener("submit", async (e) => {
       e.preventDefault(); const fd = new FormData(e.target);
       await narratorChange({ voice_id: Number(fd.get("voice_id")), instructions: fd.get("instructions") }, e.submitter);
     });
-    view.querySelector("#cover-input").addEventListener("change", async (e) => {
-      const f = e.target.files[0]; if (!f) return;
+    $("#cover-input").addEventListener("change", async (e) => {
+      const input = e.target, f = input.files[0]; if (!f) return;
       const fd = new FormData(); fd.append("file", f, f.name);
-      b = await busy(null, () => api("POST", `/api/books/${id}/cover`, fd), "Cover saved"); paint();
+      const before = b.cover_version;
+      try {
+        const nb = await busy(null, () => api("POST", `/api/books/${id}/cover`, fd), "Cover saved");
+        if (nb.cover_version === before) coverBust++;      // replaced within the same second: still force the browser to refetch
+        b = nb; applied = ++seq;
+        patchLive();                                       // only the cover slot (and anything else that really changed) is repainted; the metadata form is untouched
+      } catch { /* toast shown */ }
+      input.value = "";
     });
-    const rf = view.querySelector("#release-form");
-    if (rf) rf.addEventListener("submit", async (e) => {
+    const rf = $("#release-form");
+    rf.addEventListener("submit", async (e) => {
       e.preventDefault(); if (!rf.reportValidity()) return;
       const fd = new FormData(rf);
-      b = await busy(e.submitter, () => post(`/api/books/${id}/release`, { approved_by: fd.get("approved_by"), listen_scope: fd.get("listen_scope"), attest: fd.get("attest") === "on", notes: fd.get("notes") || "" }),
-        "Release approval recorded. Export again to produce final (non-draft) files.");
-      paint();
+      try {
+        const nb = await busy(e.submitter, () => post(`/api/books/${id}/release`, { approved_by: fd.get("approved_by"), listen_scope: fd.get("listen_scope"), attest: fd.get("attest") === "on", notes: fd.get("notes") || "" }),
+          "Release approval recorded. Export again to produce final (non-draft) files.");
+        b = nb; applied = ++seq;
+        rf.reset(); markSeeds(rf);                          // approved: the form is hidden and starts empty if the approval is ever revoked
+        patchLive();
+      } catch { /* toast shown */ }
     });
-    view.querySelector("#move-form").addEventListener("submit", async (e) => {
-      e.preventDefault(); const root = new FormData(e.target).get("new_root").trim(); if (!root) return;
+    $("#move-form").addEventListener("submit", async (e) => {
+      e.preventDefault(); const form = e.target, root = new FormData(form).get("new_root").trim(); if (!root) return;
       if (!(await confirmDialog("Move project?", `Copy all files of '${b.title}' under ${root}, verify them, then switch the project to the new location?`, "Move"))) return;
-      const r = await busy(e.submitter, () => post(`/api/books/${id}/move`, { new_root: root }));
-      toast(`Moved: ${r.files} files verified. Old copy kept.`, "success", 9000); await reload();
+      try {
+        const r = await busy(e.submitter, () => post(`/api/books/${id}/move`, { new_root: root }));
+        toast(`Moved: ${r.files} files verified. Old copy kept.`, "success", 9000);
+        form.reset(); markSeeds(form);
+        await reload();
+      } catch { /* toast shown */ }
     });
+    view.addEventListener("change", onChange);
+  }
+
+  function onChange(e) {
+    const pick = e.target.closest && e.target.closest("#ver-pick");
+    if (pick && view.contains(pick)) navigate(`#/book/${pick.value}`);
   }
 
   async function onClick(e) {
@@ -23104,21 +24648,31 @@ export async function render(view, parts) {
     await reload();
   }
 
+  // a chapter player that stopped (pause / ended) frees the chapters region to catch up with what it missed
+  let idleTimer = null;
+  const onMediaIdle = (e) => { if (e.target && e.target.closest && e.target.closest("#bk-chapters")) { clearTimeout(idleTimer); idleTimer = setTimeout(refreshLive, 400); } };
+  const onVisible = () => { if (!document.hidden) refreshLive(); };
+
+  wire();
   view.addEventListener("click", onClick);
-  paint();
-  const off = onState(async () => {
-    const ae = document.activeElement;
-    if (ae && view.contains(ae) && ["input", "textarea", "select"].includes(ae.tagName.toLowerCase())) return;
-    if ([...view.querySelectorAll("audio")].some((x) => !x.paused)) return;
-    try { b = await get(`/api/books/${id}`); paint(); } catch { /* transient */ }
-  }, 3000);
-  return () => { off(); view.removeEventListener("click", onClick); };
+  view.addEventListener("pause", onMediaIdle, true);
+  view.addEventListener("ended", onMediaIdle, true);
+  document.addEventListener("visibilitychange", onVisible);
+  const off = onState(() => { refreshLive(); }, 3000);
+  return () => {
+    disposed = true; off(); clearTimeout(idleTimer);
+    view.removeEventListener("click", onClick); view.removeEventListener("change", onChange);
+    view.removeEventListener("pause", onMediaIdle, true); view.removeEventListener("ended", onMediaIdle, true);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }
-__STUDIO_EOF_72391dfc31f0__
-cat > "$DEST/studio/web/static/js/views/disk.js" <<'__STUDIO_EOF_c166c7c55500__'
+__STUDIO_EOF_8cc9592465cb__
+cat > "$DEST/studio/web/static/js/views/disk.js" <<'__STUDIO_EOF_f9e11f538729__'
 // Disk & Backups (administrators): usage per book and category, free space, purge/delete with typed confirmation, backup and restore.
 // Every destructive call is first sent WITHOUT confirm (the server answers 409 with a preview), then repeated with confirm:true after the user agrees.
-import { get, post, html, setHTML, dialog, confirmDialog, toast, toastError, fmtBytes, fmtDate } from "../ui.js";
+// The page paints at once with "Measuring disk usage…" cards: /api/disk/usage walks every file of every book, so it (and the quick backup
+// list) are fetched in parallel after the first paint and each fills its own cards when it answers.
+import { get, post, html, setHTML, patchRegions, dialog, confirmDialog, toast, toastError, fmtBytes, fmtDate } from "../ui.js";
 
 const CATS = ["manuscripts", "segments", "alternates", "reports", "masters", "exports"];
 const OTHER = { voices: "Voices", recordings: "Recordings", previews: "Previews", imports: "Import copies", database: "Database", backups: "Backups", logs: "Logs", model_cache: "Model cache" };
@@ -23158,66 +24712,129 @@ async function ask(path, body, previewText, okLabel) {
   return {};
 }
 
-function draw(view, u) {
-  const labels = u.category_labels || {};
-  setHTML(view, html`
-  <div class="page-head"><h1>Disk &amp; Backups</h1><div class="head-actions">
-    <button class="btn" data-act="refresh">Refresh</button>
-    <button class="btn" data-act="dbbackup">Back up database</button></div></div>
-  <section class="card" aria-labelledby="free-h"><h2 id="free-h">Free space</h2>
+const placeholder = (what) => html`<p class="muted" role="status"><span class="spinner" aria-hidden="true"></span> Measuring disk usage… ${what}</p>`;
+
+function freeTpl(u) {
+  if (!u) return html`<h2 id="free-h">Free space</h2>${placeholder("Free space and the library total appear in a moment.")}`;
+  return html`<h2 id="free-h">Free space</h2>
     <dl class="about-facts">${freeLine("Library volume", u.free.library)}${freeLine("Model cache", u.free.model_cache)}${freeLine("Backups folder", u.free.backups)}
-      <div><dt>Library total</dt><dd>${fmtBytes(u.library_bytes)}</dd></div></dl>
-  </section>
-  <section class="card" aria-labelledby="books-h"><h2 id="books-h">Books</h2>
+      <div><dt>Library total</dt><dd>${fmtBytes(u.library_bytes)}</dd></div></dl>`;
+}
+
+function booksTpl(u) {
+  if (!u) return html`<h2 id="books-h">Books</h2>${placeholder("Counting every book's files; large libraries take a few seconds.")}`;
+  const labels = u.category_labels || {};
+  return html`<h2 id="books-h">Books</h2>
     ${u.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Book</th>
       ${CATS.map((c) => html`<th scope="col" title="${labels[c] || c}">${labels[c] || c}</th>`)}<th scope="col">Total</th><th scope="col">Actions</th></tr></thead><tbody>
       ${u.books.map((b) => html`<tr><td>${b.display_title}${b.archived ? html` <span class="badge tone-neutral">archived</span>` : ""}${b.busy ? html` <span class="badge tone-warn">in queue</span>` : ""}</td>
         ${CATS.map((c) => html`<td>${fmtBytes(b.categories[c] || 0)}</td>`)}<td><strong>${fmtBytes(b.total_bytes)}</strong></td>
         <td class="actions">
-          <button class="btn small" data-act="backup" data-id="${b.id}">Back up</button>
-          <button class="btn small" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
-          <button class="btn small" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
-          <button class="btn small" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
-          <button class="btn small danger" data-act="delete" data-id="${b.id}" data-title="${b.display_title}" ${b.busy ? "disabled" : ""}>Delete</button></td></tr>`)}
+          <button class="btn small" id="dk-backup-${b.id}" data-act="backup" data-id="${b.id}">Back up</button>
+          <button class="btn small" id="dk-purge-takes-${b.id}" data-act="purge-takes" data-id="${b.id}" ${b.busy ? "disabled" : ""} title="Remove superseded takes; selected and approved takes stay">Purge takes (${b.purgeable.takes}, ${fmtBytes(b.purgeable.takes_bytes)})</button>
+          <button class="btn small" id="dk-purge-exports-${b.id}" data-act="purge-exports" data-id="${b.id}" ${b.busy || !b.purgeable.exports_bytes ? "disabled" : ""}>Purge exports</button>
+          <button class="btn small" id="dk-purge-masters-${b.id}" data-act="purge-masters" data-id="${b.id}" ${b.busy || !b.purgeable.masters_bytes ? "disabled" : ""}>Purge masters</button>
+          <button class="btn small danger" id="dk-delete-${b.id}" data-act="delete" data-id="${b.id}" data-title="${b.display_title}" ${b.busy ? "disabled" : ""}>Delete</button></td></tr>`)}
       <tr><th scope="row">All books</th>${CATS.map((c) => html`<td>${fmtBytes(u.category_totals[c] || 0)}</td>`)}<td><strong>${fmtBytes(u.library_bytes)}</strong></td><td></td></tr>
       </tbody></table></div>
       <p class="small muted">Books that are queued, rendering or paused cannot be purged or deleted; cancel their job first. Purging takes keeps every selected (and therefore every approved) take.</p>`
-      : html`<p class="muted">No books yet.</p>`}
-  </section>
-  <section class="card" aria-labelledby="other-h"><h2 id="other-h">Everything else</h2>
-    <dl class="about-facts">${Object.entries(OTHER).map(([k, l]) => html`<div><dt>${l}</dt><dd>${fmtBytes(u.other[k] || 0)}</dd></div>`)}</dl>
-    <p class="small muted">Model cache <code>${u.paths.model_cache}</code> · Library <code>${u.paths.library}</code></p>
-  </section>
-  <section class="card" aria-labelledby="bk-h"><h2 id="bk-h">Backups</h2>
-    <p class="small muted">Book backups are single zip files (database rows plus all audio and documents) in <code>${u.paths.backups}/books</code>. Restoring always creates a NEW book; the original is never touched.</p>
-    ${u.backups.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">File</th><th scope="col">Book</th><th scope="col">Size</th><th scope="col">Made</th><th scope="col">Actions</th></tr></thead><tbody>
-      ${u.backups.books.map((x) => html`<tr><td><code>${x.name}</code></td><td>${x.title || "(unreadable)"}</td><td>${fmtBytes(x.size_bytes)}</td><td>${fmtDate(x.modified)}</td>
-        <td class="actions"><button class="btn small" data-act="restore" data-name="${x.name}" ${x.invalid ? "disabled" : ""}>Restore as new book</button>
-        <button class="btn small danger" data-act="delbackup" data-name="${x.name}">Delete</button></td></tr>`)}</tbody></table></div>`
-      : html`<p class="muted">No book backups yet.</p>`}
-    <h3>Database backups</h3>
-    ${u.backups.databases.length ? html`<ul class="small">${u.backups.databases.map((x) => html`<li><code>${x.name}</code> · ${fmtBytes(x.size_bytes)} · ${fmtDate(x.modified)}</li>`)}</ul>`
-      : html`<p class="muted">None yet.</p>`}
-  </section>`);
+      : html`<p class="muted">No books yet.</p>`}`;
 }
 
-export async function render(view) {
-  let u;
-  try { u = await get("/api/disk/usage"); }
-  catch (e) {
-    setHTML(view, html`<div class="page-head"><h1>Disk &amp; Backups</h1></div><div class="callout info" role="status">${e.status === 403 ? "Disk management is available to administrators only." : e.message}</div>`);
-    return;
+function otherTpl(u) {
+  if (!u) return html`<h2 id="other-h">Everything else</h2>${placeholder("")}`;
+  return html`<h2 id="other-h">Everything else</h2>
+    <dl class="about-facts">${Object.entries(OTHER).map(([k, l]) => html`<div><dt>${l}</dt><dd>${fmtBytes(u.other[k] || 0)}</dd></div>`)}</dl>
+    <p class="small muted">Model cache <code>${u.paths.model_cache}</code> · Library <code>${u.paths.library}</code></p>`;
+}
+
+function backupsTpl(bk, paths) {
+  if (!bk) return html`<h2 id="bk-h">Backups</h2><p class="muted" role="status"><span class="spinner" aria-hidden="true"></span> Reading backups…</p>`;
+  return html`<h2 id="bk-h">Backups</h2>
+    <p class="small muted">Book backups are single zip files (database rows plus all audio and documents) in <code>${paths ? paths.backups : "the backups folder"}/books</code>. Restoring always creates a NEW book; the original is never touched.</p>
+    ${bk.books.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">File</th><th scope="col">Book</th><th scope="col">Size</th><th scope="col">Made</th><th scope="col">Actions</th></tr></thead><tbody>
+      ${bk.books.map((x, i) => html`<tr><td><code>${x.name}</code></td><td>${x.title || "(unreadable)"}</td><td>${fmtBytes(x.size_bytes)}</td><td>${fmtDate(x.modified)}</td>
+        <td class="actions"><button class="btn small" id="dk-restore-${i}" data-act="restore" data-name="${x.name}" ${x.invalid ? "disabled" : ""}>Restore as new book</button>
+        <button class="btn small danger" id="dk-delbackup-${i}" data-act="delbackup" data-name="${x.name}">Delete</button></td></tr>`)}</tbody></table></div>`
+      : html`<p class="muted">No book backups yet.</p>`}
+    <h3>Database backups</h3>
+    ${bk.databases.length ? html`<ul class="small">${bk.databases.map((x) => html`<li><code>${x.name}</code> · ${fmtBytes(x.size_bytes)} · ${fmtDate(x.modified)}</li>`)}</ul>`
+      : html`<p class="muted">None yet.</p>`}`;
+}
+
+const ageText = (u, measuring, since) => {
+  if (measuring) return "Measuring…";
+  if (!u) return "";
+  const s = Math.max(0, Math.round((Date.now() - since) / 1000));   // `since`: when the measurement was taken, from the server's own age_s (no clock skew)
+  return s < 5 ? "Measured just now" : s < 90 ? `Measured ${s} s ago` : `Measured ${Math.round(s / 60)} min ago`;
+};
+
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  let u = null, bk = null, fatal = null, measuring = true, disposed = false, seq = 0, since = Date.now();
+
+  setHTML(view, html`
+  <div class="page-head"><h1>Disk &amp; Backups</h1><div class="head-actions">
+    <span class="small muted" id="dk-age" role="status"></span>
+    <button class="btn" id="dk-refresh" data-act="refresh">Refresh</button>
+    <button class="btn" id="dk-dbbackup" data-act="dbbackup">Back up database</button></div></div>
+  <div id="dk-fatal"></div>
+  <section class="card" id="dk-free" aria-labelledby="free-h"></section>
+  <section class="card" id="dk-books" aria-labelledby="books-h"></section>
+  <section class="card" id="dk-other" aria-labelledby="other-h"></section>
+  <section class="card" id="dk-backups" aria-labelledby="bk-h"></section>`);
+  const $ = (s) => view.querySelector(s);
+
+  function paint() {
+    if (disposed) return;
+    patchRegions(view, {
+      "#dk-fatal": () => (fatal ? html`<div class="callout info" role="status">${fatal}</div>` : ""),
+      "#dk-free": () => (fatal ? "" : freeTpl(u)),
+      "#dk-books": () => (fatal ? "" : booksTpl(u)),
+      "#dk-other": () => (fatal ? "" : otherTpl(u)),
+      "#dk-backups": () => (fatal ? "" : backupsTpl(bk, u && u.paths)),
+    });
+    ["#dk-free", "#dk-books", "#dk-other", "#dk-backups"].forEach((s) => { const el = $(s); if (el) el.hidden = !!fatal; });
+    const age = $("#dk-age"); if (age) age.textContent = ageText(u, measuring, since);
+    const rb = $("#dk-refresh"); if (rb) { rb.disabled = measuring; rb.hidden = !!fatal; }
+    const db = $("#dk-dbbackup"); if (db) db.hidden = !!fatal;
   }
-  draw(view, u);
-  const reload = async () => { draw(view, await get("/api/disk/usage")); };
+
+  /** Fetch usage (slow: walks the library) and the backup list (quick) in parallel; each fills its own cards as it arrives. */
+  async function load(force) {
+    const mine = ++seq;
+    measuring = true; paint();
+    const usageP = get("/api/disk/usage" + (force ? "?refresh=1" : ""), { signal });
+    const backupsP = get("/api/disk/backups", { signal });
+    backupsP.then((d) => { if (!disposed && mine === seq) { bk = d; paint(); } }, () => {});
+    try {
+      const data = await usageP;
+      if (disposed || mine !== seq) return;
+      u = data; since = Date.now() - (Number(data.age_s) || 0) * 1000;
+      if (!bk) bk = data.backups;   // the usage payload carries the backup list too
+      fatal = null;
+    } catch (e) {
+      if (disposed || (e && e.name === "AbortError") || mine !== seq) return;
+      if (e.status === 403) fatal = "Disk management is available to administrators only.";
+      else if (!u) fatal = e.message;
+      else toastError(e);
+    }
+    measuring = false; paint();
+  }
+
+  const reload = () => load(false);   // disk-changing actions drop the server cache themselves, so this re-measures
+  paint();
+  load(false);
+  const tick = setInterval(() => { const age = $("#dk-age"); if (age && !measuring) age.textContent = ageText(u, false, since); }, 5000);
+
   const onClick = async (ev) => {
     const btn = ev.target.closest("button[data-act]");
-    if (!btn) return;
+    if (!btn || !view.contains(btn)) return;
     const id = btn.dataset.id;
     try {
       switch (btn.dataset.act) {
-        case "refresh": await run(btn, reload); break;
-        case "dbbackup": { const r = await run(btn, () => post("/api/disk/db-backup"), "Database backed up"); await reload(); break; }
+        case "refresh": await load(true); break;
+        case "dbbackup": { await run(btn, () => post("/api/disk/db-backup"), "Database backed up"); await reload(); break; }
         case "backup": { await run(btn, () => post(`/api/disk/books/${id}/backup`), "Backup written to the backups folder"); await reload(); break; }
         case "purge-takes": case "purge-exports": case "purge-masters": {
           const scope = btn.dataset.act.slice(6);
@@ -23252,9 +24869,9 @@ export async function render(view) {
     } catch (e) { toastError(e); }
   };
   view.addEventListener("click", onClick);
-  return () => view.removeEventListener("click", onClick);
+  return () => { disposed = true; clearInterval(tick); view.removeEventListener("click", onClick); };
 }
-__STUDIO_EOF_c166c7c55500__
+__STUDIO_EOF_f9e11f538729__
 cat > "$DEST/studio/web/static/js/views/inspector.js" <<'__STUDIO_EOF_0c9d9bb96dec__'
 // Segment Inspector: text, context windows, speakers, direction, delivery sent to the engine, boundaries, takes.
 import { get, post, patch, html, setHTML, badge, fmtDate, fmtDuration, toast, toastError, busy, confirmDialog, onState, player, qs, navigate } from "../ui.js";
@@ -23648,9 +25265,10 @@ export async function render(view, parts, query) {
   return () => { ab.dead = true; st.preview = null; off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
 }
 __STUDIO_EOF_0c9d9bb96dec__
-cat > "$DEST/studio/web/static/js/views/library.js" <<'__STUDIO_EOF_d273092e442e__'
+cat > "$DEST/studio/web/static/js/views/library.js" <<'__STUDIO_EOF_5bbecfb1b732__'
 // Multi-manuscript library: upload, import preview, metadata + narrator, add to queue.
-import { api, get, post, html, setHTML, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState, snapshotForm, applyForm } from "../ui.js";
+import { api, get, post, html, setHTML, patchRegions, badge, progressBar, fmtDuration, fmtDate, toast, toastError, busy, onState, snapshotForm, applyForm } from "../ui.js";
+import { fmtRuntime } from "../runtime.js";
 
 // Previews survive navigation within the session (the server also keeps them for 48 h).
 const pending = [];
@@ -23754,16 +25372,17 @@ function bookList(books) {
   return html`<section class="card" aria-labelledby="lib-h">
     <h2 id="lib-h">Library (${groups.length})</h2>
     ${books.length ? html`<div class="table-wrap"><table class="table">
-      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Length</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-      <tbody>${groups.map((g) => { const b = g.shown; return html`<tr>
+      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Audio length</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>${groups.map((g) => { const b = g.shown; const rt = fmtRuntime(b.runtime); return html`<tr>
         <td><a href="#/book/${b.id}"><strong>${b.title}</strong></a><div class="small muted">${b.author || ""}${b.author ? " · " : ""}${b.source || ""} · ${fmtDate(b.created_at)}</div></td>
         <td>${g.versions.length > 1
           ? html`<label class="sr-only" for="nv-${g.work}">Narrator version of ${b.title}</label>
               <select id="nv-${g.work}" data-work="${g.work}">${g.versions.map((v) => html`<option value="${v.id}" ${v.id === b.id ? html`selected` : ""}>${v.voice || "–"}</option>`)}</select>
               <div class="small muted">${g.versions.length} narrations</div>`
           : (b.voice || "–")}</td>
-        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
-        <td class="small">${fmtDuration(b.audio_duration_s || b.est_duration_s)}${b.audio_duration_s ? "" : " est."}</td>
+        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments}${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div>
+          ${rt.toString() ? html`<div class="small rt-line">${rt}</div>` : ""}</td>
+        <td class="small">${fmtDuration(b.audio_duration_s || b.est_duration_s)}${b.audio_duration_s ? "" : " est."} <span class="muted">audio</span></td>
         <td>${badge(b.state)}</td>
         <td class="actions">
           ${b.pending && !(b.job && ["queued", "running", "paused"].includes(b.job.status)) ? html`<button class="btn small primary" data-act="queue" data-id="${b.id}">Queue</button>` : ""}
@@ -23772,15 +25391,28 @@ function bookList(books) {
   </section>`;
 }
 
-export async function render(view) {
-  let voices = (await get("/api/voices")).voices;
-  let books = (await get("/api/books")).books;
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  const [vres, bres] = await Promise.all([get("/api/voices", { signal }), get("/api/books", { signal })]);
+  let voices = vres.voices;
+  let books = bres.books;
+
+  // The list region is patched in place (only when its markup changed). paintList is skipped while a narrator <select> in it has focus,
+  // because replacing the element would close an open dropdown; it catches up on blur or when a choice is made.
+  const selectBusy = () => { const a = document.activeElement; return !!(a && a.tagName === "SELECT" && a.closest && a.closest("#lib-wrap")); };
+  let listDirty = false;
+  const paintList = (force = false) => {
+    if (!force && selectBusy()) { listDirty = true; return; }
+    listDirty = false;
+    patchRegions(view, { "#lib-wrap": () => bookList(books) });
+  };
 
   const paint = () => {
     const p = pending.find((x) => x.token === selectedToken && !x.done);
     setHTML(view, html`<div class="page-head"><h1>Library &amp; Import</h1></div>
-      <div class="grid-import">${uploadCard()}${previewPanel(p, voices)}</div><div id="lib-wrap">${bookList(books)}</div>`);
+      <div class="grid-import">${uploadCard()}${previewPanel(p, voices)}</div><div id="lib-wrap"></div>`);
     wire();
+    paintList(true);
   };
 
   async function upload(files) {
@@ -23847,7 +25479,7 @@ export async function render(view) {
     } else if (act === "queue") {
       const j = await busy(t, () => post("/api/queue", { book_id: Number(t.dataset.id) }));
       toast(j.created ? "Added to the queue" : "Already in the queue", "success");
-      books = (await get("/api/books")).books; paint();
+      books = (await get("/api/books")).books; paintList(true);
     }
   }
 
@@ -23855,25 +25487,38 @@ export async function render(view) {
     const sel = e.target.closest("select[data-work]");
     if (!sel || !view.contains(sel)) return;
     chosen[sel.dataset.work] = Number(sel.value);
-    const wrap = view.querySelector("#lib-wrap");
-    if (wrap) setHTML(wrap, bookList(books));
+    paintList(true);
     const again = view.querySelector(`select[data-work="${sel.dataset.work}"]`);
-    if (again) again.focus();
+    if (again && document.activeElement !== again) again.focus({ preventScroll: true });
   }
+  const onFocusOut = (e) => { if (listDirty && e.target && e.target.tagName === "SELECT") setTimeout(() => { if (!selectBusy()) paintList(); }, 0); };
 
   paint();
   view.addEventListener("click", onClick);
   view.addEventListener("change", onChange);
-  const off = onState(async () => {
+  view.addEventListener("focusout", onFocusOut);
+  let inflight = false, stopped = false, stale = false;
+  const ctl = new AbortController();
+  async function refresh() {
+    if (stopped) return;
+    if (document.hidden || inflight) { stale = true; return; }
+    inflight = true; stale = false;
     try {
-      books = (await get("/api/books")).books;
-      const wrap = view.querySelector("#lib-wrap");
-      if (wrap) setHTML(wrap, bookList(books)); // only the list: never disturb a form being filled in
+      books = (await get("/api/books", { signal: ctl.signal })).books;
+      if (!stopped) paintList(); // only the list: never disturb a form being filled in
     } catch (e) { /* transient; the next update retries */ }
-  }, 4000);
-  return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); };
+    finally { inflight = false; }
+  }
+  const onVisible = () => { if (!document.hidden && stale) refresh(); };
+  document.addEventListener("visibilitychange", onVisible);
+  const off = onState(refresh, 4000);
+  return () => {
+    stopped = true; ctl.abort(); off();
+    view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("focusout", onFocusOut);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }
-__STUDIO_EOF_d273092e442e__
+__STUDIO_EOF_5bbecfb1b732__
 cat > "$DEST/studio/web/static/js/views/narrative-fields.js" <<'__STUDIO_EOF_12ce0cfe4f36__'
 // Shared description of the narrative settings, used by the global Settings page and the per-book overrides editor.
 import { html } from "../ui.js";
@@ -24277,9 +25922,14 @@ export async function render(view, parts) {
 }
 export { toastError };
 __STUDIO_EOF_f6fd8b4c43b8__
-cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_93238703fc3a__'
-// Overview & progress dashboard.
-import { get, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, fmtDate, onState, toastError } from "../ui.js";
+cat > "$DEST/studio/web/static/js/views/overview.js" <<'__STUDIO_EOF_260731b18809__'
+// Overview & progress dashboard. The page is a fixed shell with live regions (cards, strip, recent books, attention list, activity feed,
+// worker and update notices); each region is repainted in place only when its markup changed, so scroll positions and focus survive.
+import { get, html, setHTML, patchRegions, badge, progressBar, fmtDuration, fmtAgo, fmtDate, onState, toastError } from "../ui.js";
+import { fmtRuntime } from "../runtime.js";
+
+const ATTENTION_CAP = 5;
+let attentionShowAll = false; // kept in module memory so it survives navigation and repaints
 
 function card(label, value, sub, tone = "") {
   return html`<div class="stat ${tone}"><div class="stat-value">${value}</div><div class="stat-label">${label}</div>${sub ? html`<div class="stat-sub">${sub}</div>` : ""}</div>`;
@@ -24306,19 +25956,16 @@ function updateNotice(u) {
   return "";
 }
 
-let updateSummary = null;
+function workerNotice(w) {
+  if (w.online) return "";
+  return html`<div class="callout warn" role="alert"><strong>The GPU worker is offline.</strong> Queued books will start when it is running.
+     It restarts automatically; you can also restart it on <a href="#/about">System &amp; Licenses</a>.</div>`;
+}
 
-function draw(view, d) {
-  const c = d.cards, st = d.segment_states;
+function cards(d) {
+  const c = d.cards;
   const segFrac = c.segments_total ? c.segments_produced / c.segments_total : 0;
-  setHTML(view, html`
-  <div class="page-head"><h1>Overview</h1>
-    <div class="head-actions"><a class="btn primary" href="#/library">Import manuscripts</a><a class="btn" href="#/queue">Open queue</a></div></div>
-  ${updateNotice(updateSummary)}
-  ${!d.worker.online ? html`<div class="callout warn" role="alert"><strong>The GPU worker is offline.</strong> Queued books will start when it is running.
-     It restarts automatically; you can also restart it on <a href="#/about">System &amp; Licenses</a>.</div>` : ""}
-  <section aria-labelledby="sum-h"><h2 id="sum-h" class="sr-only">Summary</h2>
-  <div class="stats">
+  return html`<div class="stats">
     ${card("Books", c.books)}
     ${card("Queued", c.queued, null, c.queued ? "info" : "")}
     ${card("Running", c.running, d.worker.online ? (d.worker.state === "idle" ? "worker idle" : "worker busy") : "worker offline", c.running ? "info" : "")}
@@ -24329,57 +25976,149 @@ function draw(view, d) {
     ${card("QA flags open", c.qa_flags, c.qa_flags ? "need a human listen" : "none open", c.qa_flags ? "warn" : "good")}
     ${card("Approved projects", c.approved_projects, null, c.approved_projects ? "approved" : "")}
     ${card("Audio produced", `${c.draft_audio_hours.toFixed(2)} h`, `${c.mastered_audio_hours.toFixed(2)} h mastered into chapters`)}
-  </div></section>
+  </div>`;
+}
 
-  <section class="card" aria-labelledby="states-h">
-    <h2 id="states-h">Segment lifecycle</h2>
-    <ul class="legend">
+function strip(d) {
+  const st = d.segment_states, c = d.cards;
+  return html`<ul class="legend">
       <li><span class="badge tone-info">Draft audio rendered</span> <strong>${st.draft_rendered.toLocaleString()}</strong> segments have a take</li>
       <li><span class="badge tone-good">QA passed</span> <strong>${st.qa_passed.toLocaleString()}</strong> passed automatic ASR + acoustic checks</li>
       <li><span class="badge tone-warn">Human review required</span> <strong>${st.needs_review.toLocaleString()}</strong> flagged after the retry budget</li>
       <li><span class="badge tone-approved">Approved</span> <strong>${st.approved_segments.toLocaleString()}</strong> segments approved by a reviewer; ${c.approved_projects} book(s) signed off for publication</li>
-    </ul>
-    <p class="muted small">Automatic QA is evidence, not proof: Whisper agreement does not guarantee correct pronunciation or a compelling performance. Release requires a human signoff.</p>
-  </section>
+    </ul>`;
+}
 
-  <div class="grid-ov">
-  <section class="card" aria-labelledby="recent-h">
-    <h2 id="recent-h">Recent projects</h2>
-    ${d.recent.length ? html`<div class="table-wrap"><table class="table recent">
-      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Duration</th><th scope="col">State</th></tr></thead>
-      <tbody>${d.recent.map((b) => html`<tr>
+function recent(d) {
+  if (!d.recent.length) return html`<div class="empty"><p>No books yet.</p><a class="btn primary" href="#/library">Import your first manuscript</a></div>`;
+  return html`<div class="table-wrap"><table class="table recent">
+      <thead><tr><th scope="col">Title</th><th scope="col">Narrator</th><th scope="col">Progress</th><th scope="col">Audio length</th><th scope="col">State</th></tr></thead>
+      <tbody>${d.recent.map((b) => { const rt = fmtRuntime(b.runtime); return html`<tr>
         <td><a href="#/book/${b.id}"><strong>${b.display_title}</strong></a><div class="muted small">${b.source || ""} · imported ${fmtDate(b.created_at)}</div>
             ${liveLine(b)}${b.last_error ? html`<div class="err small">Last error: ${b.last_error}</div>` : ""}</td>
         <td>${b.voice || "–"}</td>
-        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments} segments${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div></td>
+        <td class="nowrap">${progressBar(b.progress, `${b.display_title} progress`)}<div class="small muted">${b.produced}/${b.segments} segments${b.flagged ? html` · <span class="warn-text">${b.flagged} flagged</span>` : ""}</div>
+          ${rt.toString() ? html`<div class="small rt-line">${rt}</div>` : ""}</td>
         <td class="small nowrap">est. ${fmtDuration(b.est_duration_s)}<br>actual ${b.audio_duration_s ? fmtDuration(b.audio_duration_s) : "–"}</td>
-        <td>${badge(b.state)}</td></tr>`)}</tbody></table></div>`
-      : html`<div class="empty"><p>No books yet.</p><a class="btn primary" href="#/library">Import your first manuscript</a></div>`}
-  </section>
+        <td>${badge(b.state)}</td></tr>`; })}</tbody></table></div>`;
+}
 
+/** The list only shows each book's LATEST failed job (the server list is newest first, so keep the first row per book). */
+export function latestFailures(failed) {
+  const seen = new Set();
+  return failed.filter((f) => (seen.has(f.book_id) ? false : (seen.add(f.book_id), true)));
+}
+
+function attention(d) {
+  const failed = latestFailures(d.failed_jobs);
+  const items = [
+    ...failed.map((f) => ({ bad: true, f })),
+    ...d.flags.map((f) => ({ bad: false, f })),
+  ];
+  if (!items.length) return html`<p class="muted">Nothing needs attention right now.</p>`;
+  const shown = attentionShowAll ? items : items.slice(0, ATTENTION_CAP);
+  const li = ({ bad, f }) => bad
+    ? html`<li class="att-bad"><a href="#/queue"><strong>${f.title}</strong> – generation failed</a><div class="small">${f.error || ""}</div></li>`
+    : html`<li><a href="#/review/${f.book_id}?seg=${f.id}&filter=flagged"><strong>${f.title}</strong> · ch. ${f.chapter_idx} · <code>${f.sid}</code></a>
+        <div class="small">${f.flag_reason || "Flagged by automatic QA"}</div></li>`;
+  return html`<ul class="attention ${attentionShowAll ? "att-scroll" : ""}" id="ov-att-list">${shown.map(li)}</ul>
+    ${items.length > ATTENTION_CAP ? html`<button type="button" class="btn small" id="ov-att-toggle" data-act="att-toggle" aria-expanded="${attentionShowAll ? "true" : "false"}">${attentionShowAll ? "Show fewer" : `Show all (${items.length})`}</button>` : ""}`;
+}
+
+export async function render(view, parts, query, nav) {
+  const signal = nav && nav.signal;
+  const [updateSummary0, first] = await Promise.all([get("/api/update/summary", { signal }).catch((e) => { if (e.name === "AbortError") throw e; return null; }), get("/api/overview", { signal })]);
+  let updateSummary = updateSummary0, data = first;
+  let feedSeen = Math.max(0, ...first.events.map((e) => e.id || 0)); // newest event id seen while the feed was at the top
+
+  setHTML(view, html`
+  <div class="page-head"><h1>Overview</h1>
+    <div class="head-actions"><a class="btn primary" href="#/library">Import manuscripts</a><a class="btn" href="#/queue">Open queue</a></div></div>
+  <div id="ov-update"></div>
+  <div id="ov-worker"></div>
+  <section aria-labelledby="sum-h"><h2 id="sum-h" class="sr-only">Summary</h2><div id="ov-cards"></div></section>
+  <section class="card" aria-labelledby="states-h">
+    <h2 id="states-h">Segment lifecycle</h2>
+    <div id="ov-states"></div>
+    <p class="muted small">Automatic QA is evidence, not proof: Whisper agreement does not guarantee correct pronunciation or a compelling performance. Release requires a human signoff.</p>
+  </section>
+  <div class="grid-ov">
+  <section class="card" aria-labelledby="recent-h">
+    <h2 id="recent-h">Recent projects</h2>
+    <div id="ov-recent"></div>
+  </section>
   <section class="card" aria-labelledby="att-h">
     <h2 id="att-h">Needs attention</h2>
-    ${d.failed_jobs.length ? html`<ul class="attention">${d.failed_jobs.map((f) => html`<li class="att-bad"><a href="#/queue"><strong>${f.title}</strong> – generation failed</a><div class="small">${f.error || ""}</div></li>`)}</ul>` : ""}
-    ${d.flags.length ? html`<ul class="attention">${d.flags.map((f) => html`<li><a href="#/review/${f.book_id}?seg=${f.id}&filter=flagged"><strong>${f.title}</strong> · ch. ${f.chapter_idx} · <code>${f.sid}</code></a>
-        <div class="small">${f.flag_reason || "Flagged by automatic QA"}</div></li>`)}</ul>`
-      : (!d.failed_jobs.length ? html`<p class="muted">Nothing needs attention right now.</p>` : "")}
+    <div id="ov-attention"></div>
     <h3>Activity</h3>
-    <ol class="feed">${d.events.map((e) => html`<li class="lvl-${e.level}"><span class="muted small">${fmtAgo(e.created_at)}</span> ${e.message}</li>`)}</ol>
+    <div id="ov-activity"></div>
   </section></div>`);
-}
 
-export async function render(view) {
-  updateSummary = await get("/api/update/summary").catch(() => null);
-  draw(view, await get("/api/overview"));
-  let n = 0;
-  return onState(async () => {
+  const feedAway = () => { const el = view.querySelector("#ov-feed"); return !!el && el.scrollTop > 8; };
+  function activity() {
+    if (!feedAway()) feedSeen = Math.max(feedSeen, ...data.events.map((e) => e.id || 0));
+    const fresh = data.events.filter((e) => (e.id || 0) > feedSeen).length;
+    return html`<div class="feed-hint">${fresh ? html`<button type="button" class="btn small feed-new" id="ov-feed-new" data-act="feed-top">${fresh} new event${fresh === 1 ? "" : "s"} – back to top</button>` : ""}</div>
+      <ol class="feed" id="ov-feed" tabindex="0" aria-label="Recent activity">${data.events.map((e) => html`<li class="lvl-${e.level}"><span class="muted small">${fmtAgo(e.created_at)}</span> ${e.message}</li>`)}</ol>`;
+  }
+  const paintAll = () => patchRegions(view, {
+    "#ov-update": () => updateNotice(updateSummary),
+    "#ov-worker": () => workerNotice(data.worker),
+    "#ov-cards": () => cards(data),
+    "#ov-states": () => strip(data),
+    "#ov-recent": () => recent(data),
+    "#ov-attention": () => attention(data),
+    "#ov-activity": () => activity(),
+  });
+  const paintActivity = () => patchRegions(view, { "#ov-activity": () => activity() });
+  paintAll();
+
+  const onClick = (e) => {
+    const t = e.target.closest && e.target.closest("[data-act]");
+    if (!t || !view.contains(t)) return;
+    if (t.dataset.act === "att-toggle") { attentionShowAll = !attentionShowAll; paintAll(); }
+    else if (t.dataset.act === "feed-top") {
+      const feed = view.querySelector("#ov-feed");
+      if (feed) feed.scrollTop = 0;
+      feedSeen = Math.max(feedSeen, ...data.events.map((x) => x.id || 0));
+      paintActivity();
+      if (feed) feed.focus({ preventScroll: true });
+    }
+  };
+  // Scrolling the feed back to the top clears the "new" hint (scroll does not bubble: listen in the capture phase).
+  const onScroll = (e) => { if (e.target && e.target.id === "ov-feed") paintActivity(); };
+  view.addEventListener("click", onClick);
+  view.addEventListener("scroll", onScroll, true);
+
+  let n = 0, inflight = false, stopped = false, dirty = false;
+  const ctl = new AbortController();
+  async function refresh() {
+    if (stopped) return;
+    if (document.hidden) { dirty = true; return; }
+    if (inflight) { dirty = true; return; }
+    inflight = true; dirty = false;
     try {
-      if (n++ % 5 === 0) updateSummary = await get("/api/update/summary").catch(() => updateSummary);
-      draw(view, await get("/api/overview"));
+      const [u, d] = await Promise.all([
+        n++ % 5 === 0 ? get("/api/update/summary", { signal: ctl.signal }).catch(() => updateSummary) : Promise.resolve(updateSummary),
+        get("/api/overview", { signal: ctl.signal }),
+      ]);
+      if (stopped) return;
+      updateSummary = u; data = d;
+      paintAll();
     } catch (e) { if (e.status) toastError(e); }
-  }, 2000);
+    finally { inflight = false; }
+  }
+  const onVisible = () => { if (!document.hidden && dirty) refresh(); };
+  document.addEventListener("visibilitychange", onVisible);
+  const off = onState(refresh, 2000);
+  return () => {
+    stopped = true; ctl.abort(); off();
+    view.removeEventListener("click", onClick);
+    view.removeEventListener("scroll", onScroll, true);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }
-__STUDIO_EOF_93238703fc3a__
+__STUDIO_EOF_260731b18809__
 cat > "$DEST/studio/web/static/js/views/pronunciation.js" <<'__STUDIO_EOF_1117069bc8e7__'
 // Pronunciation: a global and per-book dictionary of respellings, plus per-voice pace.
 // Entries only change the text sent to the voice; the manuscript itself is never edited.
@@ -24514,20 +26253,15 @@ export async function render(view, _parts, query) {
   return () => { view.removeEventListener("click", onClick); view.removeEventListener("change", onChange); view.removeEventListener("submit", onSubmit); };
 }
 __STUDIO_EOF_1117069bc8e7__
-cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_0cc4435bf1c8__'
-// Durable FIFO queue: reorder (drag or keyboard buttons), pause/resume/retry/cancel, logs, estimates.
-import { get, post, html, setHTML, badge, progressBar, fmtDuration, fmtAgo, toast, busy, onState, confirmDialog } from "../ui.js";
+cat > "$DEST/studio/web/static/js/views/queue.js" <<'__STUDIO_EOF_1f5660b40274__'
+// Durable FIFO queue: reorder (drag or keyboard buttons), pause/resume/retry/cancel, logs, time estimates, one "recently finished" row per
+// book (touch-ups folded into "+N earlier runs"), and paginated finished / utility cards. Live regions are patched in place.
+import { get, post, html, setHTML, patchRegions, pager, wirePager, badge, progressBar, fmtAgo, qs, toast, busy, onState, confirmDialog } from "../ui.js";
+import { fmtRuntime, fmtSpan } from "../runtime.js";
 
-function etaText(j, tp) {
-  if (j.status === "paused" || j.status === "failed") return "–";
-  if (j.eta_s === null || j.eta_s === undefined) {
-    return tp.samples < 20 ? html`<span class="muted small">estimate after ${20 - tp.samples} more segments</span>` : "–";
-  }
-  return html`≈ ${fmtDuration(j.eta_s)}<div class="small muted">finishes in ≈ ${fmtDuration(j.eta_finish_s)}</div>`;
-}
+const PAGE = 10;
 
-function jobRow(j, tp, movable) {
-  const active = ["queued", "running", "paused"].includes(j.status);
+function activeRow(j, movable, logs) {
   return html`<li class="qrow st-${j.status}" data-id="${j.id}" ${movable ? html`draggable="true"` : ""}>
     ${movable ? html`<span class="grip" aria-hidden="true" title="Drag to reorder">⠿</span>` : html`<span class="grip-pad"></span>`}
     <div class="q-main">
@@ -24541,66 +26275,134 @@ function jobRow(j, tp, movable) {
       ${j.paused_reason ? html`<div class="small warn-text">Paused: ${j.paused_reason}</div>` : ""}
       ${j.error ? html`<div class="small err">${j.error}</div>` : ""}
       ${j.last_log ? html`<div class="small muted">Last: ${j.last_log.message} (${fmtAgo(j.last_log.created_at)})</div>` : ""}
-      <details class="joblog" data-id="${j.id}"><summary>Log</summary><div class="log-box" id="log-${j.id}">Loading…</div></details>
+      ${logDetails(j.id, logs)}
     </div>
-    <div class="q-eta">${etaText(j, tp)}</div>
+    <div class="q-eta">${fmtRuntime(j.runtime)}</div>
     <div class="q-actions">
       ${movable ? html`<div class="btn-group" role="group" aria-label="Reorder ${j.title}">
-        <button class="btn small ghost" data-act="top" data-id="${j.id}" title="Move to top" aria-label="Move ${j.title} to top">⤒</button>
-        <button class="btn small ghost" data-act="up" data-id="${j.id}" aria-label="Move ${j.title} up">↑</button>
-        <button class="btn small ghost" data-act="down" data-id="${j.id}" aria-label="Move ${j.title} down">↓</button></div>` : ""}
-      ${j.status === "running" && !j.pause_requested ? html`<button class="btn small" data-act="pause" data-id="${j.id}">Pause</button>` : ""}
-      ${j.status === "queued" ? html`<button class="btn small" data-act="pause" data-id="${j.id}">Hold</button>` : ""}
-      ${j.status === "paused" || j.pause_requested ? html`<button class="btn small primary" data-act="resume" data-id="${j.id}">Resume</button>` : ""}
-      ${j.status === "failed" ? html`<button class="btn small primary" data-act="retry" data-id="${j.id}">Retry</button>` : ""}
-      ${active && !j.cancel_requested ? html`<button class="btn small danger ghost" data-act="cancel" data-id="${j.id}">Cancel</button>` : ""}
+        <button class="btn small ghost" id="qb-top-${j.id}" data-act="top" data-id="${j.id}" title="Move to top" aria-label="Move ${j.title} to top">⤒</button>
+        <button class="btn small ghost" id="qb-up-${j.id}" data-act="up" data-id="${j.id}" aria-label="Move ${j.title} up">↑</button>
+        <button class="btn small ghost" id="qb-down-${j.id}" data-act="down" data-id="${j.id}" aria-label="Move ${j.title} down">↓</button></div>` : ""}
+      ${j.status === "running" && !j.pause_requested ? html`<button class="btn small" id="qb-pause-${j.id}" data-act="pause" data-id="${j.id}">Pause</button>` : ""}
+      ${j.status === "queued" ? html`<button class="btn small" id="qb-pause-${j.id}" data-act="pause" data-id="${j.id}">Hold</button>` : ""}
+      ${j.status === "paused" || j.pause_requested ? html`<button class="btn small primary" id="qb-resume-${j.id}" data-act="resume" data-id="${j.id}">Resume</button>` : ""}
+      ${!j.cancel_requested ? html`<button class="btn small danger ghost" id="qb-cancel-${j.id}" data-act="cancel" data-id="${j.id}">Cancel</button>` : ""}
     </div></li>`;
 }
 
+/** The log disclosure. Both ids are stable and the content comes from a cache, so a live repaint keeps it open, scrolled and filled. */
+function logDetails(id, logs) {
+  const entries = logs.get(id);
+  const body = entries === undefined ? "Loading…"
+    : entries.length ? html`<ol>${entries.map((l) => html`<li class="lvl-${l.level}"><span class="muted">${fmtAgo(l.created_at)}</span> ${l.message}</li>`)}</ol>` : html`<p class="muted">No entries.</p>`;
+  return html`<details class="joblog" id="joblog-${id}" data-id="${id}"><summary>Log</summary><div class="log-box" id="log-${id}">${body}</div></details>`;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function runLine(r) {
+  const what = r.status === "completed" ? r.kind_hint : `${r.kind_hint} (${r.status})`;
+  return html`<li><strong>${what}</strong> · ${fmtAgo(r.finished_at)} · ${plural(r.segments_rendered, "segment")} · ${fmtSpan(r.active_seconds)}</li>`;
+}
+
+function doneRow(j, logs) {
+  const n = (j.earlier_runs || []).length, latest = j.latest_run;
+  const timing = j.status === "completed" ? fmtRuntime(j.runtime)
+    : html`<span class="rt rt-finished">${j.status === "failed" ? "failed after" : "cancelled after"} ${fmtSpan(j.active_seconds)}</span>`;
+  return html`<li class="qrow qrow-done st-${j.status}" data-id="${j.id}">
+    <span class="grip-pad"></span>
+    <div class="q-main">
+      <div class="q-title"><a href="#/book/${j.book_id}"><strong>${j.title}</strong></a> ${badge(j.status)}
+        <span class="small muted">${fmtAgo(j.finished_at)}${latest ? ` · last run: ${latest.kind_hint}, ${plural(latest.segments_rendered, "segment")}` : ""}</span></div>
+      <div class="small muted">${j.segments - j.remaining}/${j.segments} segments · ${j.flagged} flagged</div>
+      ${j.error ? html`<div class="small err">${j.error}</div>` : ""}
+      ${n ? html`<details class="earlier" id="earlier-${j.book_id}"><summary>+${n} earlier ${n === 1 ? "run" : "runs"}</summary>
+        <ul class="earlier-list">${j.earlier_runs.map(runLine)}</ul></details>` : ""}
+      ${logDetails(j.id, logs)}
+    </div>
+    <div class="q-eta">${timing}</div>
+    <div class="q-actions">${j.status === "failed" ? html`<button class="btn small primary" id="qb-retry-${j.id}" data-act="retry" data-id="${j.id}">Retry</button>` : ""}</div></li>`;
+}
+
+function utilRow(u) {
+  return html`<tr><td>#${u.id} ${u.kind === "analyze" ? "Narrative analysis" : u.kind}${u.kind === "preview" && u.payload && u.payload.segment_id ? " (segment)" : ""}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td>
+    <td>${u.book_id && u.title ? html`<a href="#/book/${u.book_id}">${u.title}</a>` : (u.title || "–")}</td>
+    <td>${badge(u.status)}${u.error ? html`<div class="small err">${u.error}</div>` : ""}</td><td class="small">${fmtAgo(u.finished_at || u.created_at)}</td></tr>`;
+}
+
 export async function render(view) {
-  let data = await get("/api/queue");
-  let dragId = null;
+  let finishedOffset = 0, utilityOffset = 0, dragId = null, gone = false;
+  const logs = new Map();   // job id -> log entries (so repaints never flash "Loading…")
+  const url = () => "/api/queue" + qs({ finished_offset: finishedOffset, finished_limit: PAGE, utility_offset: utilityOffset, utility_limit: PAGE });
+  let data = await get(url());
+
+  setHTML(view, html`<div class="page-head"><h1>Queue</h1></div>
+    <p class="muted" id="q-intro"></p>
+    <section class="card" id="q-active" aria-labelledby="act-h"></section>
+    <section class="card" id="q-util" aria-labelledby="util-h"></section>
+    <section class="card" id="q-done" aria-labelledby="done-h"></section>`);
 
   const paint = () => {
-    const tp = data.throughput;
-    const active = data.jobs.filter((j) => ["queued", "running", "paused"].includes(j.status));
-    const done = data.jobs.filter((j) => !["queued", "running", "paused"].includes(j.status));
-    const openLogs = [...view.querySelectorAll("details.joblog[open]")].map((d) => d.dataset.id);
-    setHTML(view, html`<div class="page-head"><h1>Queue</h1></div>
-      <p class="muted">Books are narrated one segment at a time on a single GPU worker, in the order below. Other books keep going if one fails.
-      Pausing takes effect between segments because a running MLX call cannot be interrupted safely.
-      ${tp.samples ? html` Median time per segment: <strong>${tp.median_s}s</strong> (${tp.samples} measured).` : ""}</p>
-      <section class="card" aria-labelledby="act-h"><h2 id="act-h">Active (${active.length})</h2>
-        ${active.length ? html`<ol class="qlist" id="qlist">${active.map((j) => jobRow(j, tp, j.status !== "running"))}</ol>`
-          : html`<p class="muted">Nothing queued. Add books from the <a href="#/library">Library</a>.</p>`}
-      </section>
-      <section class="card" aria-labelledby="util-h"><h2 id="util-h">Assembly, export, preview &amp; analysis jobs</h2>
+    const tp = data.throughput || {};
+    patchRegions(view, {
+      "#q-intro": () => html`Books are narrated one segment at a time on a single GPU worker, in the order below. Other books keep going if one fails.
+        Pausing takes effect between segments because a running MLX call cannot be interrupted safely.
+        ${tp.samples ? html` Median time per segment: <strong>${tp.median_s}s</strong> (${tp.samples} measured).` : ""}
+        Time estimates use the speed measured for each book's narrator model and leave out time spent waiting or paused.`,
+      "#q-active": () => html`<h2 id="act-h">Active (${data.active.length})</h2>
+        ${data.active.length ? html`<ol class="qlist" id="qlist">${data.active.map((j) => activeRow(j, j.status !== "running", logs))}</ol>`
+          : html`<p class="muted">Nothing queued. Add books from the <a href="#/library">Library</a>.</p>`}`,
+      "#q-util": () => html`<h2 id="util-h">Assembly, export, preview &amp; analysis jobs</h2>
         ${data.utility.length ? html`<div class="table-wrap"><table class="table compact"><thead><tr><th scope="col">Job</th><th scope="col">Book</th><th scope="col">Status</th><th scope="col">When</th></tr></thead>
-          <tbody>${data.utility.map((u) => html`<tr><td>#${u.id} ${u.kind === "analyze" ? "Narrative analysis" : u.kind}${u.kind === "preview" && u.payload && u.payload.segment_id ? " (segment)" : ""}${u.payload && u.payload.kind ? ` (${u.payload.kind})` : ""}</td><td>${u.title || "–"}</td>
-          <td>${badge(u.status)}${u.error ? html`<div class="small err">${u.error}</div>` : ""}</td><td class="small">${fmtAgo(u.finished_at || u.created_at)}</td></tr>`)}</tbody></table></div>`
-          : html`<p class="muted">None yet.</p>`}</section>
-      <section class="card" aria-labelledby="done-h"><h2 id="done-h">Recently finished (7 days)</h2>
-        ${done.length ? html`<ol class="qlist">${done.map((j) => jobRow(j, tp, false))}</ol>` : html`<p class="muted">None.</p>`}</section>`);
-    openLogs.forEach((id) => { const d = view.querySelector(`details.joblog[data-id="${id}"]`); if (d) { d.open = true; loadLog(id); } });
+          <tbody>${data.utility.map(utilRow)}</tbody></table></div>${pager(data.utility_total, data.utility_offset, data.utility_limit)}`
+          : html`<p class="muted">None yet.</p>`}`,
+      "#q-done": () => html`<h2 id="done-h">Recently finished (${data.window_days || 30} days)</h2>
+        <p class="small muted">One row per book: its latest run. Small edits such as regenerating a segment are listed under "earlier runs".</p>
+        ${data.finished.length ? html`<ol class="qlist" id="qdone">${data.finished.map((j) => doneRow(j, logs))}</ol>${pager(data.finished_total, data.finished_offset, data.finished_limit)}`
+          : html`<p class="muted">None.</p>`}`,
+    });
   };
 
   async function loadLog(id) {
-    const box = view.querySelector(`#log-${id}`);
-    if (!box) return;
-    const { logs } = await get(`/api/jobs/${id}/log`);
-    setHTML(box, logs.length ? html`<ol>${logs.map((l) => html`<li class="lvl-${l.level}"><span class="muted">${fmtAgo(l.created_at)}</span> ${l.message}</li>`)}</ol>` : html`<p class="muted">No entries.</p>`);
+    try {
+      const r = await get(`/api/jobs/${id}/log`);
+      if (gone) return;
+      const prev = logs.get(id);
+      if (prev && JSON.stringify(prev) === JSON.stringify(r.logs)) return;
+      logs.set(id, r.logs);
+      paint();
+    } catch { /* the log is advisory */ }
+  }
+  const reloadOpenLogs = () => view.querySelectorAll("details.joblog[open]").forEach((d) => loadLog(Number(d.dataset.id)));
+
+  async function refresh() {
+    let d = await get(url());
+    // a page that no longer exists (jobs aged out or were removed): step back to the last page that does
+    if (d.finished_offset > 0 && d.finished.length === 0 && d.finished_total > 0) { finishedOffset = Math.floor((d.finished_total - 1) / d.finished_limit) * d.finished_limit; d = await get(url()); }
+    if (d.utility_offset > 0 && d.utility.length === 0 && d.utility_total > 0) { utilityOffset = Math.floor((d.utility_total - 1) / d.utility_limit) * d.utility_limit; d = await get(url()); }
+    if (gone) return;
+    data = d;
+    paint();
+    reloadOpenLogs();
   }
 
-  const refresh = async () => { data = await get("/api/queue"); paint(); };
+  const page = (which) => async (offset, dir) => {
+    if (which === "finished") finishedOffset = offset; else utilityOffset = offset;
+    await refresh();
+    const sec = view.querySelector(which === "finished" ? "#q-done" : "#q-util");
+    const again = sec && (sec.querySelector(`button[data-pager="${dir}"]:not([disabled])`) || sec.querySelector("button[data-pager]:not([disabled])"));
+    if (again) again.focus({ preventScroll: true });
+  };
+  const unwire = [wirePager(view.querySelector("#q-done"), page("finished")), wirePager(view.querySelector("#q-util"), page("utility"))];
 
   async function onClick(e) {
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const id = Number(b.dataset.id), act = b.dataset.act;
     if (["up", "down", "top"].includes(act)) {
-      data = await busy(b, () => post(`/api/jobs/${id}/move`, { direction: act }));
-      paint();
-      const again = view.querySelector(`button[data-act="${act}"][data-id="${id}"]`); if (again) again.focus();
+      await busy(b, () => post(`/api/jobs/${id}/move`, { direction: act }));
+      await refresh();
+      const again = view.querySelector(`#qb-${act}-${id}`); if (again) again.focus();
       return;
     }
     if (act === "cancel" && !(await confirmDialog("Cancel job?", "Generated segments are kept; the book can be queued again later.", "Cancel job", true))) return;
@@ -24609,7 +26411,7 @@ export async function render(view) {
   }
   function onToggle(e) {
     const d = e.target;
-    if (d.matches && d.matches("details.joblog") && d.open) loadLog(d.dataset.id);
+    if (d.matches && d.matches("details.joblog") && d.open && !logs.has(Number(d.dataset.id))) loadLog(Number(d.dataset.id));
   }
   function onDragStart(e) { const li = e.target.closest(".qrow[draggable=true]"); if (!li) return; dragId = Number(li.dataset.id); li.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; }
   function onDragOver(e) { if (dragId === null) return; const li = e.target.closest(".qrow"); if (li) { e.preventDefault(); view.querySelectorAll(".drop-target").forEach((x) => x.classList.remove("drop-target")); li.classList.add("drop-target"); } }
@@ -24621,9 +26423,9 @@ export async function render(view) {
     const at = target ? ids.indexOf(Number(target.dataset.id)) : ids.length;
     ids.splice(at < 0 ? ids.length : at, 0, dragId);
     dragId = null;
-    data = await post("/api/queue/reorder", { job_ids: ids });
+    await post("/api/queue/reorder", { job_ids: ids });
     toast("Queue order saved", "success", 2000);
-    paint();
+    await refresh();
   }
   function onDragEnd() { dragId = null; view.querySelectorAll(".dragging,.drop-target").forEach((x) => x.classList.remove("dragging", "drop-target")); }
 
@@ -24636,20 +26438,41 @@ export async function render(view) {
   paint();
   const off = onState(() => { if (dragId === null) refresh().catch(() => {}); }, 2500);
   return () => {
+    gone = true;
     off();
+    unwire.forEach((u) => u());
     view.removeEventListener("click", onClick); view.removeEventListener("toggle", onToggle, true);
     view.removeEventListener("dragstart", onDragStart); view.removeEventListener("dragover", onDragOver);
     view.removeEventListener("drop", onDrop); view.removeEventListener("dragend", onDragEnd);
   };
 }
-__STUDIO_EOF_0cc4435bf1c8__
-cat > "$DEST/studio/web/static/js/views/review.js" <<'__STUDIO_EOF_4e01f2632672__'
+__STUDIO_EOF_1f5660b40274__
+cat > "$DEST/studio/web/static/js/views/review.js" <<'__STUDIO_EOF_413afc59d42d__'
 // Audio review / production QA workspace with paged segment navigation and keyboard shortcuts.
-import { get, post, html, setHTML, badge, fmtClock, fmtDate, toast, busy, debounce, qs, onState, player, navigate, progressBar } from "../ui.js";
+//
+// Rendering model (keeps the page usable while jobs run and the live updates arrive):
+//  - the page frame and the segment shell are painted once; read-only parts (status, players, findings, takes, history, the "what reaches
+//    the voice" explanation, the segment list) are regions repainted by patchRegions ONLY when their markup changed;
+//  - the editable fields (spoken text, note, direction form) are never rebuilt by a refresh: a field the user touched carries data-dirty
+//    and keeps its value, an untouched one follows the server.
+// The book is read from the light GET /api/books/{id}?view=review (keys used: id, title, display_title, flagged, chapters[{id, index, title,
+// status_counts}]); a server that does not know the view answers with the full book, which carries the same keys.
+import { get, post, patch, html, setHTML, patchRegions, badge, fmtClock, fmtDate, toast, busy, debounce, qs, onState, player, navigate, progressBar, sameState } from "../ui.js";
 
 const FILTERS = [["issues", "Issues (flags + warnings)"], ["flagged", "Flagged only"], ["all", "All segments"], ["generated", "Generated"],
   ["passed", "QA passed"], ["approved", "Approved"], ["pending", "Not rendered yet"], ["overridden", "Spoken text edited"], ["noted", "With notes"],
   ["speaker_review", "Speaker needs review"], ["direction_review", "Direction needs review / stale"]];
+
+const FALLBACK_VOCAB = { emotions: ["neutral", "calm", "joy", "excitement", "tenderness", "sadness", "grief", "fear", "anxiety", "anger", "surprise", "disgust", "determination", "humor", "resignation"],
+  pacings: ["slow", "measured", "normal", "brisk", "fast"] };
+let vocabCache = null;
+async function loadVocab(opts) {
+  if (vocabCache) return vocabCache;
+  try { vocabCache = await get("/api/narrative/vocabulary", opts); return vocabCache; } catch { return FALLBACK_VOCAB; } // not cached: the next visit asks again
+}
+
+const DIRECTION_FIELDS = ["rd-emotion", "rd-intensity", "rd-pacing", "rd-delivery"];
+const EDIT_FIELDS = new Set(["override-text", "note-text", ...DIRECTION_FIELDS]);
 
 function diffView(diff) {
   if (!diff || !diff.length) return html`<span class="muted">No comparison available.</span>`;
@@ -24668,15 +26491,15 @@ function issueList(issues) {
     <span class="small muted">${i.source}</span> ${i.message}${i.at_s !== null && i.at_s !== undefined ? html` <span class="small muted">@ ${i.at_s}s</span>` : ""}</li>`)}</ul>`;
 }
 
-function detailPanel(d) {
+const isBusy = (s) => s.status === "pending" || s.status === "synthesizing";
+const latestOf = (d) => d.attempts.find((a) => a.selected) || d.attempts[0];
+
+// ---- read-only regions of the segment detail --------------------------------------------------------------------------------
+
+function headTpl(d) {
   const s = d.segment;
-  const sel = d.attempts.find((a) => a.selected);
-  const latest = sel || d.attempts[0];
-  const spoken = s.override_text || s.narration_text;
-  const busyState = s.status === "pending" || s.status === "synthesizing";
-  return html`<div class="seg-detail">
-    <div class="seg-head">
-      <div><h2 class="seg-title"><code>${s.sid}</code></h2>
+  return html`<div class="seg-head">
+      <div><h2 class="seg-title" id="seg-title"><code>${s.sid}</code></h2>
         <div class="small muted">Chapter ${d.chapter.idx}: ${d.chapter.title} · segment ${s.idx} · ${s.kind} · <a href="#/inspect/${s.id}">Inspect speaker, context &amp; direction</a>${d.chapter_timing ? html` · ${fmtClock(d.chapter_timing.start_s)} in chapter master` : ""}</div></div>
       <div class="seg-badges">${badge(s.status)} <span class="badge tone-neutral">attempts ${s.attempts_used}/${d.max_attempts} (round ${s.round})</span></div>
       <div class="btn-group" role="group" aria-label="Segment navigation">
@@ -24684,51 +26507,139 @@ function detailPanel(d) {
         <button class="btn small ghost" data-act="next" ${d.next_id ? "" : html`disabled`} aria-label="Next segment (J)">Next →</button></div>
     </div>
     ${s.flag_reason ? html`<div class="callout warn small"><strong>Why flagged:</strong> ${s.flag_reason}</div>` : ""}
-    ${busyState ? html`<div class="callout info small"><span class="spinner" aria-hidden="true"></span> This segment is queued for (re)generation. The page updates automatically.</div>` : ""}
-    <div class="players">
-      ${sel && sel.playable ? html`<div><div class="small muted">Selected take ${sel.round}.${sel.attempt_no}</div>${player(`/media/attempt/${sel.id}`, "Selected take", "main-take")}</div>` : html`<p class="muted">No playable take yet.</p>`}
+    ${isBusy(s) ? html`<div class="callout info small" role="status"><span class="spinner" aria-hidden="true"></span> This segment is queued for (re)generation. The page updates automatically.</div>` : ""}`;
+}
+
+function playersTpl(d) {
+  const sel = d.attempts.find((a) => a.selected);
+  return html`${sel && sel.playable ? html`<div><div class="small muted">Selected take ${sel.round}.${sel.attempt_no}</div>${player(`/media/attempt/${sel.id}`, "Selected take", "main-take")}</div>` : html`<p class="muted">No playable take yet.</p>`}
       ${d.chapter_timing ? html`<div><div class="small muted">In context (chapter master)</div>
         <audio class="player ctx-player" controls preload="none" src="/media/chapter/${d.chapter.id}.mp3" aria-label="Chapter master"></audio>
-        <button class="btn small ghost" data-act="ctx" data-t="${d.chapter_timing.start_s}">Play from this segment</button></div>` : ""}
-    </div>
-    <div class="tri">
-      <section><h3>Original manuscript <span class="small muted">(immutable)</span></h3><p class="ms-text">${s.original_text}</p></section>
-      <section><h3>Spoken rendition ${s.override_text ? html`<span class="badge tone-info">edited</span>` : html`<span class="small muted">(auto-normalised)</span>`}</h3>
-        <textarea id="override-text" rows="5" maxlength="2000" aria-label="Spoken rendition">${spoken}</textarea>
-        <div class="form-actions"><button class="btn small" data-act="override">Save &amp; regenerate (E)</button>
-          ${s.override_text ? html`<button class="btn small ghost" data-act="clear-override">Revert to automatic</button>` : ""}</div>
-        <p class="small muted">Use this for pronunciations, e.g. “Siobhan” → “Shiv-awn”. The manuscript text is never changed.</p></section>
-      <section><h3>Recognised by Whisper ${latest && latest.wer !== null && latest.wer !== undefined ? html`<span class="badge tone-${latest.wer > 0.12 ? "warn" : "good"}">WER ${(latest.wer * 100).toFixed(1)}%</span>` : ""}</h3>
+        <button class="btn small ghost" data-act="ctx" data-t="${d.chapter_timing.start_s}">Play from this segment</button></div>` : ""}`;
+}
+
+const spokenBadgeTpl = (d) => (d.segment.override_text ? html`<span class="badge tone-info">edited</span>` : html`<span class="small muted">(auto-normalised)</span>`);
+const clearOverrideTpl = (d) => (d.segment.override_text ? html`<button class="btn small ghost" data-act="clear-override">Revert to automatic</button>` : "");
+
+function asrTpl(d) {
+  const latest = latestOf(d);
+  return html`<h3>Recognised by Whisper ${latest && latest.wer !== null && latest.wer !== undefined ? html`<span class="badge tone-${latest.wer > 0.12 ? "warn" : "good"}">WER ${(latest.wer * 100).toFixed(1)}%</span>` : ""}</h3>
         <p class="asr-text">${latest && latest.asr_text !== null ? latest.asr_text : html`<span class="muted">–</span>`}</p>
         <div class="diff small" aria-label="Word comparison">${latest ? diffView(latest.diff) : ""}</div>
-        <p class="small muted">Legend: <del class="d-del">missing</del> <ins class="d-ins">extra</ins> <span class="d-sub"><del>expected</del><ins>heard</ins></span>. Agreement with Whisper is not proof of correct pronunciation.</p></section>
-    </div>
-    ${latest ? html`<section><h3>Findings for take ${latest.round}.${latest.attempt_no}</h3>${issueList(latest.issues)}
-      <div class="small muted">Acoustics: ${latest.acoustics && latest.acoustics.duration_s !== undefined ? html`${latest.acoustics.duration_s}s · speech ${latest.acoustics.rms_dbfs} dBFS · peak ${latest.acoustics.peak_dbfs} dBFS · longest pause ${latest.acoustics.longest_internal_silence_s}s${latest.acoustics.duration_ratio ? html` · duration ratio ${latest.acoustics.duration_ratio}` : ""}` : "–"}</div></section>` : ""}
-    <div class="action-bar">
-      <button class="btn primary" data-act="approve" ${sel && !busyState && s.status !== "approved" ? "" : html`disabled`}>Approve (A)</button>
-      <button class="btn" data-act="regenerate" ${busyState ? html`disabled` : ""}>Regenerate (R)</button>
-      <label class="note-field">Editor note <input id="note-text" maxlength="2000" value="${s.note || ""}" placeholder="Optional note for this segment"></label>
-      <button class="btn ghost" data-act="note">Save note</button>
-    </div>
-    <section><h3>Takes &amp; attempt history (${d.attempts.length})</h3>
+        <p class="small muted">Legend: <del class="d-del">missing</del> <ins class="d-ins">extra</ins> <span class="d-sub"><del>expected</del><ins>heard</ins></span>. Agreement with Whisper is not proof of correct pronunciation.</p>`;
+}
+
+function findingsTpl(d) {
+  const latest = latestOf(d);
+  if (!latest) return "";
+  return html`<h3>Findings for take ${latest.round}.${latest.attempt_no}</h3>${issueList(latest.issues)}
+      <div class="small muted">Acoustics: ${latest.acoustics && latest.acoustics.duration_s !== undefined ? html`${latest.acoustics.duration_s}s · speech ${latest.acoustics.rms_dbfs} dBFS · peak ${latest.acoustics.peak_dbfs} dBFS · longest pause ${latest.acoustics.longest_internal_silence_s}s${latest.acoustics.duration_ratio ? html` · duration ratio ${latest.acoustics.duration_ratio}` : ""}` : "–"}</div>`;
+}
+
+function actionButtonsTpl(d) {
+  const s = d.segment, sel = d.attempts.find((a) => a.selected), b = isBusy(s);
+  return html`<button class="btn primary" data-act="approve" ${sel && !b && s.status !== "approved" ? "" : html`disabled`}>Approve (A)</button>
+      <button class="btn" data-act="regenerate" ${b ? html`disabled` : ""}>Regenerate (R)</button>`;
+}
+
+function directionButtonsTpl(d, pv) {
+  const stored = pv && pv.user_direction && Object.keys(pv.user_direction).length;
+  return html`<button class="btn" type="button" data-act="regen-dir" ${isBusy(d.segment) ? html`disabled` : ""}>Regenerate with this direction</button>
+      <button class="btn ghost" type="button" data-act="preview-dir">Preview what will reach the voice</button>
+      ${stored ? html`<button class="btn ghost" type="button" data-act="clear-dir" title="Remove the emotion, intensity, pacing and delivery note you set for this segment">Clear direction</button>` : ""}`;
+}
+
+function takesTpl(d) {
+  const busyState = isBusy(d.segment);
+  return html`<h3>Takes &amp; attempt history (${d.attempts.length})</h3>
       <div class="table-wrap"><table class="table compact takes">
         <thead><tr><th scope="col">Take</th><th scope="col">Status</th><th scope="col">WER</th><th scope="col">Score</th><th scope="col">Issues</th><th scope="col">Audio</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>${d.attempts.map((a) => html`<tr class="${a.selected ? "selected-take" : ""}">
           <td>${a.round}.${a.attempt_no}${a.selected ? html` <span class="badge tone-good">selected</span>` : ""}<div class="small muted">${a.engine}${a.temperature ? ` · T=${a.temperature}` : ""} · seed ${a.seed}</div></td>
-          <td>${a.status}${a.passed ? html` <span class="good-text">✓</span>` : ""}${a.error ? html`<div class="small err">${a.error}</div>` : ""}${!a.fingerprint_ok ? html`<div class="small warn-text">old narrator settings</div>` : ""}</td>
+          <td>${a.status}${a.passed ? html` <span class="good-text">✓</span>` : ""}${a.error ? html`<div class="small err">${a.error}</div>` : ""}${!a.fingerprint_ok ? html`<div class="small warn-text">old narrator settings</div>` : ""}${a.instruct_used ? html`<div class="small muted" title="the instruction this take was given">told: ${a.instruct_used}</div>` : ""}</td>
           <td>${a.wer === null || a.wer === undefined ? "–" : (a.wer * 100).toFixed(1) + "%"}</td>
           <td>${a.score === null || a.score === undefined ? "–" : a.score.toFixed(1)}</td>
           <td class="small">${(a.issues || []).filter((i) => i.severity === "error").length} errors, ${(a.issues || []).filter((i) => i.severity === "warning").length} warnings</td>
           <td>${a.playable ? html`${player(`/media/attempt/${a.id}`, `Take ${a.round}.${a.attempt_no}`, "mini")} <a class="small" href="/media/attempt/${a.id}?download=1">WAV</a>` : html`<span class="muted small">–</span>`}</td>
           <td>${!a.selected && a.playable && a.fingerprint_ok && a.status === "done" && !busyState ? html`<button class="btn small" data-act="select" data-attempt="${a.id}">Use this take</button>` : ""}</td>
-        </tr>`)}</tbody></table></div></section>
-    ${d.reviews.length ? html`<section><h3>Review history</h3><ol class="feed small">${d.reviews.map((r) => html`<li>${fmtDate(r.created_at)} – <strong>${r.action}</strong> by ${r.actor}${r.detail && r.detail.note ? html`: ${r.detail.note}` : ""}</li>`)}</ol></section>` : ""}
+        </tr>`)}</tbody></table></div>`;
+}
+
+const directionSummary = (dir) => Object.entries(dir || {}).filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => `${k} ${v}`).join(", ") || "cleared";
+
+function historyTpl(d) {
+  if (!d.reviews.length) return "";
+  return html`<h3>Review history</h3><ol class="feed small">${d.reviews.map((r) => html`<li>${fmtDate(r.created_at)} – <strong>${r.action}</strong> by ${r.actor}${r.detail && r.detail.note ? html`: ${r.detail.note}` : ""}${r.detail && r.detail.direction ? html` <span class="muted">(direction: ${directionSummary(r.detail.direction)})</span>` : ""}</li>`)}</ol>`;
+}
+
+/** The honest account of what reaches the voice. `p` is a delivery-preview payload (GET /api/segments/{id}/delivery-preview). */
+function explainTpl(p, forForm, err) {
+  if (err) return html`<h3>What reaches the voice</h3><p class="small err">${err}</p>`;
+  if (!p) return html`<h3>What reaches the voice</h3><p class="small muted">The delivery preview is not available for this segment.</p>`;
+  const lead = forForm ? "With the direction in the form:" : p.source === "you" ? "As set by you for this segment:" : p.source === "director" ? "As directed for this segment:" : "Currently:";
+  const dir = p.direction;
+  const dirText = dir ? [dir.emotion && dir.emotion !== "neutral" ? `${dir.emotion}${dir.intensity ? ` ${dir.intensity}/5` : ""}` : "", dir.pacing && dir.pacing !== "normal" ? dir.pacing : "", dir.delivery || ""].filter(Boolean).join(", ") : "";
+  const reason = (p.reason || "").replace(/^direction set by you for this segment; ?/, "");
+  const extra = (p.notes || []).filter((n) => n !== p.reason);
+  let body;
+  if (p.voice_kind === "clone") {
+    body = html`<p>Emotion can steer a cloned voice only through an emotion reference clip (<a href="#/voices">Narrator Studio</a>) and pace.</p>
+      <ul class="small">${(p.notes || []).map((n) => html`<li>${n}</li>`)}</ul>`;
+  } else if (p.applied && p.instruct) {
+    body = html`<p>Sent to the voice as: <q class="instruct-text">${p.instruct}</q></p>${extra.length ? html`<ul class="small">${extra.map((n) => html`<li>${n}</li>`)}</ul>` : ""}`;
+  } else {
+    body = html`<p>No written instruction reaches this voice${reason ? html` (${reason})` : ""}.</p>${extra.length ? html`<ul class="small">${extra.map((n) => html`<li>${n}</li>`)}</ul>` : ""}`;
+  }
+  return html`<h3>What reaches the voice <span class="badge tone-neutral">${p.voice_kind}${p.voice ? ` · ${p.voice.name}` : ""}</span></h3>
+    <p class="small muted">${lead}${dirText ? html` ${dirText}.` : " no emotion direction."}</p>${body}
+    <p class="small"><a href="#/voices">Open Narrator Studio</a></p>`;
+}
+
+// ---- the shell of one segment (painted once per selected segment) ---------------------------------------------------------------
+
+function detailShell(d, pv, vocab) {
+  const s = d.segment;
+  const spoken = s.override_text || s.narration_text;
+  const ud = (pv && pv.user_direction) || {};
+  const opt = (v, cur, label) => html`<option value="${v}" ${String(cur) === String(v) ? html`selected` : ""}>${label || v}</option>`;
+  return html`<div class="seg-detail" data-seg-id="${s.id}">
+    <div id="rv-head"></div>
+    <div class="players" id="rv-players"></div>
+    <div class="tri">
+      <section><h3>Original manuscript <span class="small muted">(immutable)</span></h3><p class="ms-text">${s.original_text}</p></section>
+      <section><h3>Spoken rendition <span id="rv-spoken-badge" class="r-contents"></span></h3>
+        <textarea id="override-text" rows="5" maxlength="2000" aria-label="Spoken rendition">${spoken}</textarea>
+        <div class="form-actions"><button class="btn small" data-act="override">Save &amp; regenerate (E)</button><span id="rv-clear-override" class="r-contents"></span></div>
+        <p class="small muted">Use this for pronunciations, e.g. “Siobhan” → “Shiv-awn”. The manuscript text is never changed.</p></section>
+      <section id="rv-asr"></section>
+    </div>
+    <section id="rv-findings"></section>
+    <div class="action-bar">
+      <span id="rv-act-btns" class="r-contents"></span>
+      <label class="note-field">Editor note <input id="note-text" maxlength="2000" value="${s.note || ""}" placeholder="Optional note for this segment"></label>
+      <button class="btn ghost" data-act="note">Save note</button>
+    </div>
+    <div class="regen-wrap">
+      <details id="regen-direction" class="regen-dir">
+        <summary>Regenerate with direction…</summary>
+        <p class="small muted">Tell the narrator how this line should sound, for example when the first take was spoken normally but in the book the character is shouting. The direction is kept for this segment until you clear it.</p>
+        <div class="regen-form">
+          <label for="rd-emotion">Emotion<select id="rd-emotion"><option value="">No change</option>${vocab.emotions.map((e) => opt(e, ud.emotion))}</select></label>
+          <label for="rd-intensity">Intensity<select id="rd-intensity"><option value="">Default</option>${[1, 2, 3, 4, 5].map((n) => opt(n, ud.intensity, `${n}${n === 1 ? " (barely)" : n === 5 ? " (extreme)" : ""}`))}</select></label>
+          <label for="rd-pacing">Pacing<select id="rd-pacing"><option value="">No change</option>${vocab.pacings.map((e) => opt(e, ud.pacing))}</select></label>
+          <label for="rd-delivery" class="regen-wide">Delivery note (e.g. shouting, furious)<input id="rd-delivery" maxlength="240" value="${ud.delivery || ""}" placeholder="Optional, up to 240 characters"></label>
+        </div>
+        <div class="form-actions" id="rv-dir-btns"></div>
+      </details>
+      <div class="regen-explain" id="rv-explain" aria-live="polite"></div>
+    </div>
+    <section id="rv-takes"></section>
+    <section id="rv-history"></section>
   </div>`;
 }
 
-async function bookPicker(view) {
-  const { books } = await get("/api/books");
+async function bookPicker(view, opts) {
+  const { books } = await get("/api/books", opts);
   setHTML(view, html`<div class="page-head"><h1>Review &amp; QA</h1></div>
     <section class="card"><h2>Choose a book to review</h2>
     ${books.length ? html`<ul class="book-pick">${books.map((b) => html`<li><a href="#/review/${b.id}?filter=${b.flagged ? "flagged" : "all"}"><strong>${b.display_title}</strong></a>
@@ -24736,84 +26647,181 @@ async function bookPicker(view) {
       ${progressBar(b.progress, b.display_title)}</li>`)}</ul>` : html`<p class="muted">No books yet. <a href="#/library">Import a manuscript</a>.</p>`}</section>`);
 }
 
-export async function render(view, parts, query) {
-  if (!parts[0]) { await bookPicker(view); return null; }
+export async function render(view, parts, query, nav) {
+  const opts = { signal: nav && nav.signal };
+  if (!parts[0]) { await bookPicker(view, opts); return null; }
   const bookId = Number(parts[0]);
-  const book = await get(`/api/books/${bookId}`);
-  const st = { filter: query.get("filter") || (book.flagged ? "flagged" : "all"), chapter: query.get("chapter") || "", q: "", items: [], next: null, total: 0,
-    selected: query.get("seg") ? Number(query.get("seg")) : null, detail: null, names: {} };
-  try { (await get(`/api/books/${bookId}/characters`)).characters.forEach((c) => { st.names[c.id] = c.name; }); } catch { /* optional */ }
+  const wantSeg = query.get("seg") ? Number(query.get("seg")) : null;
 
-  async function loadList(append = false) {
-    const res = await get(`/api/books/${bookId}/segments` + qs({ filter: st.filter, chapter_id: st.chapter, q: st.q, after: append ? st.next : "", limit: 60 }));
-    st.items = append ? st.items.concat(res.items) : res.items;
-    st.next = res.next; st.total = res.total;
+  async function loadBook() {
+    try { return await get(`/api/books/${bookId}?view=review`, opts); } catch (e) {
+      if (e && [400, 404, 422].includes(e.status)) return get(`/api/books/${bookId}`, opts); // a server without the light view
+      throw e;
+    }
   }
-  async function loadDetail(id) {
-    st.selected = id;
-    st.detail = id ? await get(`/api/segments/${id}`) : null;
-    history.replaceState(null, "", `#/review/${bookId}` + qs({ seg: id, filter: st.filter, chapter: st.chapter }));
+  const st = { filter: query.get("filter") || "", chapter: query.get("chapter") || "", q: "", items: [], next: null, total: 0,
+    selected: wantSeg, detail: null, preview: null, previewForm: false, previewErr: "", names: {}, vocab: FALLBACK_VOCAB, book: null };
+
+  const listUrl = (append) => `/api/books/${bookId}/segments` + qs({ filter: st.filter, chapter_id: st.chapter, q: st.q, after: append ? st.next : "", limit: 60 });
+  const detailP = (id) => (id ? get(`/api/segments/${id}`, opts) : Promise.resolve(null));
+  const previewP = (id) => (id ? get(`/api/segments/${id}/delivery-preview`, opts).catch(() => null) : Promise.resolve(null));
+  const takeList = (res, append) => { st.items = append ? st.items.concat(res.items) : res.items; st.next = res.next; st.total = res.total; };
+
+  // ---- first paint: everything in parallel (the default filter needs the book only when the link did not say which one)
+  let bookRes, charRes, listRes, detRes, pvRes;
+  const common = [loadVocab(opts), get(`/api/books/${bookId}/characters`, opts).catch(() => null)];
+  if (st.filter) {
+    [st.vocab, charRes, bookRes, listRes, detRes, pvRes] = await Promise.all([...common, loadBook(), get(listUrl(false), opts), detailP(wantSeg), previewP(wantSeg)]);
+  } else {
+    [st.vocab, charRes, bookRes] = await Promise.all([...common, loadBook()]);
+    st.filter = bookRes.flagged ? "flagged" : "all";
+    [listRes, detRes, pvRes] = await Promise.all([get(listUrl(false), opts), detailP(wantSeg), previewP(wantSeg)]);
   }
+  st.book = bookRes;
+  ((charRes && charRes.characters) || []).forEach((c) => { st.names[c.id] = c.name; });
+  takeList(listRes, false);
+  if (!st.selected && st.items.length) {
+    st.selected = st.items[0].id;
+    [detRes, pvRes] = await Promise.all([detailP(st.selected), previewP(st.selected)]);
+  }
+  st.detail = detRes; st.preview = pvRes;
+  if (st.selected) history.replaceState(null, "", `#/review/${bookId}` + qs({ seg: st.selected, filter: st.filter, chapter: st.chapter }));
+
+  const $ = (sel) => view.querySelector(sel);
 
   function listItems() {
-    return html`${st.items.map((s) => html`<li><button type="button" class="seg-item ${s.id === st.selected ? "sel" : ""}" data-seg="${s.id}" aria-current="${s.id === st.selected ? "true" : "false"}">
+    return html`${st.items.map((s) => html`<li><button type="button" id="seg-${s.id}" class="seg-item ${s.id === st.selected ? "sel" : ""}" data-seg="${s.id}" aria-current="${s.id === st.selected ? "true" : "false"}">
       <span class="seg-item-top"><code>c${s.chapter_idx}·${s.idx}</code> ${badge(s.status)} ${s.wer !== null && s.wer !== undefined ? html`<span class="small muted">${(s.wer * 100).toFixed(0)}%</span>` : ""}
       ${s.needs_review ? html`<span class="badge tone-warn" title="speaker not established - open Inspect to assign">speaker?</span>` : ""}
       ${s.character_id && st.names[s.character_id] ? html`<span class="small muted">${st.names[s.character_id]}</span>` : ""}
       ${s.override_text ? html`<span class="badge tone-info" title="spoken text edited">✎</span>` : ""}${s.note ? html`<span class="badge tone-neutral" title="has note">✉</span>` : ""}</span>
       <span class="seg-snip">${s.original_text.slice(0, 110)}${s.original_text.length > 110 ? "…" : ""}</span></button></li>`)}`;
   }
-
   const moreButton = () => (st.next ? html`<button class="btn small" data-act="more">Load more</button>` : "");
+  const chapterOptions = () => html`<option value="">All chapters</option>${(st.book.chapters || []).map((c) => html`<option value="${c.id}" ${String(c.id) === String(st.chapter) ? html`selected` : ""}>
+            ${c.index}. ${c.title} (${((c.status_counts || {}).flagged || 0)} flagged)</option>`)}`;
 
-  function paint() {
-    const keepScroll = (view.querySelector("#seg-list") || {}).scrollTop || 0; // a full repaint recreates the list; do not send the reader back to the top
-    setHTML(view, html`<div class="page-head"><h1>Review: ${book.display_title || book.title}</h1>
+  function paintFrame() {
+    const b = st.book;
+    setHTML(view, html`<div class="page-head"><h1>Review: ${b.display_title || b.title}</h1>
       <div class="head-actions"><a class="btn" href="#/book/${bookId}">Book, exports &amp; release</a>
         <button class="btn ghost" type="button" data-act="help" aria-expanded="false">Keyboard shortcuts</button></div></div>
-      <div class="kbd-help card" id="kbd-help" hidden><strong>Shortcuts:</strong> <kbd>J</kbd>/<kbd>K</kbd> next/previous · <kbd>A</kbd> approve · <kbd>R</kbd> regenerate ·
+      <div class="kbd-help card" id="kbd-help" hidden><strong>Shortcuts:</strong> <kbd>J</kbd>/<kbd>K</kbd> next/previous · <kbd>A</kbd> approve · <kbd>R</kbd> regenerate (without a direction) ·
         <kbd>E</kbd> edit spoken text · <kbd>P</kbd> play/pause selected take · <kbd>/</kbd> search</div>
       <div class="review-layout">
         <aside class="card review-side" aria-label="Segments">
-          <label>Chapter <select id="f-chapter"><option value="">All chapters</option>${book.chapters.map((c) => html`<option value="${c.id}" ${String(c.id) === String(st.chapter) ? html`selected` : ""}>
-            ${c.index}. ${c.title} (${(c.status_counts.flagged || 0)} flagged)</option>`)}</select></label>
+          <label>Chapter <select id="f-chapter">${chapterOptions()}</select></label>
           <label>Show <select id="f-filter">${FILTERS.map(([k, l]) => html`<option value="${k}" ${k === st.filter ? html`selected` : ""}>${l}</option>`)}</select></label>
           <label>Search text or ID <input id="f-q" type="search" value="${st.q}" placeholder="word or sid"></label>
-          <p class="small muted" aria-live="polite">${st.total.toLocaleString()} segment(s)</p>
+          <p class="small muted" id="rv-count" aria-live="polite">${st.total.toLocaleString()} segment(s)</p>
           <ul class="seg-list" id="seg-list">${listItems()}</ul>
           <div id="seg-more">${moreButton()}</div>
         </aside>
-        <section class="card review-main" aria-live="polite" aria-label="Segment detail">${st.detail ? detailPanel(st.detail) : html`<p class="muted">Select a segment to review it.</p>`}</section>
+        <section class="card review-main" aria-label="Segment detail"></section>
       </div>`);
-    const list = view.querySelector("#seg-list");
-    if (list) list.scrollTop = keepScroll;
-    const sel = view.querySelector(".seg-item.sel");
-    if (sel) sel.scrollIntoView({ block: "nearest" }); // moves only when the selected segment is out of view
-    view.querySelector("#f-chapter").addEventListener("change", async (e) => { st.chapter = e.target.value; await loadList(); paint(); });
-    view.querySelector("#f-filter").addEventListener("change", async (e) => { st.filter = e.target.value; await loadList(); paint(); });
-    view.querySelector("#f-q").addEventListener("input", debounce(async (e) => { st.q = e.target.value.trim(); await loadList(); repaintList(); }, 350));
+    $("#f-chapter").addEventListener("change", async (e) => { st.chapter = e.target.value; await loadList(); repaintList(); });
+    $("#f-filter").addEventListener("change", async (e) => { st.filter = e.target.value; await loadList(); repaintList(); });
+    $("#f-q").addEventListener("input", debounce(async (e) => { st.q = e.target.value.trim(); await loadList(); repaintList(); }, 350));
+    paintDetail();
   }
-  function repaintList() {
-    const ul = view.querySelector("#seg-list");
-    const top = ul ? ul.scrollTop : 0;
-    if (ul) { setHTML(ul, listItems()); ul.scrollTop = top; }
-    const cnt = view.querySelector(".review-side p[aria-live]");
-    if (cnt) cnt.textContent = `${st.total.toLocaleString()} segment(s)`;
-    const more = view.querySelector("#seg-more");
-    if (more) setHTML(more, moreButton());
-  }
-  function repaintDetail() {
-    const main = view.querySelector(".review-main");
-    if (main) setHTML(main, st.detail ? detailPanel(st.detail) : html`<p class="muted">Select a segment to review it.</p>`);
-  }
-  /** Re-fetch as many pages as the reader has already loaded, so "Load more" pages and the scroll position survive a refresh. */
+
+  async function loadList(append = false) { takeList(await get(listUrl(append)), append); }
+  /** Re-fetch what the reader has loaded already: one request when it fits the server's page cap of 200, so "Load more" pages survive a refresh. */
   async function reloadList() {
     const want = st.items.length;
-    await loadList();
+    if (want <= 60) { await loadList(); return; }
+    takeList(await get(`/api/books/${bookId}/segments` + qs({ filter: st.filter, chapter_id: st.chapter, q: st.q, limit: Math.min(200, want) })), false);
     while (st.next && st.items.length < want) await loadList(true);
   }
 
-  async function select(id) { await loadDetail(id); paint(); const h = view.querySelector(".seg-title"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
+  /** Repaint the segment list in place. `reveal` scrolls the selected segment into view: only for an explicit pick (click, J/K, deep link),
+   *  never for a live refresh, or a reader who scrolled away from the selected segment is pulled back to it on every update. */
+  function repaintList(reveal = false) {
+    const sc = ($("#seg-list") || {}).scrollTop || 0;
+    patchRegions(view, { "#seg-list": () => listItems(), "#seg-more": () => moreButton(), "#f-chapter": () => chapterOptions() });
+    const cnt = $("#rv-count");
+    if (cnt) cnt.textContent = `${st.total.toLocaleString()} segment(s)`;
+    const list = $("#seg-list");
+    if (list && sc) list.scrollTop = sc;
+    const sel = $(".seg-item.sel");
+    if (sel && reveal) sel.scrollIntoView({ block: "nearest" });
+  }
+
+  // ---- detail
+  const directionDirty = () => DIRECTION_FIELDS.some((id) => { const el = $("#" + id); return el && el.dataset.dirty; });
+  function regions() {
+    const d = st.detail, pv = st.preview;
+    return {
+      "#rv-head": () => headTpl(d), "#rv-players": () => playersTpl(d), "#rv-spoken-badge": () => spokenBadgeTpl(d), "#rv-clear-override": () => clearOverrideTpl(d),
+      "#rv-asr": () => asrTpl(d), "#rv-findings": () => findingsTpl(d), "#rv-act-btns": () => actionButtonsTpl(d), "#rv-dir-btns": () => directionButtonsTpl(d, pv),
+      "#rv-explain": () => explainTpl(pv, st.previewForm, st.previewErr), "#rv-takes": () => takesTpl(d), "#rv-history": () => historyTpl(d),
+    };
+  }
+  function paintDetail() {
+    const main = $(".review-main");
+    if (!main) return;
+    if (!st.detail) { setHTML(main, html`<p class="muted">Select a segment to review it.</p>`); return; }
+    setHTML(main, detailShell(st.detail, st.preview, st.vocab));
+    patchRegions(main, regions());
+  }
+  function syncField(id, value) {
+    const el = $("#" + id);
+    if (!el || el.dataset.dirty || document.activeElement === el) return; // never overwrite what the reader is typing
+    const v = value === null || value === undefined ? "" : String(value);
+    if (el.value !== v) el.value = v;
+  }
+  /** Refresh a segment that is already on screen: repaint changed read-only regions, and let untouched fields follow the server. */
+  function repaintDetail() {
+    const main = $(".review-main");
+    const shell = main && main.querySelector(".seg-detail");
+    if (!st.detail || !shell || Number(shell.dataset.segId) !== st.detail.segment.id) { paintDetail(); return; }
+    patchRegions(main, regions());
+    const s = st.detail.segment, ud = (st.preview && st.preview.user_direction) || {};
+    syncField("override-text", s.override_text || s.narration_text);
+    syncField("note-text", s.note || "");
+    if (!st.previewForm) { syncField("rd-emotion", ud.emotion); syncField("rd-intensity", ud.intensity); syncField("rd-pacing", ud.pacing); syncField("rd-delivery", ud.delivery); }
+  }
+  function repaintExplain() {
+    const main = $(".review-main");
+    if (!main || !st.detail) return;
+    const r = regions();
+    patchRegions(main, { "#rv-explain": r["#rv-explain"], "#rv-dir-btns": r["#rv-dir-btns"] });
+  }
+
+  function formDirection() {
+    const v = (id) => ($("#" + id) || {}).value || "";
+    return { emotion: v("rd-emotion") || null, intensity: v("rd-intensity") ? Number(v("rd-intensity")) : null, pacing: v("rd-pacing") || null, delivery: v("rd-delivery").trim() || null };
+  }
+  let previewSeq = 0;
+  /** Ask the server what the form's direction would send to this segment's voice (reads only; nothing is saved). */
+  async function formPreview() {
+    const id = st.selected;
+    if (!id) return;
+    const seq = ++previewSeq;
+    const p = new URLSearchParams();
+    Object.entries(formDirection()).forEach(([k, v]) => p.set(k, v === null ? "" : v));
+    try {
+      const pv = await get(`/api/segments/${id}/delivery-preview?${p}`);
+      if (seq !== previewSeq || id !== st.selected) return;
+      st.preview = { ...pv, user_direction: (st.preview && st.preview.user_direction) || pv.user_direction }; st.previewForm = true; st.previewErr = "";
+    } catch (e) {
+      if (seq !== previewSeq || id !== st.selected) return;
+      st.previewErr = `Could not check: ${e.message}`;
+    }
+    repaintExplain();
+  }
+  const autoPreview = debounce(() => { formPreview().catch(() => {}); }, 350);
+  const clearDirty = (ids) => ids.forEach((id) => { const el = $("#" + id); if (el) delete el.dataset.dirty; });
+
+  async function select(id) {
+    st.selected = id;
+    const [det, pv] = await Promise.all([detailP(id), previewP(id)]);
+    if (st.selected !== id) return; // a newer click won
+    st.detail = det; st.preview = pv; st.previewForm = false; st.previewErr = "";
+    history.replaceState(null, "", `#/review/${bookId}` + qs({ seg: id, filter: st.filter, chapter: st.chapter }));
+    paintDetail(); repaintList(true);
+    const h = $(".seg-title"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); }
+  }
   async function step(dir) {
     const idx = st.items.findIndex((s) => s.id === st.selected);
     let target = st.items[idx + dir];
@@ -24821,54 +26829,87 @@ export async function render(view, parts, query) {
     if (!target && st.detail) { const id = dir > 0 ? st.detail.next_id : st.detail.prev_id; if (id) return select(id); }
     if (target) await select(target.id);
   }
-  /** Refresh in place (also used by the live progress updates while a job runs): never rebuilds the page, so scrolling is undisturbed. */
-  async function refreshAll() {
-    await reloadList();
-    const before = JSON.stringify(st.detail);
-    if (st.selected) st.detail = await get(`/api/segments/${st.selected}`);
+  /** Refresh in place (also used by the live progress updates while a job runs): never rebuilds the page, so scrolling and typing are undisturbed. */
+  async function refreshAll(forcePreview = false) {
+    const sel = st.selected;
+    const [det, b] = await Promise.all([detailP(sel), loadBook().catch(() => null), reloadList()]);
+    if (b) st.book = b;
+    if (sel !== st.selected) { repaintList(); return; } // the reader moved to another segment meanwhile
+    const changed = !sameState(det, st.detail);
+    st.detail = det;
+    if (changed || forcePreview || !st.preview) {
+      const pv = await previewP(sel);
+      if (sel !== st.selected) { repaintList(); return; }
+      if (!st.previewForm || !directionDirty()) { st.preview = pv; st.previewForm = false; st.previewErr = ""; }
+      else if (pv) st.preview = { ...st.preview, user_direction: pv.user_direction };
+    }
     repaintList();
-    if (JSON.stringify(st.detail) !== before) repaintDetail();
+    repaintDetail();
   }
 
   async function act(name, btn) {
     const sid = st.selected;
     if (!sid && !["more", "help", "prev", "next"].includes(name)) return;
+    const noteVal = ($("#note-text") || {}).value || null;
     if (name === "approve") {
-      await busy(btn, () => post(`/api/segments/${sid}/approve`, { note: (view.querySelector("#note-text") || {}).value || null }), "Segment approved");
+      await busy(btn, () => post(`/api/segments/${sid}/approve`, { note: noteVal }), "Segment approved");
       await refreshAll();
       if (st.filter === "flagged" || st.filter === "issues") { const nxt = st.items[0]; if (nxt) await select(nxt.id); }
     } else if (name === "regenerate") {
-      await busy(btn, () => post(`/api/segments/${sid}/regenerate`, { note: (view.querySelector("#note-text") || {}).value || null }), "Queued for regeneration (front of the queue)");
+      await busy(btn, () => post(`/api/segments/${sid}/regenerate`, { note: noteVal }), "Queued for regeneration (front of the queue)");
       await refreshAll();
+    } else if (name === "regen-dir") {
+      const res = await busy(btn, () => post(`/api/segments/${sid}/regenerate`, { note: noteVal, direction: formDirection() }), "Direction saved; queued for regeneration (front of the queue)");
+      clearDirty(DIRECTION_FIELDS);
+      st.previewForm = false;
+      await refreshAll(true);
+      if (res && res.delivery && st.selected === sid) { st.preview = { segment_id: sid, ...res.delivery }; st.previewErr = ""; repaintExplain(); }
+    } else if (name === "preview-dir") {
+      await formPreview();
+      const ex = $("#rv-explain"); if (ex) ex.scrollIntoView({ block: "nearest" });
+    } else if (name === "clear-dir") {
+      await busy(btn, () => patch(`/api/segments/${sid}/narrative`, { emotion: null, intensity: null, pacing: null, tension: null, delivery: null }), "Direction cleared");
+      clearDirty(DIRECTION_FIELDS); st.previewForm = false;
+      DIRECTION_FIELDS.forEach((id) => { const el = $("#" + id); if (el) el.value = ""; });
+      await refreshAll(true);
     } else if (name === "override") {
-      const text = view.querySelector("#override-text").value;
+      const text = $("#override-text").value;
       await busy(btn, () => post(`/api/segments/${sid}/override`, { text, regenerate: true }), "Spoken rendition saved; regenerating");
+      clearDirty(["override-text"]);
       await refreshAll();
     } else if (name === "clear-override") {
       await busy(btn, () => post(`/api/segments/${sid}/override`, { text: null, regenerate: true }), "Reverted to automatic rendition; regenerating");
+      clearDirty(["override-text"]);
       await refreshAll();
     } else if (name === "note") {
-      await busy(btn, () => post(`/api/segments/${sid}/note`, { note: view.querySelector("#note-text").value }), "Note saved");
+      await busy(btn, () => post(`/api/segments/${sid}/note`, { note: $("#note-text").value }), "Note saved");
+      clearDirty(["note-text"]);
       await refreshAll();
     } else if (name === "select") {
       await busy(btn, () => post(`/api/segments/${sid}/select-take`, { attempt_id: Number(btn.dataset.attempt) }), "Take selected");
       await refreshAll();
     } else if (name === "prev") await step(-1);
     else if (name === "next") await step(1);
-    else if (name === "more") { await loadList(true); paint(); }
+    else if (name === "more") { await loadList(true); repaintList(); }
     else if (name === "ctx") {
-      const a = view.querySelector(".ctx-player");
+      const a = $(".ctx-player");
       if (a) { a.currentTime = Number(btn.dataset.t) || 0; a.play().catch(() => toast("Press play to start audio", "info")); }
     } else if (name === "help") {
-      const h = view.querySelector("#kbd-help"); h.hidden = !h.hidden; btn.setAttribute("aria-expanded", String(!h.hidden));
+      const h = $("#kbd-help"); h.hidden = !h.hidden; btn.setAttribute("aria-expanded", String(!h.hidden));
     }
   }
 
   async function onClick(e) {
     const seg = e.target.closest("[data-seg]");
-    if (seg) { await select(Number(seg.dataset.seg)); return; }
+    if (seg && view.contains(seg)) { await select(Number(seg.dataset.seg)); return; }
     const b = e.target.closest("[data-act]");
     if (b && view.contains(b)) { try { await act(b.dataset.act, b); } catch { /* toast already shown */ } }
+  }
+  function onEdit(e) {
+    const t = e.target;
+    if (!t || !EDIT_FIELDS.has(t.id) || !view.contains(t)) return;
+    t.dataset.dirty = "1";
+    if (t.id.startsWith("rd-")) autoPreview();
   }
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -24877,34 +26918,228 @@ export async function render(view, parts, query) {
     const k = e.key.toLowerCase();
     const map = { j: "next", k: "prev", a: "approve", r: "regenerate" };
     if (map[k]) { e.preventDefault(); const b = view.querySelector(`[data-act="${map[k]}"]`); if (b && !b.disabled) act(map[k], b).catch(() => {}); }
-    else if (k === "e") { e.preventDefault(); const t = view.querySelector("#override-text"); if (t) t.focus(); }
-    else if (k === "p") { e.preventDefault(); const a = view.querySelector(".main-take"); if (a) { if (a.paused) a.play().catch(() => {}); else a.pause(); } }
-    else if (k === "/") { e.preventDefault(); view.querySelector("#f-q").focus(); }
+    else if (k === "e") { e.preventDefault(); const t = $("#override-text"); if (t) t.focus(); }
+    else if (k === "p") { e.preventDefault(); const a = $(".main-take"); if (a) { if (a.paused) a.play().catch(() => {}); else a.pause(); } }
+    else if (k === "/") { e.preventDefault(); $("#f-q").focus(); }
   }
 
-  await loadList();
-  if (!st.selected && st.items.length) st.selected = st.items[0].id;
-  if (st.selected) await loadDetail(st.selected);
-  paint();
+  paintFrame();
+  repaintList(true); // a deep link (?seg=) opens with its segment in view
   view.addEventListener("click", onClick);
+  view.addEventListener("input", onEdit);
+  view.addEventListener("change", onEdit);
   document.addEventListener("keydown", onKey);
   let lastSeg = null;
   const off = onState(async (state) => {
     if (!state || state.segments === lastSeg) return;
     lastSeg = state.segments;
-    const ae = document.activeElement;
-    if (ae && ["textarea", "input"].includes((ae.tagName || "").toLowerCase()) && view.contains(ae)) return; // don't clobber edits
-    if (view.querySelector("audio:not([paused])") && [...view.querySelectorAll("audio")].some((a) => !a.paused)) return; // don't interrupt playback
+    if ([...view.querySelectorAll("audio")].some((a) => !a.paused)) return; // don't interrupt playback
     try { await refreshAll(); } catch { /* transient */ }
   }, 3000);
-  return () => { off(); view.removeEventListener("click", onClick); document.removeEventListener("keydown", onKey); };
+  return () => { off(); view.removeEventListener("click", onClick); view.removeEventListener("input", onEdit); view.removeEventListener("change", onEdit); document.removeEventListener("keydown", onKey); };
 }
 export { navigate };
-__STUDIO_EOF_4e01f2632672__
-cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_afd04ff108c2__'
-// Settings & Storage: server-validated paths, disk status, every tunable with validation.
-import { get, post, put, del, html, setHTML, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
-import { NARRATIVE_FIELDS, allFields, getPath, setPath, narrativeInput, readInput } from "./narrative-fields.js";
+__STUDIO_EOF_413afc59d42d__
+cat > "$DEST/studio/web/static/js/views/settings-model.js" <<'__STUDIO_EOF_7a7b7b9d201b__'
+// Settings page model: field definitions, tab routing, payload collection and dirty tracking. Pure (no DOM at import time), so it is
+// covered by tests/js/settings_model.test.mjs. The saved payload shape is the one the server has always accepted.
+import { allFields, setPath, readInput } from "./narrative-fields.js";
+
+/** [section, title, fields]; a field is [key, label, type, options]. options.hint is small helper text shown under the label. */
+export const SECTIONS = [
+  ["chunking", "Segmentation", [
+    ["min_chars", "Minimum segment length (chars)", "number", { min: 40, max: 600 }],
+    ["max_chars", "Maximum segment length (chars)", "number", { min: 80, max: 1200 }],
+    ["merge_short_paragraphs", "Merge short paragraphs", "bool", { hint: "Consecutive short paragraphs are joined for more stable TTS." }],
+    ["speak_chapter_titles", "Narrate chapter titles", "bool"],
+    ["normalize_for_speech", "Pronounceable renditions", "bool", { hint: "Numbers, currency and abbreviations are spoken naturally." }]]],
+  ["qa", "Automatic QA", [
+    ["enable_asr", "Verify takes with Whisper", "bool", { hint: "Master switch. When off, no take is checked by speech recognition." }],
+    ["wer_threshold", "Word error rate limit (0–1)", "number", { min: 0, max: 1, step: 0.01 }],
+    ["max_attempts", "Attempts per segment", "number", { min: 1, max: 10, hint: "Total retry budget before a segment is flagged." }],
+    ["max_dropped_words", "Max dropped words in a row", "number", { min: 0, max: 20, hint: "More than this flags the take." }],
+    ["max_inserted_words", "Max inserted words in a row", "number", { min: 0, max: 20, hint: "More than this flags the take." }],
+    ["dead_air_seconds", "Dead air limit (s)", "number", { min: 0.3, max: 10, step: 0.1, hint: "Longest silence allowed inside a take." }],
+    ["clip_ratio_limit", "Clipping limit", "number", { min: 0, max: 0.1, step: 0.0005, hint: "Fraction of samples." }],
+    ["min_rms_dbfs", "Minimum speech level (dBFS)", "number", { min: -80, max: -10, step: 0.5 }],
+    ["max_rms_dbfs", "Maximum speech level (dBFS)", "number", { min: -30, max: 0, step: 0.5 }],
+    ["duration_ratio_min", "Shortest duration (× expected)", "number", { min: 0.1, max: 1, step: 0.05 }],
+    ["duration_ratio_max", "Longest duration (× expected)", "number", { min: 1, max: 5, step: 0.05 }],
+    ["words_per_minute", "Expected pace (words/min)", "number", { min: 60, max: 300 }]]],
+  ["pauses", "Pauses & assembly", [
+    ["sentence_ms", "Between segments (ms)", "number", { min: 0, max: 3000, hint: "Within a paragraph." }],
+    ["paragraph_ms", "Between paragraphs (ms)", "number", { min: 0, max: 5000 }],
+    ["scene_break_ms", "At scene breaks (ms)", "number", { min: 0, max: 8000 }],
+    ["after_heading_ms", "After chapter titles (ms)", "number", { min: 0, max: 8000 }],
+    ["chapter_head_ms", "Room tone at chapter start (ms)", "number", { min: 0, max: 5000 }],
+    ["chapter_tail_ms", "Room tone at chapter end (ms)", "number", { min: 0, max: 10000 }],
+    ["room_tone_dbfs", "Room tone level (dBFS)", "number", { min: -120, max: -50 }],
+    ["trim_silence", "Trim silence around takes", "bool", { hint: "Leading and trailing silence of each take." }]]],
+  ["models", "Models & synthesis", [
+    ["custom_voice_model", "CustomVoice model", "text", { hint: "Preset speakers." }],
+    ["base_model", "Base model", "text", { hint: "Voice cloning." }],
+    ["voice_design_model", "VoiceDesign model", "text"],
+    ["asr_model", "Whisper ASR model", "text"],
+    ["language", "Narration language", "text"],
+    ["temperature", "Sampling temperature", "number?", { min: 0.05, max: 1.5, step: 0.05, hint: "Blank = model default." }],
+    ["top_p", "Top-p", "number?", { min: 0.05, max: 1, step: 0.05, hint: "Blank = model default." }],
+    ["repetition_penalty", "Repetition penalty", "number?", { min: 1, max: 2, step: 0.01, hint: "Blank = model default." }],
+    ["retry_temperatures", "Retry temperatures", "list", { hint: "Comma separated, one per retry." }],
+    ["max_warm_models", "Models kept loaded in memory", "number", { min: 1, max: 4 }],
+    ["cache_dir", "Model cache folder", "text", { hint: "Blank = default. May be an external disk. Applies after a restart." }],
+    ["allow_downloads", "Allow downloading model weights", "bool", { hint: "From Hugging Face." }]]],
+  ["export", "Export", [
+    ["sample_rate", "Master sample rate (Hz)", "select", { options: [22050, 44100, 48000] }],
+    ["mp3_bitrate_kbps", "MP3 bitrate (kbps)", "select", { options: [128, 160, 192, 256, 320], hint: "Constant bitrate." }],
+    ["m4b_bitrate_kbps", "M4B AAC bitrate (kbps)", "select", { options: [64, 96, 128, 160] }],
+    ["loudness_normalize", "Loudness-normalise chapters", "bool", { hint: "Two-pass EBU R128 on the chapter masters." }],
+    ["target_lufs", "Target loudness (LUFS)", "number", { min: -30, max: -12, step: 0.5 }],
+    ["true_peak_db", "True-peak ceiling (dBTP)", "number", { min: -9, max: -0.5, step: 0.5 }],
+    ["auto_assemble_drafts", "Assemble drafts automatically", "bool", { hint: "Draft chapter masters are built after generation." }]]],
+  ["worker", "Worker", [
+    ["autostart", "Start the GPU worker with the web server", "bool"],
+    ["prevent_sleep", "Prevent idle sleep while jobs run", "bool", { hint: "Uses caffeinate." }],
+    ["max_consecutive_errors", "Stop a book after N failures in a row", "number", { min: 1, max: 50, hint: "Consecutive synthesis failures." }]]],
+  ["server", "Server (applies after restart)", [
+    ["port", "Port", "number", { min: 1024, max: 65535 }],
+    ["max_manuscript_mb", "Max manuscript upload (MB)", "number", { min: 1, max: 2000 }],
+    ["max_reference_mb", "Max reference clip upload (MB)", "number", { min: 1, max: 200 }]]],
+];
+
+/** Plain-language labels for the narrative fields on this page: path -> [label, hint]. The long originals in narrative-fields.js
+ *  stay for the per-book editor; every field is still the same field (same name, same type, same saved key). */
+export const NARRATIVE_LABELS = {
+  semantic_segmentation: ["Semantic segmentation", "Two passes: structure and speakers first, then segments."],
+  max_segment_chars: ["Maximum segment length (chars)", "A ceiling, not a target."],
+  min_segment_chars: ["Avoid fragments shorter than (chars)"],
+  tags_with_speaker: ["Character voice reads short tags", "Tags such as “she said.” stay with the speaker (fewer tiny segments)."],
+  emotion_sensitivity: ["Emotion sensitivity (0–1)", "Also controls splitting at emotional turns."],
+  attribution_threshold: ["Attribution confidence threshold (0–1)", "Below it a line is flagged for review."],
+  auto_character_tracking: ["Discover characters automatically"],
+  chapter_summaries: ["Chapter and scene summaries", "Verbatim sentences; never invented."],
+  context_before_chars: ["Previous context (chars)"],
+  context_after_chars: ["Following context (chars)"],
+  director_enabled: ["Enable the Narrative Director", "Requires semantic segmentation."],
+  director_lookahead: ["Directions prepared ahead", "Segments per batch."],
+  director_chapter_plan: ["Chapter beat sheet", "Prepared before directing a chapter."],
+  continuity_smoothing: ["Continuity smoothing", "Across neighbouring segments."],
+  smoothing_strength: ["Smoothing strength (0–1)", "0 = off, 1 = strong."],
+  reset_scope: ["Reset delivery state at"],
+  cascade_limit: ["Recompute limit after an edit", "Most segments recomputed after one manual edit."],
+  verify_mode: ["Verify with Whisper", "How much to check, once the master switch above is on."],
+  verify_sample_rate: ["Sample share (0–1)", "Only used in “a sample” mode."],
+  "delivery.custom_voice": ["CustomVoice instructions", "Emotion and style instruction for preset speakers."],
+  "delivery.voice_design": ["VoiceDesign instructions", "The instruction is the voice description itself."],
+  "delivery.max_instruct_chars": ["Longest instruction (chars)", "Sent to a model."],
+  "delivery.clone": ["Cloned voices", "Emotion through reference clips."],
+  "delivery.pace_from_direction": ["Pace from direction"],
+  "delivery.pauses_from_direction": ["Pauses from direction"],
+  "delivery.translator": ["Instruction translator", "Turns a direction into a model instruction."],
+  "delivery.bank_min_intensity": ["Reference clip from intensity (1–5)", "Weakest emotion intensity that uses a reference clip."],
+  "llm.provider": ["Provider"],
+  "llm.base_url": ["Base URL", "For example http://127.0.0.1:1234/v1"],
+  "llm.model": ["Model name"],
+  "llm.chapter_model": ["Chapter pass model", "Thinking on. Blank = same as Model."],
+  "llm.scene_model": ["Scene pass model", "Blank = same as Model."],
+  "llm.translator_model": ["Translator model", "Blank = off."],
+  "llm.api_key_env": ["Fallback key variable", "Environment variable (STUDIO_LLM_…) holding the API key, used only when no key is saved below."],
+  "llm.timeout_s": ["Request timeout (s)"],
+  "llm.temperature": ["Temperature"],
+  "llm.max_tokens": ["Maximum reply tokens"],
+  "llm.chapter_max_tokens": ["Chapter pass: maximum reply tokens", "Includes thinking."],
+  "llm.chapter_timeout_s": ["Chapter pass: request timeout (s)"],
+};
+
+/** Tabs in display order. The tab id is the URL part: #/settings/<id>. */
+export const TABS = [
+  { id: "storage", label: "Storage", blurb: "Where the library, audio and backups live" },
+  { id: "production", label: "Production", blurb: "Segmenting, pauses, export, worker" },
+  { id: "quality", label: "Quality & verification", blurb: "Automatic QA and Whisper checks" },
+  { id: "models", label: "Voices & models", blurb: "Models, sampling, delivery per model" },
+  { id: "narrative", label: "Narrative", blurb: "Semantic segmentation and the Director" },
+  { id: "llm", label: "Local LLM", blurb: "Endpoint, models, API key" },
+  { id: "server", label: "Server & advanced", blurb: "Port, upload limits" },
+];
+export const DEFAULT_TAB = TABS[0].id;
+
+/** The tab named by the route parts after "settings" (["models"] -> "models"); anything unknown falls back to the first tab. */
+export function resolveTab(parts) {
+  const id = Array.isArray(parts) && parts.length ? String(parts[0]) : "";
+  return TABS.some((t) => t.id === id) ? id : DEFAULT_TAB;
+}
+
+/** Keyboard navigation for a tab list: the index to move to for `key`, or null when the key is not a navigation key. */
+export function tabKeyTarget(key, index, count) {
+  if (count <= 0) return null;
+  if (key === "ArrowRight" || key === "ArrowDown") return (index + 1) % count;
+  if (key === "ArrowLeft" || key === "ArrowUp") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return null;
+}
+
+/** Names of controls whose value differs between two snapshotForm() results (sorted). Write-only secret.* controls are never "changes". */
+export function changedNames(base, cur) {
+  const out = [];
+  const names = new Set([...Object.keys(base || {}), ...Object.keys(cur || {})]);
+  for (const name of names) {
+    if (name.startsWith("secret.")) continue;
+    if (JSON.stringify((base || {})[name]) !== JSON.stringify((cur || {})[name])) out.push(name);
+  }
+  return out.sort();
+}
+
+/** Count changed names per group: `groupOf(name)` returns the group (tab id) of a control name, or falsy to skip it. */
+export function countByGroup(names, groupOf) {
+  const out = {};
+  for (const n of names) { const g = groupOf(n); if (g) out[g] = (out[g] || 0) + 1; }
+  return out;
+}
+
+/** One sentence saying what the two Whisper settings add up to (qa.enable_asr is the master switch; verify_mode only matters when it is on). */
+export function verifySummary(enableAsr, mode, rate) {
+  if (!enableAsr) return { on: false, text: "Whisper verification is off: no take is checked, whatever the mode below says." };
+  if (mode === "off") return { on: false, text: "Whisper verification is on, but the mode is “never”, so no take is checked." };
+  if (mode === "sample") {
+    const pct = Math.round(Math.max(0, Math.min(1, Number(rate) || 0)) * 100);
+    return { on: true, text: `About ${pct}% of segments are checked by Whisper (a sample).` };
+  }
+  return { on: true, text: "Every segment is checked by Whisper." };
+}
+
+export function collectNarrative(form) {
+  const out = {};
+  for (const f of allFields()) {
+    const v = readInput(form, "narrative.", f);
+    if (v !== undefined) setPath(out, f[0], v);
+  }
+  return out;
+}
+
+/** The body of PUT /api/settings, read from the form's controls. Unchanged from v0.8.0: hiding a tab or a dependent field never removes a key. */
+export function collectSettings(form) {
+  const out = {};
+  const set = (path, v) => { const [a, b] = path.split("."); (out[a] = out[a] || {})[b] = v; };
+  for (const [sec, , fields] of SECTIONS) for (const [key, , type] of fields) {
+    const el = form.elements[`${sec}.${key}`]; if (!el) continue;
+    if (type === "bool") set(`${sec}.${key}`, el.checked);
+    else if (type === "number") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
+    else if (type === "number?") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
+    else if (type === "select") set(`${sec}.${key}`, Number(el.value));
+    else if (type === "list") set(`${sec}.${key}`, el.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number));
+    else set(`${sec}.${key}`, el.value.trim());
+  }
+  out.narrative = collectNarrative(form);
+  out.storage = {};
+  form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
+  return out;
+}
+__STUDIO_EOF_7a7b7b9d201b__
+cat > "$DEST/studio/web/static/js/views/settings.js" <<'__STUDIO_EOF_cfa28686e972__'
+// Settings & Storage: seven tabs (#/settings/<tab>) over ONE form with ONE Save; server-validated paths, disk status, every tunable.
+import { get, post, put, del, html, setHTML, patchHTML, snapshotForm, applyForm, confirmDialog, fmtBytes, fmtDate, toast, toastError, busy } from "../ui.js";
+import { allFields, getPath, narrativeInput } from "./narrative-fields.js";
+import { SECTIONS, NARRATIVE_LABELS, TABS, DEFAULT_TAB, resolveTab, tabKeyTarget, changedNames, countByGroup, verifySummary, collectSettings } from "./settings-model.js";
 
 /** Server-side folder browser: lists real folders on the hosting Mac (admin only). Resolves to a path or null. */
 function browseFolder(startPath) {
@@ -24975,74 +27210,34 @@ function browseFolder(startPath) {
 }
 
 
-const SECTIONS = [
-  ["chunking", "Segmentation", [
-    ["min_chars", "Minimum segment length (characters)", "number", { min: 40, max: 600 }],
-    ["max_chars", "Maximum segment length (characters)", "number", { min: 80, max: 1200 }],
-    ["merge_short_paragraphs", "Merge consecutive short paragraphs (more stable TTS)", "bool"],
-    ["speak_chapter_titles", "Narrate chapter titles", "bool"],
-    ["normalize_for_speech", "Create pronounceable renditions (numbers, currency, abbreviations)", "bool"]]],
-  ["qa", "Automatic QA", [
-    ["enable_asr", "Verify every take with local Whisper ASR", "bool"],
-    ["wer_threshold", "Word error rate threshold (0–1)", "number", { min: 0, max: 1, step: 0.01 }],
-    ["max_attempts", "Total attempts per segment (retry budget)", "number", { min: 1, max: 10 }],
-    ["max_dropped_words", "Max consecutive dropped words before flagging", "number", { min: 0, max: 20 }],
-    ["max_inserted_words", "Max consecutive inserted words before flagging", "number", { min: 0, max: 20 }],
-    ["dead_air_seconds", "Dead air limit inside a take (s)", "number", { min: 0.3, max: 10, step: 0.1 }],
-    ["clip_ratio_limit", "Clipping limit (fraction of samples)", "number", { min: 0, max: 0.1, step: 0.0005 }],
-    ["min_rms_dbfs", "Minimum speech level (dBFS)", "number", { min: -80, max: -10, step: 0.5 }],
-    ["max_rms_dbfs", "Maximum speech level (dBFS)", "number", { min: -30, max: 0, step: 0.5 }],
-    ["duration_ratio_min", "Shortest plausible duration (× expected)", "number", { min: 0.1, max: 1, step: 0.05 }],
-    ["duration_ratio_max", "Longest plausible duration (× expected)", "number", { min: 1, max: 5, step: 0.05 }],
-    ["words_per_minute", "Expected narration pace (words/min)", "number", { min: 60, max: 300 }]]],
-  ["pauses", "Pauses & assembly", [
-    ["sentence_ms", "Pause between segments within a paragraph (ms)", "number", { min: 0, max: 3000 }],
-    ["paragraph_ms", "Pause between paragraphs (ms)", "number", { min: 0, max: 5000 }],
-    ["scene_break_ms", "Pause at scene breaks (ms)", "number", { min: 0, max: 8000 }],
-    ["after_heading_ms", "Pause after chapter titles/headings (ms)", "number", { min: 0, max: 8000 }],
-    ["chapter_head_ms", "Room tone at chapter start (ms)", "number", { min: 0, max: 5000 }],
-    ["chapter_tail_ms", "Room tone at chapter end (ms)", "number", { min: 0, max: 10000 }],
-    ["room_tone_dbfs", "Room tone level (dBFS)", "number", { min: -120, max: -50 }],
-    ["trim_silence", "Trim leading/trailing silence of each take", "bool"]]],
-  ["models", "Models & synthesis", [
-    ["custom_voice_model", "CustomVoice model (preset speakers)", "text"],
-    ["base_model", "Base model (voice cloning)", "text"],
-    ["voice_design_model", "VoiceDesign model", "text"],
-    ["asr_model", "Whisper ASR model", "text"],
-    ["language", "Narration language", "text"],
-    ["temperature", "Sampling temperature (blank = model default)", "number?", { min: 0.05, max: 1.5, step: 0.05 }],
-    ["top_p", "Top-p (blank = model default)", "number?", { min: 0.05, max: 1, step: 0.05 }],
-    ["repetition_penalty", "Repetition penalty (blank = model default)", "number?", { min: 1, max: 2, step: 0.01 }],
-    ["retry_temperatures", "Temperatures for retries (comma separated)", "list"],
-    ["max_warm_models", "Models kept loaded in memory", "number", { min: 1, max: 4 }],
-    ["cache_dir", "Model cache folder (blank = default; may be an external disk; applies after a restart)", "text"],
-    ["allow_downloads", "Allow downloading model weights from Hugging Face", "bool"]]],
-  ["export", "Export", [
-    ["sample_rate", "Master sample rate (Hz)", "select", { options: [22050, 44100, 48000] }],
-    ["mp3_bitrate_kbps", "MP3 bitrate (kbps, CBR)", "select", { options: [128, 160, 192, 256, 320] }],
-    ["m4b_bitrate_kbps", "M4B AAC bitrate (kbps)", "select", { options: [64, 96, 128, 160] }],
-    ["loudness_normalize", "Loudness-normalise chapter masters (two-pass EBU R128)", "bool"],
-    ["target_lufs", "Target integrated loudness (LUFS)", "number", { min: -30, max: -12, step: 0.5 }],
-    ["true_peak_db", "True-peak ceiling (dBTP)", "number", { min: -9, max: -0.5, step: 0.5 }],
-    ["auto_assemble_drafts", "Assemble draft chapter masters automatically after generation", "bool"]]],
-  ["worker", "Worker", [
-    ["autostart", "Start the GPU worker with the web server", "bool"],
-    ["prevent_sleep", "Prevent idle sleep while jobs run (caffeinate)", "bool"],
-    ["max_consecutive_errors", "Stop a book after N consecutive synthesis failures", "number", { min: 1, max: 50 }]]],
-  ["server", "Server (applies after restart)", [
-    ["port", "Port", "number", { min: 1024, max: 65535 }],
-    ["max_manuscript_mb", "Max manuscript upload (MB)", "number", { min: 1, max: 2000 }],
-    ["max_reference_mb", "Max reference clip upload (MB)", "number", { min: 1, max: 200 }]]],
-];
+// ------------------------------------------------------------------------------------------------ field rendering
+/** Label text plus optional small helper text under it. */
+const lab = (label, hint) => (hint ? html`<span class="lbl">${label}<span class="hint">${hint}</span></span>` : label);
+const SEC = Object.fromEntries(SECTIONS.map(([sec, title, fields]) => [sec, { title, fields: Object.fromEntries(fields.map((f) => [f[0], f])) }]));
+const NF = Object.fromEntries(allFields().map((f) => [f[0], f]));
 
 function field(section, [key, label, type, opt = {}], val) {
   const name = `${section}.${key}`;
-  if (type === "bool") return html`<label class="check"><input type="checkbox" name="${name}" ${val ? html`checked` : ""}> ${label}</label>`;
-  if (type === "select") return html`<label>${label}<select name="${name}">${opt.options.map((o) => html`<option value="${o}" ${o === val ? html`selected` : ""}>${o}</option>`)}</select></label>`;
-  if (type === "list") return html`<label>${label}<input name="${name}" value="${(val || []).join(", ")}" inputmode="decimal"></label>`;
-  if (type === "text") return html`<label>${label}<input name="${name}" value="${val ?? ""}" spellcheck="false"></label>`;
-  return html`<label>${label}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
+  const text = lab(label, opt.hint);
+  if (type === "bool") return html`<label class="check"><input type="checkbox" name="${name}" ${val ? html`checked` : ""}> ${text}</label>`;
+  if (type === "select") return html`<label>${text}<select name="${name}">${opt.options.map((o) => html`<option value="${o}" ${o === val ? html`selected` : ""}>${o}</option>`)}</select></label>`;
+  if (type === "list") return html`<label>${text}<input name="${name}" value="${(val || []).join(", ")}" inputmode="decimal"></label>`;
+  if (type === "text") return html`<label>${text}<input name="${name}" value="${val ?? ""}" spellcheck="false"></label>`;
+  return html`<label>${text}<input type="number" name="${name}" value="${val ?? ""}" min="${opt.min}" max="${opt.max}" step="${opt.step || 1}" ${type === "number" ? html`required` : ""}></label>`;
 }
+/** Several fields of one SECTIONS group, in the order given. */
+const sf = (s, sec, keys) => keys.map((k) => field(sec, SEC[sec].fields[k], s.settings[sec][k]));
+/** One narrative field with this page's plain-language label (same control name, type and saved key as before). */
+function nf(n, path) {
+  const d = NF[path];
+  const [label, hint] = NARRATIVE_LABELS[path] || [d[1]];
+  return narrativeInput("narrative.", [path, lab(label, hint), d[2], d[3]], getPath(n, path));
+}
+const nfs = (n, paths) => paths.map((p) => nf(n, p));
+const grid = (items, cls = "") => html`<div class="form-grid ${cls}">${items}</div>`;
+const card = (id, title, intro, body) => html`<section class="card set-card" aria-labelledby="h-${id}"><h2 id="h-${id}">${title}</h2>
+  ${intro ? html`<p class="small muted set-intro">${intro}</p>` : ""}${body}</section>`;
+const tabLink = (id, text) => html`<button type="button" class="linklike" data-tab-link="${id}">${text}</button>`;
 
 /** Write-only API key control: shows whether a key is saved, never the key. Buttons are handled in onClick. */
 function keyField(slot, info) {
@@ -25056,35 +27251,6 @@ function keyField(slot, info) {
     <p class="small ${on ? "good-text" : "muted"}" role="status">${on ? html`✓ A key is saved (${fmtDate(info.updated_at)}). It is sent as a Bearer token to the URL above and cannot be displayed again.` : "No key saved."}</p></div>`;
 }
 
-function narrativeCard(n, secrets) {
-  return html`<section class="card" aria-labelledby="sec-narrative"><h2 id="sec-narrative">Narrative processing (semantic segmentation &amp; Narrative Director)</h2>
-    <p class="small muted">These are the global defaults for books imported from now on. A book can override them on its own
-      <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
-      context is given to the Director for analysis only.</p>
-    ${NARRATIVE_FIELDS.map(([title, fields]) => html`<h3>${title}</h3>
-      ${title.startsWith("Context") ? html`<p class="small muted">Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.</p>` : ""}
-      ${title.startsWith("Delivery") ? html`<p class="small muted">Base (voice cloning): <strong>no instruction input — not configurable.</strong> The Base model is conditioned only by the
-        reference clip, so emotion direction is recorded but not applied. The 0.6B CustomVoice model ignores instructions as well.</p>` : ""}
-      ${title.startsWith("Local LLM") ? html`<p class="small muted">Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.
-        The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
-        Key changes take effect immediately and do not need <em>Save settings</em>.</p>` : ""}
-      <div class="form-grid">${fields.map((f) => narrativeInput("narrative.", f, getPath(n, f[0])))}</div>
-      ${title.startsWith("Local LLM") ? html`${keyField("llm", secrets && secrets.llm)}
-        <div class="btn-group"><button type="button" class="btn small" data-act="llm-test">Test connection</button></div>
-        <div id="llm-test-result" class="small" role="status" aria-live="polite"></div>
-        <p class="small muted">Tests the address and model typed above (even before saving), using the saved key. It sends one tiny question and touches no book.</p>` : ""}`)}
-  </section>`;
-}
-
-function collectNarrative(form) {
-  const out = {};
-  for (const f of allFields()) {
-    const v = readInput(form, "narrative.", f);
-    if (v !== undefined) setPath(out, f[0], v);
-  }
-  return out;
-}
-
 function pathStatus(v) {
   if (!v) return "";
   return html`<div class="path-status ${v.ok ? "ok" : "bad"}" role="status">
@@ -25096,87 +27262,245 @@ function pathStatus(v) {
     ${v.errors.map((e) => html`<div class="err">${e}</div>`)}${v.warnings.map((w) => html`<div class="warn-text">${w}</div>`)}</div>`;
 }
 
-export async function render(view) {
-  const localPage = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
-  let s = await get("/api/settings");
-  let storage = await get("/api/storage");
-  const checks = {};
-
-  const paint = () => {
-    const st = s.settings.storage;
-    const catByName = Object.fromEntries(storage.categories.map((c) => [c.category, c]));
-    setHTML(view, html`<div class="page-head"><h1>Settings &amp; Storage</h1></div>
-    <form id="settings-form" class="form" novalidate>
-    <section class="card" aria-labelledby="stor-h"><h2 id="stor-h">Storage locations</h2>
-      <p class="small">A web page cannot hand the server access to arbitrary folders, so locations are typed as paths on this Mac
+// ------------------------------------------------------------------------------------------------ tab panels
+function storagePanel(s, storage, checks, localPage) {
+  const st = s.settings.storage;
+  const catByName = Object.fromEntries(storage.categories.map((c) => [c.category, c]));
+  const row = (label, name, placeholder, status) => html`<div class="path-row"><label>${label} <input name="${name}" value="${st[name.split(".")[1]]}" placeholder="${placeholder}" spellcheck="false"></label>
+    <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="${name}">Browse…</button>
+    <button type="button" class="btn small" data-act="validate" data-field="${name}">Check</button>
+    ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="${name}">Finder…</button>` : ""}</div>
+    ${pathStatus(checks[name] || status)}</div>`;
+  return html`${card("stor", "Library location", html`A web page cannot hand the server access to arbitrary folders, so locations are typed as paths on this Mac
         (e.g. <code>~/AudiobookLibrary</code> or <code>/Volumes/AudiobooksSSD/Library</code>) and validated by the server.
         <strong>Browse…</strong> opens a folder browser that lists the real folders on <em>this Mac</em> (including external drives under /Volumes) from any computer on the network; you can create a new folder there too.
-        ${localPage ? html`On the Mac itself, <strong>Finder…</strong> opens the native Finder picker.` : ""}</p>
+        ${localPage ? html`On the Mac itself, <strong>Finder…</strong> opens the native Finder picker.` : ""}`, html`
       <p class="callout info small"><strong>How changes apply:</strong> ${storage.policy}</p>
-      <div class="path-row"><label>Library root <input name="storage.library_root" value="${st.library_root}" placeholder="${s.library_root}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.library_root">Browse…</button>
-        <button type="button" class="btn small" data-act="validate" data-field="storage.library_root">Check</button>
-        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.library_root">Finder…</button>` : ""}</div>
-        ${pathStatus(checks["storage.library_root"] || storage.library_root)}</div>
-      <details><summary>Per-category locations (optional overrides)</summary>
-      ${Object.entries(s.categories).map(([cat, label]) => html`<div class="path-row"><label>${label} <input name="storage.${cat}_dir" value="${st[cat + "_dir"]}" placeholder="${s.effective_paths[cat]}" spellcheck="false"></label>
-        <div class="btn-group"><button type="button" class="btn small" data-act="browse" data-field="storage.${cat}_dir">Browse…</button>
-        <button type="button" class="btn small" data-act="validate" data-field="storage.${cat}_dir">Check</button>
-        ${localPage ? html`<button type="button" class="btn small ghost" data-act="choose" data-field="storage.${cat}_dir">Finder…</button>` : ""}</div>
-        ${pathStatus(checks[`storage.${cat}_dir`] || catByName[cat])}</div>`)}
-      </details>
-      <h3>Where existing books live</h3>
+      ${row("Library root", "storage.library_root", s.library_root, storage.library_root)}
+      <details id="set-cat-overrides"><summary>Per-category locations (optional overrides)</summary>
+        <div class="set-overrides">${Object.entries(s.categories).map(([cat, label]) => row(label, `storage.${cat}_dir`, s.effective_paths[cat], catByName[cat]))}</div>
+      </details>`)}
+    ${card("reg", "Where existing books live", "", html`
       <ul class="small">${storage.registry.map((r) => html`<li><code>${r.root}</code> – ${r.books.length} book(s) ${r.available ? html`<span class="good-text">available</span>` : html`<span class="err">unavailable (drive disconnected?) – their jobs pause and resume automatically</span>`}</li>`)}</ul>
-      <p class="small muted">App &amp; database: <code>${storage.app_home}</code> (database <code>${storage.database}</code> stays on the internal disk so queue state survives drive removal) · Model cache: <code>${storage.model_cache}</code></p>
-    </section>
-    ${SECTIONS.map(([sec, title, fields]) => html`<section class="card" aria-labelledby="sec-${sec}"><h2 id="sec-${sec}">${title}</h2>
-      ${sec === "models" ? html`<p class="small muted">Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.</p>` : ""}
-      ${sec === "server" ? html`<p class="small muted">The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.</p>` : ""}
-      <div class="form-grid">${fields.map((f) => field(sec, f, s.settings[sec][f[0]]))}</div></section>`)}
-    ${narrativeCard(s.settings.narrative, s.secrets)}
-    <div class="sticky-actions"><button class="btn primary" type="submit">Save settings</button>
-      <span class="small muted">Saved settings apply to new imports; each existing book keeps its own snapshot.</span></div>
-    </form>`);
-    view.querySelector("#settings-form").addEventListener("submit", save);
-    const total = () => {
-      const f = view.querySelector("#settings-form");
-      const out = view.querySelector("#nar-total");
-      if (out) out.textContent = String((Number(f.elements["narrative.context_before_chars"].value) || 0) + (Number(f.elements["narrative.context_after_chars"].value) || 0));
-    };
-    ["context_before_chars", "context_after_chars"].forEach((k) => view.querySelector(`[name="narrative.${k}"]`).addEventListener("input", total));
-  };
+      <p class="small muted">App &amp; database: <code>${storage.app_home}</code> (database <code>${storage.database}</code> stays on the internal disk so queue state survives drive removal) · Model cache: <code>${storage.model_cache}</code></p>`)}`;
+}
 
-  function collect(form) {
-    const out = {};
-    const set = (path, v) => { const [a, b] = path.split("."); (out[a] = out[a] || {})[b] = v; };
-    for (const [sec, , fields] of SECTIONS) for (const [key, , type] of fields) {
-      const el = form.elements[`${sec}.${key}`]; if (!el) continue;
-      if (type === "bool") set(`${sec}.${key}`, el.checked);
-      else if (type === "number") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
-      else if (type === "number?") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
-      else if (type === "select") set(`${sec}.${key}`, Number(el.value));
-      else if (type === "list") set(`${sec}.${key}`, el.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number));
-      else set(`${sec}.${key}`, el.value.trim());
+function productionPanel(s) {
+  return html`${card("chunking", "Segmentation", html`Limits for classic books (semantic segmentation off). Books imported with semantic segmentation use the limits on the ${tabLink("narrative", "Narrative tab")}.`,
+      grid(sf(s, "chunking", ["min_chars", "max_chars", "merge_short_paragraphs", "speak_chapter_titles", "normalize_for_speech"])))}
+    ${card("pauses", "Pauses & assembly", "How long the silence is between segments and around chapters.",
+      grid(sf(s, "pauses", ["sentence_ms", "paragraph_ms", "scene_break_ms", "after_heading_ms", "chapter_head_ms", "chapter_tail_ms", "room_tone_dbfs", "trim_silence"])))}
+    ${card("export", "Export", "Format and loudness of the finished MP3 and M4B files.",
+      grid(sf(s, "export", ["sample_rate", "mp3_bitrate_kbps", "m4b_bitrate_kbps", "target_lufs", "true_peak_db", "loudness_normalize", "auto_assemble_drafts"])))}
+    ${card("worker", "Worker", "The background process that does the synthesis.", grid(sf(s, "worker", ["autostart", "prevent_sleep", "max_consecutive_errors"])))}`;
+}
+
+function qualityPanel(s) {
+  const n = s.settings.narrative;
+  return html`${card("verify", "Whisper verification", html`Every take can be transcribed by a local Whisper model and compared with the text. <strong>Verify takes with Whisper</strong> is the
+        master switch: when it is off, nothing is verified and the mode below is ignored. When it is on, <strong>Verify with Whisper</strong> decides how much is checked:
+        every segment, a repeatable sample (the share applies only in that mode), or never.`, html`
+      ${grid(sf(s, "qa", ["enable_asr"]))}
+      <div id="verify-modes" class="form-grid">${nfs(n, ["verify_mode", "verify_sample_rate"])}</div>
+      <p id="verify-summary" class="callout info small" role="status"></p>`)}
+    ${card("qa", "Pass / fail limits", "A take that breaks one of these is retried, then flagged for review.",
+      grid(sf(s, "qa", ["wer_threshold", "max_attempts", "max_dropped_words", "max_inserted_words"])))}
+    <details id="set-qa-audio" class="card set-card set-details"><summary>Audio checks (levels, clipping, dead air, pace)</summary>
+      <p class="small muted set-intro">Rarely changed. They decide when a take sounds wrong even though the words are right.</p>
+      ${grid(sf(s, "qa", ["dead_air_seconds", "clip_ratio_limit", "min_rms_dbfs", "max_rms_dbfs", "duration_ratio_min", "duration_ratio_max", "words_per_minute"]))}</details>`;
+}
+
+function modelsPanel(s) {
+  const n = s.settings.narrative;
+  return html`${card("models", "Models", html`Engine: <strong>${s.engine_mode}</strong>. Model changes apply to books imported afterwards; use “Apply current global settings” on a book to switch it explicitly.`,
+      grid(sf(s, "models", ["custom_voice_model", "base_model", "voice_design_model", "asr_model", "language"])))}
+    ${card("sampling", "Sampling", "Blank values use each model's own default.", grid(sf(s, "models", ["temperature", "top_p", "repetition_penalty", "retry_temperatures"])))}
+    <details id="set-models-adv" class="card set-card set-details"><summary>Memory and downloads</summary>
+      <p class="small muted set-intro">Where the models are cached and how many stay in memory.</p>
+      ${grid(sf(s, "models", ["max_warm_models", "cache_dir", "allow_downloads"]))}</details>
+    ${card("delivery", "Delivery instructions per model", html`How the Director's emotion and style directions reach each Qwen3-TTS model.
+        Base (voice cloning) takes <strong>no instruction input</strong>: it is conditioned only by the reference clip, so emotion is applied through reference clips instead.
+        The 0.6B CustomVoice model ignores instructions as well.`,
+      grid(nfs(n, ["delivery.custom_voice", "delivery.voice_design", "delivery.max_instruct_chars", "delivery.clone", "delivery.bank_min_intensity", "delivery.pace_from_direction", "delivery.pauses_from_direction", "delivery.translator"])))}`;
+}
+
+function narrativePanel(s) {
+  const n = s.settings.narrative;
+  return html`<p class="small muted set-intro">These are the global defaults for books imported from now on. A book can override them on its own
+      <em>Narrative</em> page. Segmentation and the Director never change manuscript text: the narration window holds only the words to be spoken, and
+      context is given to the Director for analysis only.</p>
+    ${card("nseg", "Semantic segmentation", html`Turn it on to split by structure and speaker instead of by length alone. The segment length limits below appear only when it is on.
+        Classic books use the limits on the ${tabLink("production", "Production tab")}.`, html`
+      ${grid(nfs(n, ["semantic_segmentation", "tags_with_speaker", "emotion_sensitivity"]))}
+      <div class="form-grid set-dep" data-needs="narrative.semantic_segmentation">${nfs(n, ["max_segment_chars", "min_segment_chars"])}</div>
+      <p class="small muted set-dep" data-needs="narrative.semantic_segmentation">Semantic books ignore the classic limits on the Production tab.</p>`)}
+    ${card("nchars", "Speakers & characters", "", grid(nfs(n, ["attribution_threshold", "auto_character_tracking", "chapter_summaries"])))}
+    ${card("nctx", "Context windows (analysis only, never spoken)", html`Total surrounding context: <strong id="nar-total">${n.context_before_chars + n.context_after_chars}</strong> characters.`,
+      grid(nfs(n, ["context_before_chars", "context_after_chars"])))}
+    ${card("ndir", "Narrative Director & continuity", "The Director plans how each segment should be delivered; it needs semantic segmentation.",
+      grid(nfs(n, ["director_enabled", "director_lookahead", "director_chapter_plan", "continuity_smoothing", "smoothing_strength", "reset_scope", "cascade_limit"])))}`;
+}
+
+function llmPanel(s) {
+  const n = s.settings.narrative;
+  return html`<p class="small muted set-intro">Without an LLM the Director uses its deterministic rules engine, which is labelled as such wherever it is used.
+      The API key is saved on the Mac in a private file (not in the settings file or database) and is write-only: it is never shown again.
+      Key changes take effect immediately and do not need <em>Save settings</em>.</p>
+    ${card("llm-ep", "Endpoint (OpenAI-compatible)", "",  html`${grid(nfs(n, ["llm.provider", "llm.base_url", "llm.model", "llm.api_key_env"]))}
+      ${keyField("llm", s.secrets && s.secrets.llm)}
+      <div class="btn-group"><button type="button" class="btn small" data-act="llm-test">Test connection</button></div>
+      <div id="llm-test-result" class="small" role="status" aria-live="polite"></div>
+      <p class="small muted">Tests the address and model typed above (even before saving), using the saved key. It sends one tiny question and touches no book.</p>`)}
+    ${card("llm-models", "Models for other tasks", "Blank means the same as Model above (the translator is off when blank).", grid(nfs(n, ["llm.chapter_model", "llm.scene_model", "llm.translator_model"])))}
+    ${card("llm-lim", "Timeouts & limits", "", grid(nfs(n, ["llm.timeout_s", "llm.temperature", "llm.max_tokens", "llm.chapter_max_tokens", "llm.chapter_timeout_s"])))}`;
+}
+
+function serverPanel(s) {
+  return card("server", "Server", html`These apply after the studio restarts. The studio binds to <code>${s.settings.server.host}</code>. Remote access is deliberately not configurable here: it would expose an unauthenticated service.`,
+    grid(sf(s, "server", ["port", "max_manuscript_mb", "max_reference_mb"])));
+}
+
+// ------------------------------------------------------------------------------------------------ the page
+/** Edits left behind when the page is re-rendered (browser back / forward, a typed URL) so they are not silently lost. */
+let draft = null;
+
+export async function render(view, parts, query, nav) {
+  const localPage = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+  const signal = nav && nav.signal;
+  const [settings0, storage0] = await Promise.all([get("/api/settings", { signal }), get("/api/storage", { signal })]);
+  let s = settings0, storage = storage0;
+  let tab = resolveTab(parts);
+  let base = {};          // snapshotForm() of the values as loaded or last saved
+  let nameTab = {};       // control name -> tab id
+  let dirtyCount = 0;
+  let discarding = false; // the user confirmed leaving: do not keep a draft
+  const checks = {};
+
+  const PANELS = { storage: () => storagePanel(s, storage, checks, localPage), production: () => productionPanel(s), quality: () => qualityPanel(s),
+    models: () => modelsPanel(s), narrative: () => narrativePanel(s), llm: () => llmPanel(s), server: () => serverPanel(s) };
+
+  const paintHTML = () => html`<div class="page-head"><h1>Settings &amp; Storage</h1></div>
+    <form id="settings-form" class="form set-form" novalidate>
+      <div class="set-layout">
+        <div class="set-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+          ${TABS.map((t) => html`<button type="button" role="tab" class="set-tab" id="tab-${t.id}" data-tab="${t.id}" aria-controls="panel-${t.id}"
+            aria-selected="${t.id === tab ? "true" : "false"}" tabindex="${t.id === tab ? "0" : "-1"}"><span class="set-tab-label">${t.label}</span>
+            <span class="tab-dot" hidden aria-hidden="true"></span><span class="sr-only tab-dirty" hidden> (unsaved changes)</span>
+            <span class="set-tab-blurb">${t.blurb}</span></button>`)}
+        </div>
+        <div class="set-panels">
+          ${TABS.map((t) => html`<section role="tabpanel" class="set-panel" id="panel-${t.id}" data-tab="${t.id}" aria-labelledby="tab-${t.id}" tabindex="0" ${t.id === tab ? "" : html`hidden`}>
+            ${PANELS[t.id]()}</section>`)}
+        </div>
+      </div>
+      <div class="sticky-actions set-bar">
+        <span class="set-status small" id="set-status" role="status" aria-live="polite">No unsaved changes</span>
+        <span class="small muted set-note">Saved settings apply to new imports; each existing book keeps its own snapshot.</span>
+        <span class="set-bar-btns"><button class="btn ghost" type="button" id="set-discard" data-act="discard" disabled>Discard changes</button>
+          <button class="btn primary" type="submit" id="set-save">Save settings</button></span>
+      </div>
+    </form>`;
+
+  const form = () => view.querySelector("#settings-form");
+  const isDirty = () => dirtyCount > 0;
+
+  /** Show a tab: panels use the hidden attribute (never removed), so edits in other tabs stay in the form. */
+  function selectTab(id, opts = {}) {
+    if (!TABS.some((t) => t.id === id)) id = DEFAULT_TAB;
+    tab = id;
+    view.querySelectorAll('[role="tab"]').forEach((b) => { const on = b.dataset.tab === id; b.setAttribute("aria-selected", on ? "true" : "false"); b.tabIndex = on ? 0 : -1; });
+    view.querySelectorAll('[role="tabpanel"]').forEach((p) => { p.hidden = p.dataset.tab !== id; });
+    // replaceState changes the URL without a hashchange, so the router does not re-render the page and no edit is touched
+    if (opts.url !== false) { try { history.replaceState(history.state, "", "#/settings/" + id); } catch { /* sandboxed: the tab still works */ } }
+    if (opts.focus) { const b = view.querySelector(`#tab-${id}`); if (b) b.focus(); }
+  }
+
+  function syncDeps() {
+    const f = form(); if (!f) return;
+    f.querySelectorAll("[data-needs]").forEach((el) => { const c = f.elements[el.dataset.needs]; el.hidden = !(c && c.checked); });
+  }
+  function syncVerify() {
+    const f = form(); if (!f) return;
+    const v = verifySummary(f.elements["qa.enable_asr"].checked, f.elements["narrative.verify_mode"].value, f.elements["narrative.verify_sample_rate"].value);
+    const out = view.querySelector("#verify-summary");
+    if (out) { out.textContent = v.text; out.classList.toggle("info", v.on); out.classList.toggle("warn", !v.on); }
+    const modes = view.querySelector("#verify-modes");
+    if (modes) {
+      modes.classList.toggle("is-off", !f.elements["qa.enable_asr"].checked);
+      const rate = f.elements["narrative.verify_sample_rate"].closest("label");
+      if (rate) rate.classList.toggle("is-inactive", f.elements["narrative.verify_mode"].value !== "sample");
     }
-    out.narrative = collectNarrative(form);
-    out.storage = {};
-    form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
-    return out;
+  }
+  function syncTotal() {
+    const f = form(); const out = view.querySelector("#nar-total");
+    if (f && out) out.textContent = String((Number(f.elements["narrative.context_before_chars"].value) || 0) + (Number(f.elements["narrative.context_after_chars"].value) || 0));
+  }
+
+  function updateDirty() {
+    const f = form(); if (!f) return;
+    const names = changedNames(base, snapshotForm(f));
+    dirtyCount = names.length;
+    const counts = countByGroup(names, (n) => nameTab[n]);
+    view.querySelectorAll('[role="tab"]').forEach((b) => {
+      const on = !!counts[b.dataset.tab];
+      b.querySelector(".tab-dot").hidden = !on;
+      b.querySelector(".tab-dirty").hidden = !on;
+      b.classList.toggle("is-dirty", on);
+    });
+    const st = view.querySelector("#set-status");
+    st.textContent = dirtyCount ? `${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"}` : "No unsaved changes";
+    st.classList.toggle("dirty", dirtyCount > 0);
+    view.querySelector("#set-discard").disabled = !dirtyCount;
+  }
+
+  function paint() {
+    patchHTML(view, paintHTML());
+    const f = form();
+    nameTab = {};
+    for (const el of f.elements) { if (!el.name) continue; const p = el.closest('[role="tabpanel"]'); if (p) nameTab[el.name] = p.dataset.tab; }
+    base = snapshotForm(f);
+    if (draft && (!nav || nav.isCurrent())) { applyForm(f, draft); draft = null; toast("Restored your unsaved settings changes.", "info", 6000); }
+    syncDeps(); syncVerify(); syncTotal(); updateDirty();
+  }
+
+  /** The first invalid control opens its tab and details before the browser's message is shown. Hidden dependent fields are skipped. */
+  function validateAll() {
+    const f = form();
+    for (const el of f.elements) {
+      if (!el.willValidate || el.checkValidity() || el.closest("[data-needs][hidden]")) continue;
+      for (let d = el.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
+      const p = el.closest('[role="tabpanel"]'); if (p) selectTab(p.dataset.tab);
+      el.reportValidity();
+      return false;
+    }
+    return true;
   }
 
   async function save(e) {
     e.preventDefault();
-    const form = e.target;
-    if (!form.reportValidity()) return;
-    try { s = await busy(e.submitter, () => put("/api/settings", collect(form)), "Settings saved"); }
+    const f = e.target;
+    if (!validateAll()) return;
+    try { s = await busy(e.submitter, () => put("/api/settings", collectSettings(f)), "Settings saved"); }
     catch { return; } // the server's validation message is already shown
     storage = await get("/api/storage");
     Object.keys(checks).forEach((k) => delete checks[k]);
+    draft = null;
     paint();
   }
 
+  function setField(input, value) { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); }
+
   async function onClick(e) {
+    const tb = e.target.closest('[role="tab"]');
+    if (tb) { selectTab(tb.dataset.tab); return; }
+    const link = e.target.closest("[data-tab-link]");
+    if (link) { selectTab(link.dataset.tabLink, { focus: true }); return; }
     const b = e.target.closest("button[data-act]"); if (!b) return;
+    if (b.dataset.act === "discard") {
+      applyForm(form(), base); syncDeps(); syncVerify(); syncTotal(); updateDirty();
+      toast("Unsaved changes discarded.", "info", 3000);
+      return;
+    }
     if (b.dataset.act === "key-save" || b.dataset.act === "key-clear") {
       const slot = b.dataset.slot, el = view.querySelector(`[name="secret.${slot}"]`);
       try {
@@ -25213,7 +27537,7 @@ export async function render(view) {
     const input = view.querySelector(`[name="${b.dataset.field}"]`);
     if (b.dataset.act === "browse") {
       const picked = await browseFolder(input.value.trim() || input.placeholder || "");
-      if (picked) { input.value = picked; toast("Folder selected. Press Save settings to apply it.", "success", 7000); }
+      if (picked) { setField(input, picked); toast("Folder selected. Press Save settings to apply it.", "success", 7000); }
     } else if (b.dataset.act === "validate") {
       const path = input.value.trim() || input.placeholder;
       checks[b.dataset.field] = await busy(b, () => post("/api/storage/validate", { path }));
@@ -25223,14 +27547,60 @@ export async function render(view) {
     } else if (b.dataset.act === "choose") {
       toast("A Finder window opened on this Mac – choose a folder there.", "info", 6000);
       const r = await busy(b, () => post("/api/storage/choose-folder"));
-      if (r.path) { input.value = r.path; toast("Folder selected – press Check, then Save.", "success"); }
+      if (r.path) { setField(input, r.path); toast("Folder selected – press Check, then Save.", "success"); }
     }
   }
+
+  function onInput(e) {
+    if (!e.target.name) return;
+    syncDeps(); syncVerify(); syncTotal(); updateDirty();
+  }
+
+  function onKeydown(e) {
+    const tb = e.target.closest && e.target.closest('[role="tab"]'); if (!tb) return;
+    const tabs = Array.from(view.querySelectorAll('[role="tab"]'));
+    const to = tabKeyTarget(e.key, tabs.indexOf(tb), tabs.length);
+    if (to === null) return;
+    e.preventDefault();
+    selectTab(tabs[to].dataset.tab, { focus: true });
+  }
+
+  /** Leaving through a link while edits are unsaved asks first (links inside Settings only switch tabs and are never blocked). */
+  async function onLeaveClick(e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest && e.target.closest("a[href^='#/']");
+    if (!a || !isDirty()) return;
+    const href = a.getAttribute("href");
+    if (/^#\/settings(\/|\?|$)/.test(href)) return;
+    e.preventDefault(); e.stopPropagation();
+    const n = dirtyCount;
+    const ok = await confirmDialog("Discard unsaved settings?", `You have ${n} unsaved change${n === 1 ? "" : "s"} on this page. Leaving now discards ${n === 1 ? "it" : "them"}.`, "Discard and leave", true);
+    if (ok) { discarding = true; location.hash = href; }
+  }
+  const onBeforeUnload = (e) => { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } };
+
   view.addEventListener("click", onClick);
+  view.addEventListener("input", onInput);
+  view.addEventListener("change", onInput);
+  view.addEventListener("keydown", onKeydown);
+  view.addEventListener("submit", save);
+  document.addEventListener("click", onLeaveClick, true);
+  window.addEventListener("beforeunload", onBeforeUnload);
   paint();
-  return () => view.removeEventListener("click", onClick);
+  selectTab(tab, { url: false });
+  return () => {
+    // Keep unsaved edits for a re-render of this page (back / forward); drop them when the user chose to discard.
+    draft = isDirty() && !discarding ? snapshotForm(form()) : null;
+    view.removeEventListener("click", onClick);
+    view.removeEventListener("input", onInput);
+    view.removeEventListener("change", onInput);
+    view.removeEventListener("keydown", onKeydown);
+    view.removeEventListener("submit", save);
+    document.removeEventListener("click", onLeaveClick, true);
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  };
 }
-__STUDIO_EOF_afd04ff108c2__
+__STUDIO_EOF_cfa28686e972__
 cat > "$DEST/studio/web/static/js/views/updates.js" <<'__STUDIO_EOF_bbe31ec54fc1__'
 // Update Center: check / download / verify / stage / install (after the current job or at the next segment boundary) / restart, with history.
 // Everything the user sees is plain text (auto-escaped); release notes are never interpreted as HTML.
@@ -25914,7 +28284,7 @@ export function createLab({ onVoiceCreated }) {
   };
 }
 __STUDIO_EOF_8d720d0b065e__
-cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_63707ad4dcbc__'
+cat > "$DEST/studio/web/static/js/views/voices.js" <<'__STUDIO_EOF_53fefa529ac6__'
 // Narrator / voice studio: preset speakers, designed voices, authorised clones, real previews.
 import { api, get, post, patch, html, setHTML, toast, toastError, busy, dialog, confirmDialog, fmtDate, player, isAdmin } from "../ui.js";
 import { createLab } from "./voicelab.js";
@@ -25923,17 +28293,39 @@ const DEFAULT_TEXT = "Chapter One. The rain had stopped by the time Eleanor reac
 const previews = {}; // voiceId -> last preview job
 const banks = {};    // voiceId -> GET /api/voices/{id}/refs (emotion reference bank of a cloned voice)
 const cands = {};    // voiceId -> candidate jobs generated for the bank [{job_id, bucket, status, result, error}]
+const pform = {};    // voiceId -> {text, instruct, verify}: what the owner typed in a card's preview form (kept across repaints and page visits)
+const notes = {};    // voiceId -> {kind, text}: callouts shown at the top of a card until dismissed ("Saved as version 3", "New copy created. Next: ...")
 let tab = "preset";
+let flashId = null;  // the voice that was just created: its card is highlighted and scrolled into view
 
 const KIND = { preset: "Preset speaker (CustomVoice)", design: "Designed voice (VoiceDesign)", clone: "Cloned voice (Base + reference)" };
+
+function lineage(v) {
+  const d = v.derived_from;
+  if (d) return d.relation === "retune" ? `Retuned from ${d.voice_name}` : `Copy of ${d.voice_name}`;
+  if (v.kind === "clone" && v.source_voice) return `Promoted from the designed voice ${v.source_voice.name}${v.source_voice.archived ? " (archived)" : ""}`;
+  return "";
+}
+
+function noteBlock(v) {
+  const n = notes[v.id];
+  if (!n) return "";
+  return html`<div class="callout ${n.tone || "info"} small voice-note" role="status">${n.text}
+    <div class="form-actions">${n.preview ? html`<button class="btn small primary" type="button" data-act="preview-now" data-id="${v.id}">Preview with new delivery</button>` : ""}
+      <button class="btn small ghost" type="button" data-act="note-dismiss" data-id="${v.id}">Dismiss</button></div></div>`;
+}
 
 function voiceCard(v) {
   const vv = v.version;
   const pj = previews[v.id];
-  return html`<article class="card voice" aria-labelledby="v-${v.id}">
+  const pf = pform[v.id] || {};
+  const lin = lineage(v);
+  return html`<article class="card voice ${flashId === v.id ? "voice-new" : ""}" id="voice-${v.id}" data-voice-card="${v.id}" aria-labelledby="v-${v.id}">
     <header class="voice-head"><h3 id="v-${v.id}">${v.name}</h3><span class="badge tone-${v.kind === "clone" ? "approved" : v.kind === "design" ? "info" : "good"}">${KIND[v.kind]}</span>
       ${v.builtin ? html`<span class="badge tone-neutral">built-in</span>` : ""}</header>
     <p class="small">${v.description}</p>
+    ${lin ? html`<p class="small muted voice-lineage">${lin}</p>` : ""}
+    ${noteBlock(v)}
     <dl class="kv small">
       <dt>Version</dt><dd>v${vv.version} · ${fmtDate(vv.created_at)}</dd>
       <dt>Model</dt><dd><code>${vv.model_id}</code></dd>
@@ -25948,12 +28340,14 @@ function voiceCard(v) {
     ${v.kind === "design" ? html`<p class="callout info small">VoiceDesign re-creates the voice from its description on every segment, so timbre can drift across a long book.
       For consistent narration, generate a preview you like and <strong>promote it to a stable narrator</strong> (it becomes a clone reference).</p>` : ""}
     <form class="preview-form" data-voice="${v.id}">
-      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${DEFAULT_TEXT}</textarea></label>
-      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered"></label>` : ""}
-      <label class="check"><input type="checkbox" name="verify"> Also verify with local Whisper (shows WER)</label>
+      <label>Preview text <textarea name="text" rows="3" maxlength="600" required>${pf.text !== undefined ? pf.text : DEFAULT_TEXT}</textarea></label>
+      ${v.kind !== "clone" ? html`<label>Extra delivery instruction (optional) <input name="instruct" maxlength="300" placeholder="e.g. tense, whispered" value="${pf.instruct || ""}"></label>` : ""}
+      <label class="check"><input type="checkbox" name="verify" ${pf.verify ? html`checked` : ""}> Also verify with local Whisper (shows WER)</label>
       <div class="form-actions"><button class="btn primary" type="submit">Generate preview</button>
-        ${!v.builtin ? html`<button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">Edit…</button>` : html`<button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">Delivery…</button>`}
-        ${!v.builtin ? html`<button class="btn ghost danger" type="button" data-act="archive" data-id="${v.id}">Archive</button>` : ""}</div>
+        <button class="btn ghost" type="button" data-act="edit" data-id="${v.id}">${v.builtin ? "Delivery…" : "Edit…"}</button>
+        ${v.kind !== "clone" ? html`<button class="btn ghost" type="button" data-act="duplicate" data-id="${v.id}" title="Make an editable copy with different delivery instructions">Duplicate &amp; retune…</button>` : ""}
+        ${v.kind === "clone" && v.source_voice ? html`<button class="btn ghost" type="button" data-act="retune" data-id="${v.id}" title="Make a designed copy of the voice this clone came from, with new instructions">Retune from ‘${v.source_voice.name}’…</button>` : ""}
+        ${!v.builtin && isAdmin() ? html`<button class="btn ghost danger" type="button" data-act="archive" data-id="${v.id}">Archive</button>` : ""}</div>
     </form>
     <div class="preview-out" id="pv-${v.id}" aria-live="polite">${pj ? previewResult(v, pj) : ""}</div>
   </article>`;
@@ -26060,14 +28454,20 @@ export async function render(view) {
 
   const paint = () => {
     setHTML(view, html`<div class="page-head"><h1>Narrator Studio</h1></div>
-      <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: editing a voice creates a new version;
-        books keep the version they were created with until you explicitly switch them (which regenerates their audio).</p>
+      <p class="muted">Every preview is real local synthesis on this Mac's GPU. Voice settings are versioned: changing a voice's delivery creates a new version;
+        books keep the version they were created with until you explicitly switch them (which regenerates their audio).
+        To try a different delivery without touching a voice that is already in use, use <strong>Duplicate &amp; retune…</strong> on its card.</p>
       ${createForms(data.speakers, data.english_speakers)}
       <div class="voice-grid">${data.voices.map(voiceCard)}</div>`);
     const host = view.querySelector("#lab-host");
     if (host) host.appendChild(lab.el);  // the lab keeps its own state while the tab is switched or the page repaints
     wireForms();
     data.voices.filter((v) => v.kind === "clone" && !banks[v.id]).forEach((v) => loadBank(v.id));
+    if (flashId !== null) {
+      const card = view.querySelector(`#voice-${flashId}`);
+      flashId = null;
+      if (card) { card.scrollIntoView({ block: "center" }); const h = card.querySelector("h3"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
+    }
   };
 
   async function reload() { data = await get("/api/voices"); paint(); }
@@ -26162,6 +28562,100 @@ export async function render(view) {
     });
   }
 
+  const normNl = (t) => String(t || "").split("\r").join("").trim();
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function versionNote(v) {
+    const nv = v.version.version;
+    if (v.builtin) return html`<p class="callout info small"><strong>${v.name}</strong> is a built-in speaker, so its name and speaker are fixed. You can change only its
+      <strong>delivery instruction</strong>. Saving creates <strong>version ${nv + 1}</strong> of ${v.name}; previews and new books use it straight away, but books already
+      narrated with version ${nv} keep that version until you switch them on the book page. To keep ${v.name} as it is and try a variation, use
+      <strong>Duplicate &amp; retune…</strong>.</p>`;
+    if (v.kind === "clone") return html`<p class="callout info small">A cloned voice is defined by its reference clip and cannot take instructions, so only its name can be edited here.
+      ${v.source_voice ? html`To make a variant, use <strong>Retune from ‘${v.source_voice.name}’…</strong>` : "To make a variant, upload a new reference clip"}.</p>`;
+    return html`<p class="callout info small">${v.kind === "design"
+      ? html`You can change the <strong>name</strong> and the <strong>description</strong>. A new description makes VoiceDesign create a different-sounding voice.`
+      : html`You can change the <strong>name</strong>, the <strong>speaker</strong> and the <strong>delivery instruction</strong>.`}
+      Changing the sound saves <strong>version ${nv + 1}</strong> of this voice (renaming does not). Previews and new books use it straight away; books already narrated with
+      version ${nv} keep it until you switch them on the book page. Prefer a separate voice? Use <strong>Duplicate &amp; retune…</strong>.</p>`;
+  }
+
+  async function editVoice(b, v) {
+    const nv = v.version.version;
+    const res = await dialog({ title: v.builtin ? `Delivery for ${v.name} (built-in)` : `Edit ${v.name}`, form: true,
+      buttons: [{ label: v.kind === "clone" ? "Save name" : v.builtin ? `Save as version ${nv + 1}` : "Save", value: "save", kind: "primary" },
+        ...(v.kind !== "clone" ? [{ label: "Duplicate & retune instead…", value: "dup" }] : [])],
+      body: html`${versionNote(v)}
+        ${!v.builtin ? html`<label>Name <input name="name" required maxlength="80" value="${v.name}"></label>` : ""}
+        ${v.kind === "preset" && !v.builtin ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>`
+          : v.kind === "preset" ? html`<p class="small">Speaker: <strong>${v.version.speaker}</strong> (fixed)</p>` : ""}
+        ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="4" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${v.version.instruct || ""}</textarea></label>` : ""}` });
+    if (!res) return;
+    if (res.value === "dup") { await duplicateVoice(b, v, res.data.instruct); return; }
+    const body = {};
+    if (res.data.name !== undefined && res.data.name.trim() !== v.name) body.name = res.data.name;
+    if (res.data.instruct !== undefined && normNl(res.data.instruct) !== normNl(v.version.instruct)) body.instruct = res.data.instruct;
+    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+    if (!Object.keys(body).length) { toast("Nothing was changed.", "info"); return; }
+    let out;
+    try { out = await busy(b, () => patch(`/api/voices/${v.id}`, body)); } catch (e) { return; }
+    const nver = out.version.version, made = nver !== nv, older = out.books_on_older_version || [];
+    const vers = [...new Set(older.map((x) => x.voice_version).filter((x) => x))].sort((x, y) => x - y);
+    const still = older.length ? ` ${plural(older.length, "book still uses", "books still use")} ${vers.length ? (vers.length === 1 ? `version ${vers[0]}` : `versions ${vers.join(" and ")}`) : "an earlier version"}.` : "";
+    const msg = made ? `Saved as version ${nver}.${still}` : "Saved (name only: no new version).";
+    toast(msg, made && older.length ? "warn" : "success", 10000);
+    if (made) notes[v.id] = { tone: "good", preview: true, text: `${msg} Previews and new books use version ${nver} now.${older.length ? " Switch those books from their book page to hear the new sound." : ""}` };
+    await reload();
+  }
+
+  const freeName = (base) => {
+    const taken = new Set(data.voices.map((x) => x.name.toLowerCase()));
+    let n = base, i = 2;
+    while (taken.has(n.toLowerCase())) n = base.replace(/\)$/, "") + ` ${i++})`;
+    return n.slice(0, 80);
+  };
+
+  async function duplicateVoice(b, v, instruct) {
+    const text = instruct !== undefined ? instruct : (v.version.instruct || "");
+    const res = await dialog({ title: `Duplicate & retune ${v.name}`, form: true, buttons: [{ label: "Create copy", value: "ok", kind: "primary" }],
+      body: html`<p class="callout info small">Creates a <strong>new, separate voice</strong> from ${v.name}’s current settings (version ${v.version.version}) with the delivery you choose below.
+        ${v.name} itself and the books using it are not changed. Then generate a preview of the copy, and keep refining it until you like it.</p>
+        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(v.name + " (retune)")}"></label>
+        ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
+        <label>${v.kind === "design" ? "Voice description" : "Delivery instruction"} <textarea name="instruct" rows="5" maxlength="1000" ${v.kind === "design" ? html`required minlength="10"` : ""}>${text}</textarea></label>` });
+    if (!res) return;
+    const body = { name: res.data.name };
+    if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
+    if (res.data.speaker !== undefined && res.data.speaker !== v.version.speaker) body.speaker = res.data.speaker;
+    await createdCopy(b, () => post(`/api/voices/${v.id}/duplicate`, body), v, `Copy of ${v.name} created`);
+  }
+
+  async function retuneVoice(b, v) {
+    const src = v.source_voice;
+    let srcFull;
+    try { srcFull = await get(`/api/voices/${src.id}`); } catch (e) { toastError(e); return; }
+    const res = await dialog({ title: `Retune from ‘${src.name}’`, form: true, buttons: [{ label: "Create designed voice", value: "ok", kind: "primary" }],
+      body: html`<p class="callout info small">${v.name} is a stable clone and cannot take instructions. This creates a <strong>new designed voice</strong> from ‘${src.name}’
+        (the voice ${v.name} was made from), with the description below. ${v.name} is not changed.
+        ${src.archived ? " (The source voice is archived; it can still be used.)" : ""}</p>
+        <label>Name of the new voice <input name="name" required maxlength="80" value="${freeName(src.name + " (retune)")}"></label>
+        <label>Voice description <textarea name="instruct" rows="5" required minlength="10" maxlength="1000">${srcFull.version.instruct || ""}</textarea></label>` });
+    if (!res) return;
+    await createdCopy(b, () => post(`/api/voices/${v.id}/retune`, { name: res.data.name, instruct: res.data.instruct }), v, "Retuned design voice created", true);
+  }
+
+  async function createdCopy(b, fn, from, okMsg, fromClone) {
+    let out;
+    try { out = await busy(b, fn, okMsg); } catch (e) { return; }
+    flashId = out.id;
+    const prev = pform[from.id] || {};
+    pform[out.id] = { text: prev.text !== undefined ? prev.text : DEFAULT_TEXT, instruct: "", verify: false };
+    notes[out.id] = { tone: "good", text: out.kind === "design"
+      ? `New design voice created${fromClone ? ` from ‘${from.source_voice.name}’` : ` as a copy of ${from.name}`}. Next: generate a preview, pick one you like, then Promote to stable narrator.`
+      : `New voice created as a copy of ${from.name}. Next: generate a preview to hear the new delivery.` };
+    await reload();
+  }
+
   async function onClick(e) {
     const tb = e.target.closest("[data-tab]");
     if (tb) {
@@ -26174,20 +28668,18 @@ export async function render(view) {
       if (!(await confirmDialog("Archive voice?", "It will no longer be offered for new books. Existing books keep using it.", "Archive", true))) return;
       await busy(b, () => post(`/api/voices/${b.dataset.id}/archive`), "Voice archived"); await reload();
     } else if (act === "edit") {
-      const v = data.voices.find((x) => x.id === Number(b.dataset.id));
-      const res = await dialog({ title: `Edit ${v.name}`, form: true, buttons: [{ label: "Save as new version", value: "save", kind: "primary" }],
-        body: html`${!v.builtin ? html`<label>Name <input name="name" maxlength="80" value="${v.name}"></label>` : ""}
-          ${v.kind === "preset" ? html`<label>Speaker <select name="speaker">${Object.keys(data.speakers).map((s) => html`<option ${s === v.version.speaker ? html`selected` : ""}>${s}</option>`)}</select></label>` : ""}
-          ${v.kind !== "clone" ? html`<label>${v.kind === "design" ? "Description" : "Delivery instruction"} <textarea name="instruct" rows="3" maxlength="1000">${v.version.instruct || ""}</textarea></label>` : html`<p class="muted small">Cloned voices are defined by their reference clip; upload a new clip to change the voice.</p>`}
-          <p class="small muted">Sound-affecting changes create version v${v.version.version + 1}. Books already using this voice are not changed automatically.</p>` });
-      if (!res) return;
-      const body = {};
-      if (res.data.name !== undefined && res.data.name !== v.name) body.name = res.data.name;
-      if (res.data.instruct !== undefined) body.instruct = res.data.instruct;
-      if (res.data.speaker !== undefined) body.speaker = res.data.speaker;
-      const out = await busy(b, () => patch(`/api/voices/${v.id}`, body), "Voice saved");
-      if (out.books_on_older_version && out.books_on_older_version.length) toast(`${out.books_on_older_version.length} book(s) still use the previous version. Switch them from the book page if you want the new sound.`, "warn", 10000);
-      await reload();
+      await editVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "duplicate") {
+      await duplicateVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "retune") {
+      await retuneVoice(b, data.voices.find((x) => x.id === Number(b.dataset.id)));
+    } else if (act === "note-dismiss") {
+      delete notes[Number(b.dataset.id)]; paint();
+    } else if (act === "preview-now") {
+      const vid = Number(b.dataset.id);
+      delete notes[vid]; paint();
+      const nf = view.querySelector(`.preview-form[data-voice="${vid}"]`);
+      if (nf) { nf.scrollIntoView({ block: "center" }); nf.requestSubmit(); }
     } else if (act === "bank-gen") {
       const vid = Number(b.dataset.voice), bucket = b.dataset.bucket;
       try {
@@ -26223,14 +28715,23 @@ export async function render(view) {
     }
   }
 
+  // remember what is typed in each card's preview form, so a repaint (tab switch, reload after an edit) never resets it
+  const rememberPreviewForm = (e) => {
+    const f = e.target.closest && e.target.closest(".preview-form");
+    if (!f) return;
+    const fd = new FormData(f);
+    pform[Number(f.dataset.voice)] = { text: fd.get("text") || "", instruct: fd.get("instruct") || "", verify: fd.get("verify") === "on" };
+  };
+  view.addEventListener("input", rememberPreviewForm);
+  view.addEventListener("change", rememberPreviewForm);
   view.addEventListener("click", onClick);
   paint();
   lab.init();
   Object.entries(previews).forEach(([vid, j]) => { if (["queued", "running"].includes(j.status)) pollPreview(Number(vid), j.id); });
   Object.entries(cands).forEach(([vid, cs]) => cs.filter((c) => ["queued", "running"].includes(c.status)).forEach((c) => pollCandidate(Number(vid), c)));
-  return () => { view.removeEventListener("click", onClick); timers.forEach(clearInterval); lab.destroy(); };
+  return () => { view.removeEventListener("click", onClick); view.removeEventListener("input", rememberPreviewForm); view.removeEventListener("change", rememberPreviewForm); timers.forEach(clearInterval); lab.destroy(); };
 }
-__STUDIO_EOF_63707ad4dcbc__
+__STUDIO_EOF_53fefa529ac6__
 cat > "$DEST/studio/web/update_api.py" <<'__STUDIO_EOF_ddf237e18d69__'
 """HTTP API for the Update Center. State-changing routes are administrator-only (auth.ADMIN_RULES) and pass the same-origin /
 CSRF checks as every other mutating route. No endpoint accepts a URL or a command: the repository comes from validated
@@ -26352,7 +28853,7 @@ def register(app, ctx, manager: ReleaseUpdateManager) -> None:
         ctx.save_settings(s)
         return manager.status()
 __STUDIO_EOF_ddf237e18d69__
-cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_7defc308d71b__'
+cat > "$DEST/studio/worker.py" <<'__STUDIO_EOF_3eebcc79e151__'
 """The single GPU worker: a durable, serial scheduler over the SQLite job queue.
 
 * Exactly one worker owns the GPU at a time (SQLite lease + heartbeat; stale leases are taken over).
@@ -26593,6 +29094,7 @@ class Worker:
                 job = self._next_job(conn)
             if not job:
                 return False
+        t0 = self.clock()
         try:
             if job["kind"] == "preview":
                 self._run_preview(job)
@@ -26605,7 +29107,23 @@ class Worker:
         except Exception as exc:
             log.exception("job %s failed", job["id"])
             self._fail(job, f"{type(exc).__name__}: {exc}", traceback.format_exc())
+        finally:
+            self._add_active_seconds(job["id"], self.clock() - t0)
         return True
+
+    # Monotonic clock for job timing (tests replace it with a fake).
+    clock = staticmethod(time.monotonic)
+
+    def _add_active_seconds(self, job_id: int, seconds: float) -> None:
+        """Add the wall time of one worker step (Director/LLM time included; queued waits, pauses and restarts excluded) to
+        jobs.active_seconds. Deliberately leaves updated_at alone so it never wakes the live-update digest by itself."""
+        if seconds <= 0:
+            return
+        try:
+            with self.ctx.db.tx() as conn:
+                conn.execute("UPDATE jobs SET active_seconds = active_seconds + ? WHERE id=?", (float(seconds), job_id))
+        except Exception:  # timing is advisory; it must never break the queue
+            log.exception("could not record active_seconds for job %s", job_id)
 
     def run_until_idle(self, max_steps: int = 100000) -> int:
         steps = 0
@@ -26968,8 +29486,122 @@ def main(ctx) -> None:
     finally:
         if pidfile.exists() and pidfile.read_text().strip() == str(os.getpid()):
             pidfile.unlink(missing_ok=True)
-__STUDIO_EOF_7defc308d71b__
+__STUDIO_EOF_3eebcc79e151__
   mkdir -p "$DEST/tests"
+cat > "$DEST/tests/book_synth.py" <<'__STUDIO_EOF_6ab6dab062ff__'
+"""Synthetic books for performance and equivalence tests: segments, takes and chapter masters are written straight to SQLite and to
+tiny placeholder files (no worker, no audio), so a 4,000-segment book builds in about a second. MOCK data only."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from conftest import make_text
+
+from studio import services as S
+from studio.assembly import takes_digest
+from studio.db import row
+from studio.pipeline import book_dirs
+from studio.util import now
+
+
+def import_empty(ctx, title: str = "Synthetic", voice_name: str = "Ryan") -> dict:
+    """A tiny imported book (real chapters/segments from a short text); callers usually replace its segments with synth_segments."""
+    voice = next(v for v in S.list_voices(ctx) if v["name"] == voice_name)
+    prev = S.create_import(ctx, f"{title}.txt", make_text(1, title=title).encode())
+    return S.confirm_import(ctx, prev["token"], {"title": title, "voice_id": voice["id"], "queue": False})
+
+
+def synth_segments(ctx, book_id: int, n_segments: int, n_chapters: int = 10, renders: int = 3, missing_every: int = 97) -> dict:
+    """Replace the book's segments/chapters with ``n_segments`` spread over ``n_chapters``. Mix: ~55% passed, ~20% approved, ~5% flagged, the rest
+    pending; ~20% of rendered segments also carry an older unselected attempt; every ``missing_every``-th selected take has no file on disk;
+    the first ``renders`` chapters get current WAV+MP3 masters. Returns {"book_id", "chapter_ids"}."""
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+    dirs = book_dirs(b)
+    seg_dir, alt_dir, mast_dir = dirs["segments"], dirs["alternates"], dirs["masters"]
+    for d in (seg_dir, alt_dir, mast_dir):
+        d.mkdir(parents=True, exist_ok=True)
+    per = max(1, n_segments // n_chapters)
+    t = now()
+    conn = sqlite3.connect(str(ctx.db.path))
+    conn.row_factory = sqlite3.Row
+    chapter_ids = []
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DELETE FROM attempts WHERE segment_id IN (SELECT id FROM segments WHERE book_id=?)", (book_id,))
+        conn.execute("DELETE FROM chapter_renders WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id=?)", (book_id,))
+        conn.execute("DELETE FROM segments WHERE book_id=?", (book_id,))
+        conn.execute("DELETE FROM chapters WHERE book_id=?", (book_id,))
+        n = 0
+        for ci in range(1, n_chapters + 1):
+            count = per if ci < n_chapters else n_segments - per * (n_chapters - 1)
+            chid = conn.execute("INSERT INTO chapters(book_id, idx, title, source_ref, word_count, segment_count, est_duration_s) VALUES (?,?,?,?,?,?,?)",
+                                (book_id, ci, f"Chapter {ci}", "", count * 12, count, count * 4.0)).lastrowid
+            chapter_ids.append(chid)
+            for k in range(1, count + 1):
+                n += 1
+                mod = n % 20
+                status = "passed" if mod < 11 else "approved" if mod < 15 else "flagged" if mod < 16 else "pending"
+                sid = f"{b['uid']}-c{ci:03d}-s{k:04d}"
+                sg = conn.execute("""INSERT INTO segments(sid, book_id, chapter_id, idx, para_idx, kind, pause_kind, original_text, narration_text, status, updated_at)
+                                     VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (sid, book_id, chid, k, k // 3, "body", "sentence", f"Sentence {n}.", f"Sentence {n}.", status, t)).lastrowid
+                if status == "pending":
+                    continue
+                if n % 5 == 0:   # an older, unselected take (alternates folder)
+                    old = alt_dir / f"{sid}-a1.wav"
+                    old.write_bytes(b"RIFFold")
+                    conn.execute("""INSERT INTO attempts(segment_id, round, attempt_no, status, engine, fingerprint, text_spoken, wav_path, duration_s, sample_rate, created_at)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (sg, 1, 1, "done", "mock", b["synth_fingerprint"], "old", str(old), 3.0, 24000, t))
+                wav = seg_dir / f"{sid}.wav"
+                if missing_every and n % missing_every != 0:
+                    wav.write_bytes(b"RIFFtone")
+                aid = conn.execute("""INSERT INTO attempts(segment_id, round, attempt_no, status, engine, fingerprint, text_spoken, wav_path, duration_s, sample_rate, passed, created_at)
+                                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", (sg, 1, 2, "done", "mock", b["synth_fingerprint"], "x", str(wav), 4.0, 24000, 1, t)).lastrowid
+                conn.execute("UPDATE segments SET selected_attempt_id=? WHERE id=?", (aid, sg))
+        conn.execute("UPDATE books SET updated_at=? WHERE id=?", (t, book_id))
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    with ctx.db.tx() as c2:
+        for chid in chapter_ids[:renders]:
+            digest = takes_digest(c2, b, chid, ctx)
+            for kind in ("wav", "mp3"):
+                p = mast_dir / f"{chid}.{kind}"
+                p.write_bytes(b"master")
+                c2.execute("""INSERT INTO chapter_renders(chapter_id, kind, path, duration_s, segment_map_json, takes_digest, draft, created_at)
+                              VALUES (?,?,?,?,?,?,?,?)""", (chid, kind, str(p), 60.0, "[]", digest, 1, t))
+    return {"book_id": book_id, "chapter_ids": chapter_ids}
+
+
+def build(ctx, n_segments: int, n_chapters: int = 10, title: str = "Synthetic") -> int:
+    b = import_empty(ctx, title)
+    synth_segments(ctx, b["id"], n_segments, n_chapters)
+    return b["id"]
+
+
+class QueryCounter:
+    """Counts SQL statements run on connections opened through ctx.db while active (sqlite3 trace callback)."""
+
+    def __init__(self, ctx):
+        self.ctx, self.n, self.statements = ctx, 0, []
+
+    def __enter__(self):
+        orig = self.ctx.db.connect
+        counter = self
+
+        def connect(*a, **k):
+            c = orig(*a, **k)
+            c.set_trace_callback(lambda s: (setattr(counter, "n", counter.n + 1), counter.statements.append(s)))
+            return c
+
+        self._orig = orig
+        self.ctx.db.connect = connect
+        return self
+
+    def __exit__(self, *exc):
+        self.ctx.db.connect = self._orig
+__STUDIO_EOF_6ab6dab062ff__
 cat > "$DEST/tests/conftest.py" <<'__STUDIO_EOF_c99a7b0d46fa__'
 """Shared fixtures. All tests use the MOCK engine (synthetic test tones) - never MLX inference.
 FFmpeg-dependent tests are skipped when ffmpeg is not installed."""
@@ -27173,6 +29805,376 @@ def make_speechlike_wav(seconds: float = 10.0, sr: int = 24000, amp: float = 0.2
         w.writeframes(pcm.tobytes())
     return buf.getvalue()
 __STUDIO_EOF_c99a7b0d46fa__
+  mkdir -p "$DEST/tests/js"
+cat > "$DEST/tests/js/runtime_fmt.test.mjs" <<'__STUDIO_EOF_82e548f7564e__'
+// Unit tests for static/js/runtime.js (fmtSpan / fmtClock / fmtRuntime). Run: node tests/js/runtime_fmt.test.mjs (also run by pytest).
+import assert from "node:assert/strict";
+
+globalThis.window = new EventTarget();
+globalThis.document = { activeElement: null };
+const { fmtSpan, fmtClock, fmtRuntime } = await import("../../studio/web/static/js/runtime.js");
+
+let failed = 0;
+function test(name, fn) {
+  try { fn(); console.log("ok   " + name); } catch (e) { failed++; console.log("FAIL " + name + "\n" + (e && e.stack || e)); }
+}
+const text = (rt, o) => String(fmtRuntime(rt, o)).replace(/<[^>]+>/g, "");
+
+test("fmtSpan", () => {
+  assert.equal(fmtSpan(3 * 3600 + 12 * 60), "3 h 12 m");
+  assert.equal(fmtSpan(2 * 3600 + 5 * 60), "2 h 05 m");
+  assert.equal(fmtSpan(3599.7), "1 h 00 m");
+  assert.equal(fmtSpan(310), "5 m 10 s");
+  assert.equal(fmtSpan(45), "45 s");
+  assert.equal(fmtSpan(0), "0 s");
+  assert.equal(fmtSpan(null), "–");
+});
+test("fmtClock is local HH:MM, with a weekday beyond 12 h", () => {
+  const soon = new Date(Date.now() + 3600 * 1000);
+  assert.equal(fmtClock(soon.getTime() / 1000), `${String(soon.getHours()).padStart(2, "0")}:${String(soon.getMinutes()).padStart(2, "0")}`);
+  assert.match(fmtClock(Date.now() / 1000 + 30 * 3600), /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d\d:\d\d$/);
+});
+test("fmtRuntime renders each state", () => {
+  const now = Date.now() / 1000;
+  const run = { state: "running", remaining_s: 4800, finish_at: now + 4800, starts_at: null, total_est_s: null, processing_s: null, estimated: true, basis: "b" };
+  assert.match(text(run), /^about 1 h 20 m left · done about \d\d:\d\d$/);
+  assert.equal(text(run, { compact: true }), "1 h 20 m left");
+  const q = { state: "queued", total_est_s: 7500, starts_at: now + 3600, finish_at: now + 11100, remaining_s: null, processing_s: null, estimated: true, basis: "x" };
+  assert.match(text(q), /^about 2 h 05 m processing · starts about \d\d:\d\d$/);
+  assert.match(text({ ...q, basis: "paused, so it is not advancing; x", starts_at: null }), /^paused · about 2 h 05 m processing once resumed$/);
+  assert.equal(text({ state: "finished", processing_s: 11520, estimated: false, basis: "" }), "processed in 3 h 12 m");
+  assert.equal(text({ state: "idle", total_est_s: 600, basis: "" }), "about 10 m 00 s to narrate");
+});
+test("no data / absent", () => {
+  assert.equal(String(fmtRuntime(null)), "");
+  assert.equal(String(fmtRuntime(undefined)), "");
+  assert.equal(text({ state: "running", remaining_s: null, basis: "estimate after 7 more segments" }), "estimate after 7 more segments");
+  assert.equal(String(fmtRuntime({ state: "idle", total_est_s: null, basis: "nothing left to render" })), "");
+});
+test("basis is the tooltip and is escaped", () => {
+  assert.match(String(fmtRuntime({ state: "finished", processing_s: 5, basis: 'a "b" <c>' })), /title="Processing time, not audio length\. Actual: a &quot;b&quot; &lt;c&gt;\."/);
+});
+if (failed) { console.log(`${failed} failed`); process.exit(1); }
+console.log("all passed");
+__STUDIO_EOF_82e548f7564e__
+cat > "$DEST/tests/js/settings_model.test.mjs" <<'__STUDIO_EOF_173851e87a7e__'
+// Unit tests for static/js/views/settings-model.js: tab routing, dirty tracking and (above all) that the saved payload is unchanged.
+// Run: node tests/js/settings_model.test.mjs (also run by pytest). Pure logic only; the tabbed page itself is exercised in a real browser
+// by tools/e2e/polish_settings.py.
+import assert from "node:assert/strict";
+
+globalThis.window = new EventTarget();
+globalThis.document = { activeElement: null };
+const M = await import("../../studio/web/static/js/views/settings-model.js");
+const NF = await import("../../studio/web/static/js/views/narrative-fields.js");
+
+let passed = 0, failed = 0;
+async function test(name, fn) {
+  try { await fn(); passed++; console.log("ok   " + name); }
+  catch (e) { failed++; console.log("FAIL " + name + "\n" + (e && e.stack || e)); }
+}
+
+// ---- the v0.8.0 collect(), copied verbatim, as the reference for payload identity -------------------------------------------
+function referenceCollect(form) {
+  const out = {};
+  const set = (path, v) => { const [a, b] = path.split("."); (out[a] = out[a] || {})[b] = v; };
+  for (const [sec, , fields] of M.SECTIONS) for (const [key, , type] of fields) {
+    const el = form.elements[`${sec}.${key}`]; if (!el) continue;
+    if (type === "bool") set(`${sec}.${key}`, el.checked);
+    else if (type === "number") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
+    else if (type === "number?") set(`${sec}.${key}`, el.value === "" ? null : Number(el.value));
+    else if (type === "select") set(`${sec}.${key}`, Number(el.value));
+    else if (type === "list") set(`${sec}.${key}`, el.value.split(",").map((x) => x.trim()).filter(Boolean).map(Number));
+    else set(`${sec}.${key}`, el.value.trim());
+  }
+  const nar = {};
+  for (const f of NF.allFields()) { const v = NF.readInput(form, "narrative.", f); if (v !== undefined) NF.setPath(nar, f[0], v); }
+  out.narrative = nar;
+  out.storage = {};
+  form.querySelectorAll("[name^='storage.']").forEach((el) => { out.storage[el.name.split(".")[1]] = el.value.trim(); });
+  return out;
+}
+
+/** A fake <form> holding one control per field of the page, with deliberately awkward values (blank optional numbers, padded text, a list). */
+function fakeForm() {
+  const elements = {};
+  let n = 1;
+  const put = (name, type, opt = {}) => {
+    if (type === "bool") elements[name] = { checked: n++ % 2 === 0, value: "on" };
+    else if (type === "select") elements[name] = { value: String(opt.options ? (Array.isArray(opt.options[0]) ? opt.options[0][0] : opt.options[1]) : 0) };
+    else if (type === "text") elements[name] = { value: n++ % 3 === 0 ? "" : `  v${n}  ` };
+    else if (type === "list") elements[name] = { value: " 0.5, 0.7 ,, 0.9 " };
+    else if (type === "number?") elements[name] = { value: n++ % 2 ? "" : "0.8" };
+    else elements[name] = { value: String(n++ * 10) };
+  };
+  for (const [sec, , fields] of M.SECTIONS) for (const [key, , type, opt] of fields) put(`${sec}.${key}`, type, opt);
+  for (const [path, , type, opt] of NF.allFields()) put(`narrative.${path}`, type, opt);
+  const storage = ["library_root", "audio_dir", "exports_dir"].map((k) => ({ name: `storage.${k}`, value: `  /Volumes/X/${k}  ` }));
+  for (const s of storage) elements[s.name] = s;
+  elements["secret.llm"] = { value: "never-collected" };
+  return { elements, querySelectorAll: (sel) => (sel === "[name^='storage.']" ? storage : []) };
+}
+
+await test("collectSettings produces exactly the v0.8.0 payload", () => {
+  const f = fakeForm();
+  assert.deepEqual(M.collectSettings(f), referenceCollect(f));
+});
+
+await test("the payload has every section and never carries the write-only API key", () => {
+  const p = M.collectSettings(fakeForm());
+  assert.deepEqual(Object.keys(p).sort(), ["chunking", "export", "models", "narrative", "pauses", "qa", "server", "storage", "worker"]);
+  assert.ok(!JSON.stringify(p).includes("never-collected"));
+  assert.deepEqual(p.models.retry_temperatures, [0.5, 0.7, 0.9]);
+  assert.equal(typeof p.narrative.llm, "object");
+  assert.equal(typeof p.narrative.delivery, "object");
+  assert.equal(p.storage.library_root, "/Volumes/X/library_root");
+});
+
+await test("every settings field is defined once and every narrative label override names a real field", () => {
+  const names = M.SECTIONS.flatMap(([sec, , fs]) => fs.map(([k]) => `${sec}.${k}`));
+  assert.equal(new Set(names).size, names.length);
+  const paths = new Set(NF.allFields().map((f) => f[0]));
+  for (const p of Object.keys(M.NARRATIVE_LABELS)) assert.ok(paths.has(p), "unknown narrative path " + p);
+  for (const p of paths) assert.ok(M.NARRATIVE_LABELS[p], "no page label for " + p);   // every field is shown on this page
+});
+
+await test("resolveTab: sub-route to tab, unknown falls back to storage", () => {
+  assert.equal(M.resolveTab([]), "storage");
+  assert.equal(M.resolveTab(undefined), "storage");
+  for (const t of M.TABS) assert.equal(M.resolveTab([t.id]), t.id);
+  assert.equal(M.resolveTab(["nope"]), "storage");
+  assert.deepEqual(M.TABS.map((t) => t.id), ["storage", "production", "quality", "models", "narrative", "llm", "server"]);
+});
+
+await test("tabKeyTarget: arrows wrap, Home/End jump, other keys ignored", () => {
+  assert.equal(M.tabKeyTarget("ArrowDown", 0, 7), 1);
+  assert.equal(M.tabKeyTarget("ArrowRight", 6, 7), 0);
+  assert.equal(M.tabKeyTarget("ArrowUp", 0, 7), 6);
+  assert.equal(M.tabKeyTarget("ArrowLeft", 3, 7), 2);
+  assert.equal(M.tabKeyTarget("Home", 4, 7), 0);
+  assert.equal(M.tabKeyTarget("End", 4, 7), 6);
+  assert.equal(M.tabKeyTarget("a", 4, 7), null);
+  assert.equal(M.tabKeyTarget("Home", 0, 0), null);
+});
+
+await test("changedNames: text, number and checkbox differences; secrets and unchanged values are ignored", () => {
+  const base = { "a.x": "1", "a.flag": { on: false }, "b.y": "q", "secret.llm": "" };
+  assert.deepEqual(M.changedNames(base, { ...base }), []);
+  assert.deepEqual(M.changedNames(base, { ...base, "a.x": "2", "a.flag": { on: true }, "secret.llm": "typed" }), ["a.flag", "a.x"]);
+  assert.deepEqual(M.changedNames(base, { ...base, "a.x": "1 " }), ["a.x"]);   // whitespace is a change until trimmed on save
+  assert.deepEqual(M.changedNames(base, { ...base, "new": "z" }), ["new"]);
+  assert.deepEqual(M.changedNames(null, null), []);
+});
+
+await test("countByGroup counts per tab and skips unknown names", () => {
+  const tab = { "a": "storage", "b": "storage", "c": "llm" };
+  assert.deepEqual(M.countByGroup(["a", "b", "c", "zzz"], (n) => tab[n]), { storage: 2, llm: 1 });
+});
+
+await test("verifySummary explains how the master switch and the mode combine", () => {
+  assert.equal(M.verifySummary(false, "every", 0.25).on, false);
+  assert.match(M.verifySummary(false, "every", 0.25).text, /off/i);
+  assert.equal(M.verifySummary(true, "off", 0.25).on, false);
+  assert.match(M.verifySummary(true, "sample", 0.25).text, /25%/);
+  assert.equal(M.verifySummary(true, "sample", "0.5").text.includes("50%"), true);
+  assert.equal(M.verifySummary(true, "every", 0.25).on, true);
+  assert.match(M.verifySummary(true, "every", 0).text, /Every segment/);
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
+__STUDIO_EOF_173851e87a7e__
+cat > "$DEST/tests/js/ui_helpers.test.mjs" <<'__STUDIO_EOF_315b9574b3d0__'
+// Unit tests for the pure / DOM-light helpers in static/js/ui.js. Run: node tests/js/ui_helpers.test.mjs (also run by pytest).
+// No DOM library: patchHTML / patchRegions are exercised against a tiny hand-written fake element, which covers the bookkeeping
+// (what is saved and restored, and when markup is skipped) but NOT real browser behaviour (that is tools/e2e/foundation_ui.py).
+import assert from "node:assert/strict";
+
+// ui.js touches `window` / `document` only inside functions, so install fakes before calling those.
+globalThis.window = new EventTarget();
+globalThis.document = { activeElement: null };
+const ui = await import("../../studio/web/static/js/ui.js");
+
+let passed = 0, failed = 0;
+async function test(name, fn) {
+  try { await fn(); passed++; console.log("ok   " + name); }
+  catch (e) { failed++; console.log("FAIL " + name + "\n" + (e && e.stack || e)); }
+}
+
+// ---- fake DOM -------------------------------------------------------------------------------------------------------
+class FakeNode {
+  constructor(id, props = {}) { this.id = id; this.scrollTop = 0; this.scrollLeft = 0; this.tagName = "DIV"; this.focused = 0; Object.assign(this, props); }
+  focus() { this.focused++; globalThis.document.activeElement = this; }
+  setSelectionRange(a, b, d) { this.selectionStart = a; this.selectionEnd = b; this.selectionDirection = d; }
+}
+class FakeEl extends FakeNode {
+  constructor(id, kids = []) { super(id); this.kids = kids; this.next = null; this.sets = 0; }
+  querySelectorAll(sel) { return sel === "[id]" ? this.kids.filter((k) => k.id) : []; }
+  contains(n) { return n === this || this.kids.includes(n); }
+  set innerHTML(v) { this.sets++; this.html = v; if (this.next) { this.kids = this.next; this.next = null; } }
+  get innerHTML() { return this.html; }
+}
+
+// ---- sameState -------------------------------------------------------------------------------------------------------
+await test("sameState: equal and unequal payloads", () => {
+  assert.equal(ui.sameState({ a: 1, b: [1, 2] }, { a: 1, b: [1, 2] }), true);
+  assert.equal(ui.sameState({ a: 1 }, { a: 2 }), false);
+  assert.equal(ui.sameState(null, null), true);
+  assert.equal(ui.sameState(null, {}), false);
+  assert.equal(ui.sameState(undefined, undefined), true);
+  const circ = {}; circ.self = circ;
+  assert.equal(ui.sameState(circ, {}), false); // unserialisable: treated as different, never throws
+});
+
+// ---- onState -----------------------------------------------------------------------------------------------------------
+const emit = (detail) => window.dispatchEvent(new CustomEvent("studio:state", { detail }));
+const tick = (ms = 15) => new Promise((r) => setTimeout(r, ms));
+
+await test("onState: first delivery, skips identical payloads, delivers changes, always delivers polled", async () => {
+  const seen = [];
+  const off = ui.onState((d) => seen.push(d), 0);
+  emit({ n: 1 }); await tick();
+  emit({ n: 1 }); await tick();          // same data again: skipped
+  emit({ n: 2 }); await tick();
+  emit({ n: 2 }); await tick();
+  emit({ polled: 1, n: 2 }); await tick();
+  emit({ polled: 1, n: 2 }); await tick(); // polled payloads are always delivered
+  assert.deepEqual(seen.map((d) => String(d.n) + (d.polled ? "p" : "")), ["1", "2", "2p", "2p"]);
+  off();
+  emit({ n: 99 }); await tick();
+  assert.equal(seen.length, 4, "unsubscribed");
+});
+
+await test("onState: each subscriber has its own last-delivered payload", async () => {
+  const a = [], b = [];
+  const offA = ui.onState((d) => a.push(d.n), 0);
+  emit({ n: 1 }); await tick();
+  const offB = ui.onState((d) => b.push(d.n), 0);
+  emit({ n: 1 }); await tick();   // A has seen it, B has not
+  assert.deepEqual(a, [1]); assert.deepEqual(b, [1]);
+  offA(); offB();
+});
+
+await test("onState: throttle coalesces bursts to the latest payload", async () => {
+  const seen = [];
+  const off = ui.onState((d) => seen.push(d.n), 60);
+  emit({ n: 1 }); await tick(10);   // delivered (first)
+  emit({ n: 2 }); emit({ n: 3 }); emit({ n: 4 });
+  await tick(20);
+  assert.deepEqual(seen, [1]);       // still inside the interval
+  await tick(100);
+  assert.deepEqual(seen, [1, 4]);
+  off();
+});
+
+await test("onState: a burst that ends back at the delivered value delivers nothing", async () => {
+  const seen = [];
+  const off = ui.onState((d) => seen.push(d.n), 40);
+  emit({ n: 1 }); await tick(60);
+  emit({ n: 2 }); emit({ n: 1 }); await tick(100);
+  assert.deepEqual(seen, [1]);
+  off();
+});
+
+// ---- patchHTML ---------------------------------------------------------------------------------------------------------
+await test("patchHTML: restores scroll of the element and of id'd descendants, details state, focus and selection", () => {
+  const list = new FakeNode("list", { scrollTop: 340, scrollLeft: 5 });
+  const anon = new FakeNode("", { scrollTop: 77 }); // no id: cannot be restored, must not crash
+  const det = new FakeNode("more", { tagName: "DETAILS", open: true });
+  const shut = new FakeNode("less", { tagName: "details", open: false });
+  const box = new FakeNode("note", { tagName: "TEXTAREA", selectionStart: 2, selectionEnd: 5, selectionDirection: "forward" });
+  const el = new FakeEl("view", [list, anon, det, shut, box]);
+  el.scrollTop = 900;
+  document.activeElement = box;
+  const list2 = new FakeNode("list"), det2 = new FakeNode("more", { tagName: "DETAILS", open: false }), shut2 = new FakeNode("less", { tagName: "DETAILS", open: true });
+  const box2 = new FakeNode("note", { tagName: "TEXTAREA", value: "x" });
+  el.next = [list2, det2, shut2, box2];
+  const ret = ui.patchHTML(el, ui.html`<p>${"new"}</p>`);
+  assert.equal(ret, el);
+  assert.equal(el.html, "<p>new</p>");
+  assert.equal(el.scrollTop, 900);
+  assert.deepEqual([list2.scrollTop, list2.scrollLeft], [340, 5]);
+  assert.equal(det2.open, true); assert.equal(shut2.open, false);
+  assert.equal(box2.focused, 1);
+  assert.deepEqual([box2.selectionStart, box2.selectionEnd, box2.selectionDirection], [2, 5, "forward"]);
+});
+
+await test("patchHTML: focus on an element that is gone is dropped quietly; non-focused fields are left alone", () => {
+  const gone = new FakeNode("old", { tagName: "INPUT", selectionStart: 0, selectionEnd: 0 });
+  const el = new FakeEl("v", [gone]);
+  document.activeElement = gone;
+  const fresh = new FakeNode("other", { tagName: "INPUT" });
+  el.next = [fresh];
+  ui.patchHTML(el, ui.html`<i></i>`);
+  assert.equal(fresh.focused, 0);
+  document.activeElement = null;
+  const a = new FakeNode("a"); const el2 = new FakeEl("v2", [a]); const a2 = new FakeNode("a"); el2.next = [a2];
+  ui.patchHTML(el2, "plain <text>");        // a plain string is escaped, like setHTML
+  assert.equal(el2.html, "plain &lt;text&gt;");
+  assert.equal(a2.focused, 0);
+});
+
+await test("patchHTML: focus outside the patched element is not touched", () => {
+  const outside = new FakeNode("elsewhere");
+  const el = new FakeEl("v", [new FakeNode("a")]);
+  document.activeElement = outside;
+  el.next = [new FakeNode("a")];
+  ui.patchHTML(el, ui.html`<b></b>`);
+  assert.equal(outside.focused, 0);
+});
+
+// ---- patchRegions ------------------------------------------------------------------------------------------------------
+await test("patchRegions: repaints a region only when its markup changed", () => {
+  const r1 = new FakeEl("r1"), r2 = new FakeEl("r2");
+  const root = { querySelectorAll: (sel) => (sel === ".a" ? [r1] : sel === ".b" ? [r2] : []) };
+  let a = 1, b = 1;
+  const regions = { ".a": () => ui.html`<i>${a}</i>`, ".b": () => ui.html`<i>${b}</i>` };
+  assert.equal(ui.patchRegions(root, regions), 2);   // first paint
+  assert.equal(ui.patchRegions(root, regions), 0);   // nothing changed: no DOM writes
+  assert.deepEqual([r1.sets, r2.sets], [1, 1]);
+  b = 2;
+  assert.equal(ui.patchRegions(root, regions), 1);
+  assert.deepEqual([r1.sets, r2.sets], [1, 2]);
+  assert.equal(r2.html, "<i>2</i>");
+  assert.equal(ui.patchRegions({ querySelectorAll: () => [] }, regions), 0);  // missing regions are ignored
+});
+
+// ---- pager ---------------------------------------------------------------------------------------------------------------
+const pg = (...a) => ui.pager(...a).s;
+await test("pager: range text and prev/next state", () => {
+  let h = pg(37, 0, 10);
+  assert.match(h, /1–10 of 37/);
+  assert.match(h, /data-pager="prev" data-offset="0" aria-label="Previous page" disabled/);
+  assert.match(h, /data-pager="next" data-offset="10" aria-label="Next page" >/);
+  h = pg(37, 10, 10);
+  assert.match(h, /11–20 of 37/); assert.doesNotMatch(h, /disabled/);
+  assert.match(h, /data-pager="prev" data-offset="0"/); assert.match(h, /data-pager="next" data-offset="20"/);
+  h = pg(37, 30, 10);
+  assert.match(h, /31–37 of 37/); assert.match(h, /data-pager="next" data-offset="40" aria-label="Next page" disabled/);
+  assert.match(h, /data-pager="prev" data-offset="20" aria-label="Previous page" >/);
+});
+await test("pager: short and empty lists show no buttons; noun and clamping", () => {
+  assert.doesNotMatch(pg(5, 0, 10), /button/); assert.match(pg(5, 0, 10), /1–5 of 5/);
+  assert.match(pg(0, 0, 10), /0–0 of 0/);
+  assert.match(pg(37, 0, 10, { noun: "books" }), /of 37 books/);
+  assert.match(pg(37, 999, 10), /37–37 of 37/);   // offset past the end is clamped
+  assert.doesNotMatch(pg(37, 0, 10), /on(click|change)=|style=/);
+});
+await test("wirePager: delegates clicks, ignores disabled buttons and other targets", () => {
+  let handler = null; const calls = [];
+  const container = { addEventListener: (t, f) => { handler = f; }, removeEventListener: () => { handler = null; }, contains: () => true };
+  const off = ui.wirePager(container, (o, which) => calls.push([o, which]));
+  const btn = (extra) => ({ closest: () => ({ disabled: false, dataset: { offset: "20", pager: "next" }, ...extra }) });
+  handler({ target: btn({}) });
+  handler({ target: btn({ disabled: true }) });
+  handler({ target: { closest: () => null } });
+  assert.deepEqual(calls, [[20, "next"]]);
+  off(); assert.equal(handler, null);
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed ? 1 : 0);
+__STUDIO_EOF_315b9574b3d0__
 cat > "$DEST/tests/narrative_fixtures.py" <<'__STUDIO_EOF_25f9be139691__'
 """Representative manuscripts for the narrative tests (multiple characters, unattributed dialogue,
 changing emotions, scene transitions, recurring characters with changing names)."""
@@ -28111,6 +31113,219 @@ def test_folder_browser_admin_only_lists_dirs_and_creates_folders(secured, tmp_p
     # the native Finder picker is refused for remote clients (it would open on the Mac's own screen)
     assert secured.post("/api/storage/choose-folder", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 403
 __STUDIO_EOF_a06f481d9cb5__
+cat > "$DEST/tests/test_book_perf.py" <<'__STUDIO_EOF_c946f5c7d864__'
+"""get_book performance and equivalence (P2-A): the query count must not grow with the number of segments, the batched readiness must
+agree with the old per-segment implementation, and ?view=review is a light subset. MOCK data only (synthetic rows and tiny placeholder files)."""
+from __future__ import annotations
+
+import time
+
+import pytest
+from book_synth import QueryCounter, build, synth_segments
+
+from studio import services as S
+from studio.assembly import chapter_readiness, takes_digest
+from studio.db import row, rows
+from studio.pipeline import resolve_take
+from studio.services import release_check_conn
+
+
+# ---- the pre-batching implementation, kept verbatim as the reference ------------------------------------------------------------
+def _legacy_chapter_takes(conn, book, chapter_id):
+    segs = rows(conn, "SELECT * FROM segments WHERE chapter_id=? ORDER BY idx", (chapter_id,))
+    out, problems = [], []
+    for s in segs:
+        if not s["selected_attempt_id"]:
+            problems.append({"sid": s["sid"], "problem": "no audio" if s["status"] == "pending" else f"no usable take ({s['status']})"})
+            continue
+        att = row(conn, "SELECT * FROM attempts WHERE id=?", (s["selected_attempt_id"],))
+        path = resolve_take(book, att) if att else None
+        if not att or path is None:
+            problems.append({"sid": s["sid"], "problem": "selected take file is missing"})
+            continue
+        if att["fingerprint"] != book["synth_fingerprint"]:
+            problems.append({"sid": s["sid"], "problem": "take was rendered with different narrator/model settings"})
+            continue
+        out.append((s, att, path))
+    return segs, out, problems
+
+
+def _legacy_readiness(conn, book, ctx):
+    from pathlib import Path
+
+    out = []
+    for ch in rows(conn, "SELECT * FROM chapters WHERE book_id=? ORDER BY idx", (book["id"],)):
+        segs, takes, problems = _legacy_chapter_takes(conn, book, ch["id"])
+        renders = {r["kind"]: r for r in rows(conn, "SELECT * FROM chapter_renders WHERE chapter_id=?", (ch["id"],))}
+        digest = takes_digest(conn, book, ch["id"], ctx)
+        current = bool(renders.get("wav") and renders.get("mp3") and renders["wav"]["takes_digest"] == digest
+                       and Path(renders["wav"]["path"]).exists() and Path(renders["mp3"]["path"]).exists())
+        out.append({"chapter": ch, "segments": len(segs), "ready_takes": len(takes), "problems": problems,
+                    "renders": renders, "render_current": current, "digest": digest})
+    return out
+
+
+def _book_row(ctx, book_id):
+    with ctx.db.session() as conn:
+        return row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+
+
+def _messy(ctx, book_id):
+    """Add the awkward cases the batched code must classify like the old one: a retitled chapter, a take rendered with other settings,
+    a selected attempt row that no longer exists, a take that only exists in the other folder (crash between a move and its DB update)."""
+    with ctx.db.tx() as conn:
+        chs = rows(conn, "SELECT id FROM chapters WHERE book_id=? ORDER BY idx", (book_id,))
+        conn.execute("UPDATE chapters SET original_title=title, title='Renamed' WHERE id=?", (chs[1]["id"],))
+        sel = rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL ORDER BY id", (book_id,))
+        conn.execute("UPDATE attempts SET fingerprint='other' WHERE id=?", (sel[3]["selected_attempt_id"],))
+        conn.execute("DELETE FROM attempts WHERE id=?", (sel[7]["selected_attempt_id"],))
+        moved = row(conn, "SELECT id, wav_path FROM attempts WHERE id=?", (sel[11]["selected_attempt_id"],))
+        from pathlib import Path
+
+        src = Path(moved["wav_path"])
+        alt = src.parent.parent / "alternates" / src.name
+        alt.parent.mkdir(parents=True, exist_ok=True)
+        if src.exists():
+            src.replace(alt)
+
+
+def test_readiness_matches_the_old_per_segment_implementation(ctx):
+    bid = build(ctx, 120, 6)
+    _messy(ctx, bid)
+    b = _book_row(ctx, bid)
+    with ctx.db.session() as conn:
+        old = _legacy_readiness(conn, b, ctx)
+        new = chapter_readiness(conn, b, ctx)
+        counts = {r["status"]: r["n"] for r in rows(conn, "SELECT status, COUNT(*) n FROM segments WHERE book_id=? GROUP BY status", (bid,))}
+        chk_old = release_check_conn(conn, b, ctx, ready=old)
+        chk_new = release_check_conn(conn, b, ctx)
+        chk_fast = release_check_conn(conn, b, ctx, ready=new, counts=counts)
+    assert len(old) == len(new) == 6
+    for o, n in zip(old, new):
+        assert o["chapter"]["id"] == n["chapter"]["id"]
+        for k in ("segments", "ready_takes", "problems", "render_current", "digest"):
+            assert o[k] == n[k], k
+        assert {k: (v["id"], v["takes_digest"], v["path"]) for k, v in o["renders"].items()} == {k: (v["id"], v["takes_digest"], v["path"]) for k, v in n["renders"].items()}
+    assert sum(len(r["problems"]) for r in new) > 3            # the messy cases really produce problems
+    assert any(p["problem"] == "take was rendered with different narrator/model settings" for r in new for p in r["problems"])
+    assert any(p["problem"] == "selected take file is missing" for r in new for p in r["problems"])
+    assert chk_old == chk_new == chk_fast
+    assert any(r["render_current"] for r in new) and not all(r["render_current"] for r in new)
+
+
+def test_pause_hints_digest_is_unchanged_by_batching(ctx):
+    bid = build(ctx, 60, 3)
+    with ctx.db.tx() as conn:   # the book opts in to direction pauses and one segment carries a hint
+        conn.execute("UPDATE books SET narrative_json=? WHERE id=?", ('{"delivery": {"pauses_from_direction": true}}', bid))
+        sid = row(conn, "SELECT id FROM segments WHERE book_id=? AND pause_kind='sentence' ORDER BY id LIMIT 1", (bid,))["id"]
+        conn.execute("INSERT INTO directions(segment_id, book_id, source, raw_json, final_json, updated_at) VALUES (?,?,?,?,?,?)",
+                     (sid, bid, "test", "{}", '{"pause": "long"}', 1.0))
+    b = _book_row(ctx, bid)
+    with ctx.db.session() as conn:
+        old, new = _legacy_readiness(conn, b, ctx), chapter_readiness(conn, b, ctx)
+    assert [r["digest"] for r in old] == [r["digest"] for r in new]
+
+
+def test_get_book_query_count_does_not_grow_with_segments(ctx):
+    counts = {}
+    for n in (50, 400):
+        bid = build(ctx, n, 10, title=f"Count{n}")
+        S.get_book(ctx, bid)                       # warm
+        with QueryCounter(ctx) as q:
+            out = S.get_book(ctx, bid)
+        counts[n] = q.n
+        assert out["segments"] == n
+    assert counts[50] == counts[400], counts
+    assert counts[400] <= 40, counts
+
+
+def test_get_book_is_fast_on_400_segments(ctx):
+    bid = build(ctx, 400, 10)
+    S.get_book(ctx, bid)
+    t = time.perf_counter()
+    S.get_book(ctx, bid)
+    assert time.perf_counter() - t < 0.5   # measured ~12 ms; the old implementation needed ~760 queries
+
+
+def test_get_book_payload_unchanged_keys_and_values(ctx):
+    bid = build(ctx, 100, 5)
+    out = S.get_book(ctx, bid)
+    for k in ("chapters", "release_check", "exports", "logs", "utility_jobs", "narrative", "manuscript", "versions", "voice_detail", "cover_version",
+              "produced", "segments", "flagged", "approved", "storage", "release"):
+        assert k in out, k
+    ch = out["chapters"][0]
+    assert set(ch) == {"id", "index", "title", "words", "segments", "title_overridden", "original_title", "est_duration_s", "status_counts",
+                       "missing_audio", "render_current", "renders"}
+    assert sum(sum(c["status_counts"].values()) for c in out["chapters"]) == 100
+    merged: dict = {}
+    for c in out["chapters"]:
+        for k, v in c["status_counts"].items():
+            merged[k] = merged.get(k, 0) + v
+    assert out["release_check"]["counts"] == merged
+    assert [v["narrator"] for v in out["versions"]] == ["Ryan"] and out["versions"][0]["current"] is True
+
+
+def test_review_view_is_a_light_subset_with_identical_keys(ctx, client):
+    bid = build(ctx, 100, 5)
+    full = client.get(f"/api/books/{bid}").json()
+    light = client.get(f"/api/books/{bid}?view=review").json()
+    for heavy in ("release_check", "exports", "logs", "utility_jobs", "narrative", "manuscript", "storage", "settings", "voice_detail", "versions"):
+        assert heavy in full and heavy not in light, heavy
+    must = ("id", "uid", "title", "author", "state", "work_uid", "narrator", "display_title", "version_count", "voice", "segments", "produced",
+            "passed", "flagged", "approved", "pending", "progress", "est_duration_s", "audio_duration_s", "job", "current_chapter", "released")
+    for k in must:
+        assert k in light and light[k] == full[k], k
+    assert len(light["chapters"]) == 5
+    for lc, fc in zip(light["chapters"], full["chapters"]):
+        assert set(lc) == {"id", "index", "title", "words", "segments", "title_overridden", "original_title", "est_duration_s", "status_counts"}
+        for k in lc:
+            assert lc[k] == fc[k], k
+    assert client.get("/api/books/99999?view=review").status_code == 404
+
+
+def test_review_view_query_count_is_flat(ctx):
+    counts = []
+    for n in (50, 400):
+        bid = build(ctx, n, 10, title=f"Rev{n}")
+        with QueryCounter(ctx) as q:
+            S.get_book_review(ctx, bid)
+        counts.append(q.n)
+    assert counts[0] == counts[1] and counts[1] <= 15
+
+
+def test_book_stats_scopes_the_audio_duration_join(ctx):
+    a, b = build(ctx, 30, 3, title="A"), build(ctx, 30, 3, title="B")
+    with ctx.db.session() as conn:
+        both = S._book_stats(conn)
+        only_a = S._book_stats(conn, [a])
+        nobody = S._book_stats(conn, [])
+        sql = []
+        conn.set_trace_callback(sql.append)
+        S._book_stats(conn, [a])
+    assert set(both) >= {a, b} and set(only_a) == {a} and nobody == {}
+    assert only_a[a] == both[a]
+    durations = [s for s in sql if "SUM(a.duration_s)" in s]
+    assert durations and all("IN (" in s for s in durations)
+
+
+def test_narrative_status_can_reuse_the_callers_session(ctx):
+    from studio.narrative import store as N
+
+    bid = build(ctx, 30, 3)
+    alone = N.narrative_status(ctx, bid)
+    with ctx.db.session() as conn:
+        shared = N.narrative_status(ctx, bid, conn)
+    assert alone == shared and alone["segments"] == 30
+    with pytest.raises(Exception):
+        N.narrative_status(ctx, 424242)
+
+
+def test_synth_helper_roundtrip(ctx):
+    bid = build(ctx, 20, 2)
+    again = synth_segments(ctx, bid, 40, 4)
+    assert len(again["chapter_ids"]) == 4
+    assert S.get_book(ctx, bid)["segments"] == 40
+__STUDIO_EOF_c946f5c7d864__
 cat > "$DEST/tests/test_chapter_tools.py" <<'__STUDIO_EOF_8ff8a34089b1__'
 """Per-chapter tools (C4): regenerate chapter, title override, chapter export, cover. MOCK engine only."""
 from __future__ import annotations
@@ -29307,6 +32522,231 @@ def test_worker_directs_the_scene_it_is_about_to_narrate(client, ctx):
     assert set(dirs) == {s["id"] for s in segs} and {d["raw"]["source"] for d in dirs.values()} == {"llm"}
     assert len(rec.of("Chapter beat sheet")) == 2 and rec.of("Direct this scene")
 __STUDIO_EOF_9d70d6a6f3b9__
+cat > "$DEST/tests/test_disk_cache.py" <<'__STUDIO_EOF_efe8a88feba2__'
+"""Disk usage cache (P2-A): a second /api/disk/usage does not re-walk the library, ?refresh=1 does, disk-changing actions drop the cache,
+and the numbers equal the previous implementation. MOCK engine only."""
+from __future__ import annotations
+
+import os
+import time
+import zipfile
+from pathlib import Path
+
+from test_disk_management import _ctx_book, _generated
+
+from studio import diskmgmt as D
+from studio.db import rows
+from studio.pipeline import resolve_take
+
+
+def _legacy_purgeable(conn, book):
+    """The pre-cache implementation of D._purgeable, kept as the reference."""
+    keep = {r["selected_attempt_id"] for r in rows(conn, "SELECT selected_attempt_id FROM segments WHERE book_id=? AND selected_attempt_id IS NOT NULL", (book["id"],))}
+    n, size = 0, 0
+    for a in rows(conn, "SELECT a.id, a.wav_path FROM attempts a JOIN segments s ON s.id=a.segment_id WHERE s.book_id=? AND a.status!='in_progress'", (book["id"],)):
+        if a["id"] in keep:
+            continue
+        n += 1
+        if a["wav_path"]:
+            size += D.file_size(resolve_take(book, a))
+    return {"takes": n, "takes_bytes": size}
+
+
+class _Walks:
+    """Counts directory walks and per-file lstat calls made by D."""
+
+    def __init__(self, monkeypatch):
+        self.dirs = 0
+        self.lstat = 0
+        real_walk, real_lstat = D._walk_files, os.lstat
+        real_size = D.dir_size
+
+        def walk(path):
+            self.dirs += 1
+            return real_walk(path)
+
+        def size(path):
+            self.dirs += 1
+            return real_size(path)
+
+        def lstat(*a, **k):
+            self.lstat += 1
+            return real_lstat(*a, **k)
+
+        monkeypatch.setattr(D, "_walk_files", walk)
+        monkeypatch.setattr(D, "dir_size", size)
+        monkeypatch.setattr(D.os, "lstat", lstat)
+
+
+def test_numbers_equal_the_previous_implementation(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    u = D.usage(ctx)
+    mine = next(x for x in u["books"] if x["id"] == b["id"])
+    book = _ctx_book(ctx, b["id"])
+    with ctx.db.session() as conn:
+        old = _legacy_purgeable(conn, book)
+    assert mine["purgeable"]["takes"] == old["takes"] > 0
+    assert mine["purgeable"]["takes_bytes"] == old["takes_bytes"] > 0
+    dirs = D.book_dirs(book)
+    for cat, d in dirs.items():
+        assert mine["categories"][cat] == D.dir_size(d), cat
+    assert mine["busy"] is False and mine["narrator"] == "Ryan" and mine["display_title"] == "Alpha - Ryan"
+
+
+def test_busy_and_narrator_come_from_the_batched_queries(client, ctx):
+    from conftest import make_text
+
+    v = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    prev = client.post("/api/imports", files={"file": ("q.txt", make_text(1, title="Queued").encode(), "text/plain")}).json()
+    b = client.post(f"/api/imports/{prev['token']}/confirm", json={"title": "Queued", "voice_id": v["id"], "queue": True}).json()
+    idle = client.post("/api/imports", files={"file": ("i.txt", make_text(1, title="Idle").encode(), "text/plain")}).json()
+    b2 = client.post(f"/api/imports/{idle['token']}/confirm", json={"title": "Idle", "voice_id": v["id"], "queue": False}).json()
+    u = D.usage(ctx)
+    by = {x["id"]: x for x in u["books"]}
+    assert by[b["id"]]["busy"] is True and by[b2["id"]]["busy"] is False
+
+
+def test_second_usage_call_does_not_walk_again(client, ctx, make_worker, monkeypatch):
+    _generated(client, make_worker)
+    D.invalidate_usage(ctx)
+    walks = _Walks(monkeypatch)
+    first = client.get("/api/disk/usage").json()
+    assert first["cached"] is False and walks.dirs > 0 and walks.lstat > 0
+    d0, l0 = walks.dirs, walks.lstat
+    second = client.get("/api/disk/usage").json()
+    assert second["cached"] is True and second["measured_at"] == first["measured_at"]
+    assert (walks.dirs, walks.lstat) == (d0, l0)          # nothing was walked or stat'ed
+    assert {k: v for k, v in second.items() if k not in ("age_s", "cached")} == {k: v for k, v in first.items() if k not in ("age_s", "cached")}
+    assert second["age_s"] >= 0
+
+
+def test_refresh_forces_a_new_measurement(client, ctx, make_worker, monkeypatch):
+    _generated(client, make_worker)
+    D.invalidate_usage(ctx)
+    walks = _Walks(monkeypatch)
+    first = client.get("/api/disk/usage").json()
+    d0 = walks.dirs
+    again = client.get("/api/disk/usage?refresh=1").json()
+    assert again["cached"] is False and walks.dirs > d0 and again["measured_at"] >= first["measured_at"]
+    d1 = walks.dirs
+    assert client.get("/api/disk/usage").json()["cached"] is True and walks.dirs == d1   # the refreshed result is what the cache now holds
+
+
+def test_the_cache_expires_after_the_ttl(client, ctx):
+    D.invalidate_usage(ctx)
+    first = client.get("/api/disk/usage").json()
+    key = D._usage_key(ctx)
+    t, payload = D._USAGE_CACHE[key]
+    D._USAGE_CACHE[key] = (t - D.USAGE_TTL_S - 5, payload)
+    again = client.get("/api/disk/usage").json()
+    assert again["cached"] is False and again["measured_at"] > first["measured_at"] - 1 and again["age_s"] < 5
+
+
+def test_direct_calls_without_max_age_always_measure(ctx, tmp_path):
+    before = D.usage(ctx)["other"]["recordings"]
+    rec = ctx.data_dir / "recordings"
+    rec.mkdir(parents=True, exist_ok=True)
+    (rec / "x.bin").write_bytes(b"x" * 1000)
+    assert D.usage(ctx)["other"]["recordings"] == before + 1000
+    assert D.usage(ctx)["cached"] is False
+
+
+def test_purge_delete_backup_and_restore_invalidate(client, ctx, make_worker):
+    b = _generated(client, make_worker)
+    u1 = client.get("/api/disk/usage").json()
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    mine = next(x for x in u1["books"] if x["id"] == b["id"])
+    # a confirmation preview changes nothing: the cache stays
+    r = client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "takes", "confirm": False})
+    assert r.status_code == 409
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    # purge
+    r = client.post(f"/api/disk/books/{b['id']}/purge", json={"scope": "takes", "confirm": True})
+    assert r.status_code == 200 and r.json()["freed_bytes"] > 0
+    u2 = client.get("/api/disk/usage").json()
+    assert u2["cached"] is False
+    mine2 = next(x for x in u2["books"] if x["id"] == b["id"])
+    assert mine2["categories"]["alternates"] < mine["categories"]["alternates"] and mine2["purgeable"]["takes"] == 0
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    # backup, then delete the backup, then restore a second backup
+    name = client.post(f"/api/disk/books/{b['id']}/backup").json()["name"]
+    u3 = client.get("/api/disk/usage").json()
+    assert u3["cached"] is False and any(x["name"] == name for x in u3["backups"]["books"]) and u3["other"]["backups"] > u2["other"]["backups"]
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    restored = client.post("/api/disk/restore", json={"name": name}).json()
+    u4 = client.get("/api/disk/usage").json()
+    assert u4["cached"] is False and any(x["id"] == restored["book_id"] for x in u4["books"])
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    assert client.post("/api/disk/backups/delete", json={"name": name, "confirm": True}).status_code == 200
+    u5 = client.get("/api/disk/usage").json()
+    assert u5["cached"] is False and not any(x["name"] == name for x in u5["backups"]["books"])
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    assert client.post(f"/api/disk/books/{restored['book_id']}/delete", json={"confirm": True}).status_code == 200
+    u6 = client.get("/api/disk/usage").json()
+    assert u6["cached"] is False and not any(x["id"] == restored["book_id"] for x in u6["books"])
+    assert client.get("/api/disk/usage").json()["cached"] is True
+    assert client.post("/api/disk/db-backup").status_code == 200
+    assert client.get("/api/disk/usage").json()["cached"] is False
+
+
+def test_a_measurement_started_before_an_invalidation_is_not_stored(ctx, monkeypatch):
+    real = D._measure
+
+    def slow(c):
+        out = real(c)
+        D.invalidate_usage(c)        # an action finished while we were measuring
+        return out
+
+    monkeypatch.setattr(D, "_measure", slow)
+    D.usage(ctx, max_age=60)
+    assert D._usage_key(ctx) not in D._USAGE_CACHE
+
+
+def test_list_backups_reads_each_manifest_once(client, ctx, make_worker, monkeypatch):
+    b = _generated(client, make_worker)
+    name = client.post(f"/api/disk/books/{b['id']}/backup").json()["name"]
+    opened = []
+    real = zipfile.ZipFile
+
+    class Counting(real):
+        def __init__(self, file, *a, **k):
+            opened.append(str(file))
+            super().__init__(file, *a, **k)
+
+    monkeypatch.setattr(D.zipfile, "ZipFile", Counting)
+    D._MANIFEST_CACHE.clear()
+    first = D.list_backups(ctx)
+    assert len(opened) == 1 and first["books"][0]["name"] == name and first["books"][0]["title"] == "Alpha"
+    second = D.list_backups(ctx)
+    assert len(opened) == 1 and second == first                       # served from the (path, mtime, size) cache
+    p = D.backups_root(ctx) / name
+    time.sleep(0.02)
+    p.write_bytes(b"not a zip any more")                              # same path, new mtime/size: must be re-read
+    third = D.list_backups(ctx)
+    assert len(opened) == 2 and third["books"][0]["invalid"] is True and third["books"][0]["title"] is None
+    p.unlink()
+    assert D.list_backups(ctx)["books"] == [] and not [k for k in D._MANIFEST_CACHE if k[0] == str(p)]
+
+
+def test_purgeable_uses_one_stat_per_take_file(client, ctx, make_worker, monkeypatch):
+    b = _generated(client, make_worker)
+    book = _ctx_book(ctx, b["id"])
+    dirs = D.book_dirs(book)
+    n_files = sum(1 for d in (dirs["segments"], dirs["alternates"]) for p in Path(d).rglob("*") if p.is_file())
+    lstat = []
+    real = os.lstat
+    monkeypatch.setattr(D.os, "lstat", lambda *a, **k: (lstat.append(a[0]), real(*a, **k))[1])
+    stats = []
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(D.os.path, "isfile", lambda *a, **k: (stats.append(a[0]), real_isfile(*a, **k))[1])
+    with ctx.db.session() as conn:
+        _w, sizes = D._walk_files(dirs["segments"])
+        _w2, sizes2 = D._walk_files(dirs["alternates"])
+        lstat.clear(); stats.clear()
+        out = D._purgeable(conn, book, dirs, {**sizes, **sizes2})
+    assert out["takes"] > 0 and out["takes_bytes"] > 0
+    assert lstat == [] and stats == []          # every size came from the walk: no second stat, no existence check
+__STUDIO_EOF_efe8a88feba2__
 cat > "$DEST/tests/test_disk_management.py" <<'__STUDIO_EOF_f0e734ac28d0__'
 """Disk management (C3): usage, purge/delete rules, backup and restore. MOCK engine only (synthetic tones)."""
 from __future__ import annotations
@@ -29645,7 +33085,7 @@ def test_disk_routes_are_admin_only(ctx):
         assert c.post("/api/auth/login", json={"username": "boss", "password": "correct-horse-battery"}).status_code == 200
         assert c.get("/api/disk/usage").status_code == 200
 __STUDIO_EOF_f0e734ac28d0__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_7f2be53c985a__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_50917c1ab533__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -30030,13 +33470,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.7.0" and st["version_label"] == "v0.7.0"
+    assert st["version"] == "0.8.0" and st["version_label"] == "v0.8.0"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.7.0" and "stage" not in a
+    assert a["version_label"] == "v0.8.0" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_7f2be53c985a__
+__STUDIO_EOF_50917c1ab533__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_1c0cca55ee5a__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -30256,6 +33696,213 @@ def test_compare_endpoint(client):
     assert client.get("/api/recordings/compare", params={"ids": f"{ids[0]},rec_deadbeef"}).status_code == 404
     assert client.get("/api/recordings/compare", params={"ids": f"{ids[0]},../x"}).status_code == 404
 __STUDIO_EOF_00a2eb991424__
+cat > "$DEST/tests/test_live_foundation.py" <<'__STUDIO_EOF_53f9aa6c2b47__'
+"""v0.8 live-update foundation: a stable SSE digest, schema v6 (indexes + jobs.active_seconds), active-time accounting in the worker,
+the cover cache key, and the node unit tests for the shared UI helpers. MOCK engine only."""
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+from conftest import make_text
+from studio import db as DB
+from studio import services as S
+from studio.db import row, rows
+
+
+def _import(client, queue=True, title="Live Book"):
+    r = client.post("/api/imports", files={"file": ("A.txt", make_text(2, title=title).encode(), "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    voice = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    b = client.post(f"/api/imports/{r.json()['token']}/confirm", json={"title": title, "voice_id": voice["id"], "queue": queue})
+    assert b.status_code == 200, b.text
+    return b.json()
+
+
+# ------------------------------------------------------------------------------ digest
+
+
+def _heartbeat(ctx, at: float, state="idle", message="Idle"):
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE worker_state SET owner='w1', pid=4242, state=?, message=?, heartbeat_at=? WHERE id=1", (state, message, at))
+
+
+def test_digest_is_stable_while_the_heartbeat_ages(ctx, monkeypatch):
+    t = [time.time()]
+    monkeypatch.setattr(S, "now", lambda: t[0])
+    _heartbeat(ctx, t[0] - 0.5)
+    d1 = S.state_digest(ctx)
+    assert d1["worker"]["online"] is True and "heartbeat_age_s" not in d1["worker"] and "heartbeat_at" not in d1["worker"]
+    for dt in (1.0, 2.0, 7.3):  # the same heartbeat, seconds later: nothing real changed
+        t[0] += dt
+        assert json.dumps(S.state_digest(ctx), sort_keys=True) == json.dumps(d1, sort_keys=True)
+    # a fresh beat (different timestamp, same state) is also not a change
+    _heartbeat(ctx, t[0])
+    assert S.state_digest(ctx) == d1
+    # going stale IS a change: the worker is no longer online
+    t[0] += 120
+    d2 = S.state_digest(ctx)
+    assert d2["worker"]["online"] is False and d2 != d1
+
+
+def test_digest_changes_when_a_segment_or_job_changes(ctx, client, monkeypatch):
+    _heartbeat(ctx, time.time())
+    b = _import(client, queue=True)
+    d0 = S.state_digest(ctx)
+    time.sleep(0.01)
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE segments SET updated_at = updated_at + 5 WHERE book_id=?", (b["id"],))
+    d1 = S.state_digest(ctx)
+    assert d1 != d0 and d1["segments"] != d0["segments"]
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE jobs SET updated_at = updated_at + 5 WHERE book_id=?", (b["id"],))
+    d2 = S.state_digest(ctx)
+    assert d2["jobs"] != d1["jobs"]
+
+
+def test_worker_endpoint_still_reports_the_exact_age(client, ctx):
+    _heartbeat(ctx, time.time() - 3)
+    w = client.get("/api/worker").json()
+    assert w["online"] is True and 2.5 <= w["heartbeat_age_s"] <= 10 and isinstance(w["heartbeat_at"], float)
+
+
+def test_sse_event_payload_has_no_clock_values(client, ctx):
+    _heartbeat(ctx, time.time())
+    r = client.get("/api/events?once=1")
+    assert r.status_code == 200
+    data = next(line[6:] for line in r.text.splitlines() if line.startswith("data: "))
+    w = json.loads(data)["worker"]
+    assert "heartbeat_age_s" not in w and "heartbeat_at" not in w and w["online"] is True
+
+
+# ----------------------------------------------------------------------------- schema v6
+
+
+def _cols(conn, table):
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _indexes(conn):
+    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+
+
+def test_migration_v5_to_v6_adds_indexes_and_active_seconds(tmp_path):
+    d = DB.Database(tmp_path / "t.db")
+    with d.session() as c:
+        for version, sql in DB.MIGRATIONS[:5]:
+            for st in DB._split_sql(sql):
+                c.execute(st)
+            c.execute(f"PRAGMA user_version = {version}")
+        assert "active_seconds" not in _cols(c, "jobs") and "ix_jobs_book" not in _indexes(c)
+        c.execute("INSERT INTO books(uid,title,settings_json,synth_fingerprint,storage_json,created_at,updated_at) VALUES ('b','T','{}','f','{}',1,1)")
+        c.execute("INSERT INTO jobs(kind,book_id,payload_json,status,position,created_at,updated_at) VALUES ('book',1,'{}','queued',1,1,1)")
+    assert DB.MIGRATIONS[5][0] == 6 and DB.LATEST_VERSION >= 6
+    assert d.migrate(tmp_path / "bk")[0] == 5
+    with d.session() as c:
+        assert c.execute("PRAGMA user_version").fetchone()[0] == DB.LATEST_VERSION
+        assert {"ix_segments_updated", "ix_jobs_updated", "ix_jobs_book", "ux_one_active_book_job"} <= _indexes(c)
+        assert "active_seconds" in _cols(c, "jobs")
+        assert c.execute("SELECT active_seconds FROM jobs WHERE id=1").fetchone()[0] == 0  # existing rows get the default
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+        # the partial unique index still guards "one active book job per book"
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute("INSERT INTO jobs(kind,book_id,payload_json,status,position,created_at,updated_at) VALUES ('book',1,'{}','queued',2,1,1)")
+    assert d.migrate() == (DB.LATEST_VERSION, DB.LATEST_VERSION)  # idempotent
+
+
+def test_fresh_database_has_the_v6_schema(ctx):
+    with ctx.db.session() as c:
+        assert {"ix_segments_updated", "ix_jobs_updated", "ix_jobs_book"} <= _indexes(c)
+        assert "active_seconds" in _cols(c, "jobs")
+        plan = " ".join(str(tuple(r)) for r in c.execute("EXPLAIN QUERY PLAN SELECT MAX(updated_at) FROM segments"))
+        assert "ix_segments_updated" in plan
+
+
+# ------------------------------------------------------------------------ active_seconds
+
+
+def test_active_seconds_accumulates_per_step_with_a_fake_clock(client, ctx, make_worker):
+    _import(client, queue=True)
+    w = make_worker()
+    ticks = [0.0]
+
+    def clock():  # every call advances 2 s, and a step reads it exactly twice (start, end)
+        ticks[0] += 2.0
+        return ticks[0]
+
+    w.clock = clock
+    steps = w.run_until_idle()
+    assert steps > 1
+    with ctx.db.session() as conn:
+        total = conn.execute("SELECT SUM(active_seconds) FROM jobs").fetchone()[0]
+        bookjob = row(conn, "SELECT * FROM jobs WHERE kind='book'")
+    assert total == pytest.approx(2.0 * steps)
+    assert bookjob["status"] == "completed" and bookjob["active_seconds"] >= 2.0 * 2  # several segments, each a step
+
+
+def test_active_seconds_is_real_wall_time_and_idle_waits_add_nothing(client, ctx, make_worker):
+    b = _import(client, queue=True)
+    w = make_worker()
+    t0 = time.monotonic()
+    w.step()
+    time.sleep(0.3)  # an idle gap between steps: must not be counted
+    w.step()
+    wall = time.monotonic() - t0
+    with ctx.db.session() as conn:
+        j = row(conn, "SELECT * FROM jobs WHERE book_id=? AND kind='book'", (b["id"],))
+    assert 0 < j["active_seconds"] <= wall - 0.25
+    # a job that has not run (queued behind another) has none
+    b2 = _import(client, queue=True, title="Second")
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT active_seconds FROM jobs WHERE book_id=?", (b2["id"],))["active_seconds"] == 0
+
+
+def test_active_seconds_is_recorded_on_the_failure_path_too(client, ctx, make_worker, monkeypatch):
+    b = _import(client, queue=True)
+    w = make_worker()
+
+    def boom(job):
+        time.sleep(0.05)
+        raise RuntimeError("engine fell over")
+
+    monkeypatch.setattr(w, "_run_book_step", boom)
+    assert w.step() is True
+    with ctx.db.session() as conn:
+        j = row(conn, "SELECT * FROM jobs WHERE book_id=? AND kind='book'", (b["id"],))
+    assert j["status"] == "failed" and j["active_seconds"] >= 0.05
+
+
+# ------------------------------------------------------------------------------ cover
+
+
+def test_cover_version_is_the_cover_file_mtime(client, ctx):
+    b = _import(client, queue=False)
+    assert client.get(f"/api/books/{b['id']}").json()["cover_version"] == 0
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+    r = client.post(f"/api/books/{b['id']}/cover", files={"file": ("c.png", png, "image/png")})
+    assert r.status_code == 200, r.text
+    d = client.get(f"/api/books/{b['id']}").json()
+    assert d["has_cover"] is True and d["cover_version"] > 1_000_000_000
+    assert client.get(f"/api/books/{b['id']}").json()["cover_version"] == d["cover_version"]  # stable until the file changes
+
+
+# ------------------------------------------------------------------- node UI helpers
+
+JS_TEST = Path(__file__).resolve().parent / "js" / "ui_helpers.test.mjs"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_ui_helpers_node_suite():
+    r = subprocess.run(["node", str(JS_TEST)], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "0 failed" in r.stdout
+__STUDIO_EOF_53f9aa6c2b47__
 cat > "$DEST/tests/test_llm_test_connection.py" <<'__STUDIO_EOF_811fdb836aac__'
 """Settings > Narrative > Local LLM: the Test connection button (endpoint and model name check, no book touched)."""
 from __future__ import annotations
@@ -31839,6 +35486,25 @@ def row_book(ctx, book_id):
     with ctx.db.session() as conn:
         return row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
 __STUDIO_EOF_f3f382c26c8b__
+cat > "$DEST/tests/test_overview_runtime.py" <<'__STUDIO_EOF_fdc9fd72ee28__'
+"""P2-B/C: the Overview and Library pages render `runtime` from each book summary; check the real server field reaches /api/books and
+/api/overview. Formatting (js/runtime.js) is covered by tests/js/runtime_fmt.test.mjs via tests/test_runtime.py; real browser behaviour is
+tools/e2e/polish_overview.py. MOCK engine only."""
+from __future__ import annotations
+
+from conftest import make_text
+
+STATES = {"running", "queued", "finished", "idle"}
+KEYS = {"state", "processing_s", "remaining_s", "finish_at", "starts_at", "total_est_s", "estimated", "basis"}
+
+
+def test_runtime_field_reaches_books_and_overview(client):
+    r = client.post("/api/imports", files={"file": ("A.txt", make_text(2, title="Rt").encode(), "text/plain")})
+    voice = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    assert client.post(f"/api/imports/{r.json()['token']}/confirm", json={"title": "Rt", "voice_id": voice["id"], "queue": False}).status_code == 200
+    for rt in (client.get("/api/books").json()["books"][0]["runtime"], client.get("/api/overview").json()["recent"][0]["runtime"]):
+        assert set(rt) == KEYS and rt["state"] in STATES
+__STUDIO_EOF_fdc9fd72ee28__
 cat > "$DEST/tests/test_plumbing_v5.py" <<'__STUDIO_EOF_f0a48a3252bc__'
 """Plumbing for the reference bank, A/B votes and the chapter / scene / translator LLM models (schema v5, settings, LLM client).
 Nothing here changes how existing books sound: every new setting defaults to the old behaviour. MOCK engine only."""
@@ -32196,6 +35862,317 @@ def test_voice_pace_validation_and_staleness(client, ctx, make_worker):
     assert done and all(d["duration_s"] for d in done)
     assert client.put(f"/api/voices/{v['id']}/pace", json={"pace": 1.1}).json()["stale_segments"] == 0   # unchanged: no-op
 __STUDIO_EOF_abcfa3cf215e__
+cat > "$DEST/tests/test_regen_direction.py" <<'__STUDIO_EOF_0843a886b192__'
+"""Regenerate with direction: a user's own direction (emotion / intensity / pacing / delivery note) reaches the voice even when the Director is off
+or the book is a classic one, the delivery summary and the read-only preview say honestly what is sent, and the regenerate API takes an optional
+direction. MOCK engine only (synthetic test tones): nothing here proves how a real model reacts to an instruction or a reference clip."""
+from __future__ import annotations
+
+import pytest
+
+from conftest import needs_ffmpeg
+from narrative_fixtures import TXT
+from studio.db import row, rows, scalar
+from studio.narrative import store as N_store
+from test_delivery_audio import delivery, lab_recording, make_clone, plan_of
+from test_narrative import RecordingEngine, all_segments, chars, import_semantic, put_settings, worker_with
+
+
+def render_all(client, ctx, bid, eng=None):
+    eng = eng or RecordingEngine()
+    w = worker_with(ctx, eng)
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    return w, eng
+
+
+def seg_row(ctx, sid):
+    with ctx.db.session() as conn:
+        return row(conn, "SELECT * FROM segments WHERE id=?", (sid,))
+
+
+def narrator_segment(ctx, bid):
+    """A narration segment (narrator voice, a preset in these books) long enough to be a normal line."""
+    return next(s for s in all_segments(ctx, bid) if s["kind"] != "heading" and s["span_kind"] == "narration")
+
+
+def counts(ctx):
+    with ctx.db.session() as conn:
+        return {t: scalar(conn, f"SELECT COUNT(*) FROM {t}", (), 0) for t in ("directions", "direction_log", "review_actions", "attempts", "jobs", "audit_log")}
+
+
+# ------------------------------------------------------------------------------------------ the plan
+
+
+def test_user_direction_reaches_a_preset_voice_with_the_director_off(client, ctx):
+    bid = import_semantic(client)["id"]                                            # Director off (default)
+    segs = all_segments(ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    before = {s["id"]: plan_of(ctx, s["id"]) for s in segs}
+    assert before[seg["id"]].instruct is None and "off for this book" in before[seg["id"]].delivery_reason
+    r = client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "anger", "intensity": 5, "delivery": "shouting"})
+    assert r.status_code == 200, r.text
+    p = plan_of(ctx, seg["id"])
+    assert p.instruct and "angry" in p.instruct and "shouting" in p.instruct
+    assert p.delivery_applied and p.delivery_reason.startswith("direction set by you for this segment")
+    assert p.gen_key != before[seg["id"]].gen_key and p.user_source
+    # every other segment is untouched: same key, same (absent) instruction
+    for s in segs:
+        if s["id"] != seg["id"]:
+            q = plan_of(ctx, s["id"])
+            assert q.gen_key == before[s["id"]].gen_key and q.instruct is None and not q.user_source
+    # clearing the direction restores the original key
+    assert client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": None, "intensity": None, "delivery": None}).status_code == 200
+    assert plan_of(ctx, seg["id"]).gen_key == before[seg["id"]].gen_key
+
+
+def test_saving_a_direction_with_the_director_off_requeues_a_rendered_segment(client, ctx):
+    bid = import_semantic(client)["id"]
+    render_all(client, ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    assert seg_row(ctx, seg["id"])["status"] in ("passed", "flagged")
+    round0 = seg_row(ctx, seg["id"])["round"]
+    r = client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "fear", "intensity": 4})
+    assert r.status_code == 200 and r.json()["regenerating"] is True and r.json()["status"] == "pending"
+    assert seg_row(ctx, seg["id"])["round"] == round0 + 1
+    # a direction that produces the same plan again does not churn the take
+    w, eng = render_all(client, ctx, bid)
+    assert any(c["sid"] == seg["sid"] and c["instruct"] for c in eng.log)
+    r2 = client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "fear", "intensity": 4})
+    assert r2.json()["regenerating"] is False
+
+
+def test_user_direction_applies_on_a_classic_book(client, ctx):
+    put_settings(client, {"semantic_segmentation": False})
+    r = client.post("/api/imports", files={"file": ("flood.txt", TXT.encode(), "text/plain")})
+    ryan = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    bid = client.post(f"/api/imports/{r.json()['token']}/confirm", json={"title": "Classic", "voice_id": ryan["id"], "queue": False}).json()["id"]
+    segs = all_segments(ctx, bid)
+    assert segs and all(s["src_start"] is None for s in segs)
+    seg = next(s for s in segs if s["kind"] != "heading")
+    base = plan_of(ctx, seg["id"])
+    assert base.instruct is None
+    assert client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "sadness", "intensity": 4}).status_code == 200
+    p = plan_of(ctx, seg["id"])
+    assert p.instruct and "sad" in p.instruct and p.gen_key != base.gen_key and "set by you" in p.delivery_reason
+
+
+@needs_ffmpeg
+def test_clone_pace_from_a_user_direction_and_honest_summary(client, ctx):
+    bid = import_semantic(client)["id"]
+    clone = make_clone(client)
+    tom = chars(client, bid)["Tom Briggs"]
+    assert client.patch(f"/api/characters/{tom['id']}", json={"voice_id": clone["id"]}).status_code == 200
+    seg = next(s for s in all_segments(ctx, bid) if s["character_id"] == tom["id"])
+    delivery(client, pace_from_direction="always")
+    base = plan_of(ctx, seg["id"])
+    assert client.patch(f"/api/segments/{seg['id']}/narrative", json={"pacing": "fast", "emotion": "anger", "intensity": 5}).status_code == 200
+    p = plan_of(ctx, seg["id"])
+    assert p.voice_kind == "clone" and p.pace == pytest.approx(1.08) and p.gen_key != base.gen_key
+    assert p.instruct is None and p.delivery_applied is False                      # a clone takes no written instruction
+    pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
+    assert pv["voice_kind"] == "clone" and pv["applied"] is False and pv["instruct"] is None and pv["pace"] == pytest.approx(1.08)
+    assert pv["source"] == "you" and pv["bank_clip"] is None and pv["bank_bucket"] == "tense" and pv["bank_enabled"] is False
+    text = " ".join(pv["notes"])
+    assert "cannot take written instructions" in text and "reference bank is switched off" in text and "Speed x1.08" in text
+    assert pv["user_direction"]["emotion"] == "anger"
+
+
+@needs_ffmpeg
+def test_clone_bank_clip_is_chosen_for_a_user_direction_and_missing_clip_is_reported(client, ctx):
+    bid = import_semantic(client, delivery={"clone": "reference_bank"})["id"]
+    clone = make_clone(client)
+    tom = chars(client, bid)["Tom Briggs"]
+    assert client.patch(f"/api/characters/{tom['id']}", json={"voice_id": clone["id"]}).status_code == 200
+    seg = next(s for s in all_segments(ctx, bid) if s["character_id"] == tom["id"])
+    base = plan_of(ctx, seg["id"])
+    assert client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "anger", "intensity": 5}).status_code == 200
+    no_clip = plan_of(ctx, seg["id"])
+    assert no_clip.ref_id is None and no_clip.delivery_applied is False and no_clip.gen_key == base.gen_key
+    assert "no adopted reference clip" in no_clip.delivery_reason and no_clip.delivery_reason.startswith("direction set by you")
+    pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
+    assert pv["applied"] is False and pv["bank_enabled"] is True and pv["bank_clip"] is None
+    assert "No 'tense' reference clip" in " ".join(pv["notes"]) and "differs only by chance" in " ".join(pv["notes"])
+    # adopt a clip for the bucket: the user's direction now selects it
+    w = worker_with(ctx, RecordingEngine())
+    rid = lab_recording(client, ctx, w)
+    assert client.post(f"/api/voices/{clone['id']}/refs/adopt", json={"bucket": "tense", "recording_id": rid, "owner_attest": True,
+                                                                     "statement": "Recorded by the speaker for this project."}).status_code == 200
+    p = plan_of(ctx, seg["id"])
+    assert p.ref_id and p.ref_bucket == "tense" and p.delivery_applied is True and p.gen_key != base.gen_key
+    pv = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
+    assert pv["applied"] is True and pv["bank_clip"] == "tense" and "Uses the 'tense' reference clip" in " ".join(pv["notes"])
+
+
+def test_segments_without_a_user_direction_keep_their_keys(client, ctx):
+    """Director on and off alike: nothing changes for a segment nobody directed (the gen_key is the cache identity of every existing take)."""
+    bid = import_semantic(client)["id"]
+    off = {s["id"]: plan_of(ctx, s["id"]).gen_key for s in all_segments(ctx, bid)}
+    client.put("/api/settings", json={"narrative": {"director_enabled": True}})
+    client.post(f"/api/books/{bid}/analyze", json={})
+    w = worker_with(ctx, RecordingEngine())
+    w.run_until_idle()
+    on = {s["id"]: plan_of(ctx, s["id"]).gen_key for s in all_segments(ctx, bid)}
+    again = {s["id"]: plan_of(ctx, s["id"]).gen_key for s in all_segments(ctx, bid)}
+    assert on == again and set(on) == set(off)
+    with ctx.db.session() as conn:
+        seg = row(conn, "SELECT * FROM segments WHERE id=?", (next(iter(on)),))
+        book = row(conn, "SELECT * FROM books WHERE id=?", (bid,))
+        assert N_store.plan_for_segment(conn, ctx, seg, book, user_override=None).gen_key == on[seg["id"]]
+        assert N_store.plan_for_segment(conn, ctx, seg, book, user_override={}).gen_key == on[seg["id"]]
+
+
+# ------------------------------------------------------------------------------------ the services / API
+
+
+def test_regenerate_with_direction_end_to_end(client, ctx):
+    bid = import_semantic(client)["id"]
+    w, eng = render_all(client, ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    s0 = seg_row(ctx, seg["id"])
+    assert s0["status"] in ("passed", "flagged") and s0["round"] == 1
+    r = client.post(f"/api/segments/{seg['id']}/regenerate", json={"note": "the character is shouting here",
+                                                                    "direction": {"emotion": "anger", "intensity": 5, "delivery": "shouting"}})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["status"] == "pending" and out["delivery"]["voice_kind"] == "preset" and out["delivery"]["applied"] is True
+    assert "angry" in out["delivery"]["instruct"] and "shouting" in out["delivery"]["instruct"]
+    assert out["delivery"]["source"] == "you" and out["delivery"]["user_direction"]["emotion"] == "anger"
+    assert seg_row(ctx, seg["id"])["status"] == "pending" and seg_row(ctx, seg["id"])["round"] == 2
+    eng.log.clear()
+    w.run_until_idle()
+    mine = [c for c in eng.log if c["sid"] == seg["sid"]]
+    assert mine and "angry" in mine[-1]["instruct"] and "shouting" in mine[-1]["instruct"]
+    s1 = seg_row(ctx, seg["id"])
+    assert s1["status"] in ("passed", "flagged") and s1["selected_attempt_id"]
+    with ctx.db.session() as conn:
+        a = row(conn, "SELECT * FROM attempts WHERE id=?", (s1["selected_attempt_id"],))
+        assert a["round"] == 2 and "angry" in (a["instruct_used"] or "") and a["delivery_applied"] == 1
+        acts = rows(conn, "SELECT action, detail_json FROM review_actions WHERE segment_id=? ORDER BY id", (seg["id"],))
+        user = row(conn, "SELECT user_json FROM directions WHERE segment_id=?", (seg["id"],))["user_json"]
+    assert [x["action"] for x in acts].count("regenerate") >= 1 and any("shouting" in x["detail_json"] for x in acts if x["action"] == "regenerate")
+    assert "anger" in user and "shouting" in user
+    # the detail the Review page reads still carries the same fields
+    det = client.get(f"/api/segments/{seg['id']}").json()
+    assert {"segment", "chapter", "attempts", "reviews", "prev_id", "next_id", "chapter_timing", "max_attempts"} <= set(det)
+    assert det["reviews"][0]["action"] in ("regenerate", "approve", "select-take") or det["reviews"]
+
+
+def test_regenerate_with_a_direction_that_changes_nothing_still_regenerates(client, ctx):
+    """The same direction twice: the second request changes no key, so the regenerate itself must do the work."""
+    bid = import_semantic(client)["id"]
+    w, eng = render_all(client, ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    d = {"emotion": "fear", "intensity": 4}
+    assert client.post(f"/api/segments/{seg['id']}/regenerate", json={"direction": d}).status_code == 200
+    w.run_until_idle()
+    r0 = seg_row(ctx, seg["id"])["round"]
+    r = client.post(f"/api/segments/{seg['id']}/regenerate", json={"direction": d, "note": "again"})
+    assert r.status_code == 200 and r.json()["status"] == "pending"
+    assert seg_row(ctx, seg["id"])["round"] == r0 + 1
+
+
+def test_plain_regenerate_still_works_and_changes_no_direction(client, ctx):
+    bid = import_semantic(client)["id"]
+    w, eng = render_all(client, ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    before = counts(ctx)["directions"]
+    r = client.post(f"/api/segments/{seg['id']}/regenerate", json={"note": "just again"})
+    assert r.status_code == 200 and r.json()["status"] == "pending" and "delivery" not in r.json()
+    assert client.post(f"/api/segments/{seg['id']}/regenerate", json={}).status_code == 200      # already pending
+    assert counts(ctx)["directions"] == before
+    assert client.post(f"/api/segments/{seg['id']}/regenerate", json={"direction": {"emotion": "anger"}, "surprise": 1}).status_code == 422   # extra="forbid"
+    assert client.post(f"/api/segments/{seg['id']}/regenerate", json={"direction": {"mood": "angry"}}).status_code == 422
+
+
+def test_direction_validation(client, ctx):
+    bid = import_semantic(client)["id"]
+    seg = narrator_segment(ctx, bid)
+    url = f"/api/segments/{seg['id']}/regenerate"
+    assert client.post(url, json={"direction": {"emotion": "furious"}}).status_code == 422
+    assert client.post(url, json={"direction": {"pacing": "sprint"}}).status_code == 422
+    assert client.post(url, json={"direction": {"intensity": 9}}).status_code == 422
+    assert client.post(url, json={"direction": {"delivery": "x" * 241}}).status_code == 422
+    with ctx.db.session() as conn:
+        assert not row(conn, "SELECT 1 AS x FROM directions WHERE segment_id=?", (seg["id"],))             # nothing stored by the refused requests
+    ok = client.post(url, json={"direction": {"emotion": "anger", "delivery": "  furious   and loud "}})
+    assert ok.status_code == 200
+    with ctx.db.session() as conn:
+        import json as _json
+
+        user = _json.loads(row(conn, "SELECT user_json FROM directions WHERE segment_id=?", (seg["id"],))["user_json"])
+    assert user == {"emotion": "anger", "intensity": 3, "delivery": "furious and loud"}          # an emotion without a strength means 3
+
+
+def test_delivery_preview_is_read_only_and_explains_the_inputs(client, ctx):
+    bid = import_semantic(client)["id"]
+    w, eng = render_all(client, ctx, bid)
+    seg = narrator_segment(ctx, bid)
+    key0 = plan_of(ctx, seg["id"]).gen_key
+    c0 = counts(ctx)
+    cur = client.get(f"/api/segments/{seg['id']}/delivery-preview")
+    assert cur.status_code == 200 and cur.json()["applied"] is False and cur.json()["source"] == "none"
+    r = client.get(f"/api/segments/{seg['id']}/delivery-preview", params={"emotion": "anger", "intensity": "5", "pacing": "fast", "delivery": "furious"})
+    assert r.status_code == 200, r.text
+    pv = r.json()
+    assert pv["segment_id"] == seg["id"] and pv["voice_kind"] == "preset" and pv["applied"] is True and pv["source"] == "you"
+    assert "angry" in pv["instruct"] and "furious" in pv["instruct"] and pv["direction"]["emotion"] == "anger" and pv["direction"]["intensity"] == 5
+    assert set(pv) >= {"voice_kind", "voice", "model_id", "applied", "instruct", "pace", "pace_reason", "bank_clip", "bank_bucket", "bank_enabled",
+                       "reason", "source", "direction", "user_direction", "notes", "segment_id"}
+    assert pv["user_direction"] == {}                                                           # nothing was saved
+    assert counts(ctx) == c0 and plan_of(ctx, seg["id"]).gen_key == key0 and seg_row(ctx, seg["id"])["status"] != "pending"
+    assert client.get(f"/api/segments/{seg['id']}/delivery-preview", params={"emotion": "furious"}).status_code == 422
+    assert client.get(f"/api/segments/{seg['id']}/delivery-preview", params={"intensity": "abc"}).status_code == 422
+    assert client.get("/api/segments/99999/delivery-preview").status_code == 404
+    # with a stored direction an empty parameter clears that field in the preview only
+    assert client.patch(f"/api/segments/{seg['id']}/narrative", json={"emotion": "fear", "intensity": 4, "delivery": "whispering"}).status_code == 200
+    stored = client.get(f"/api/segments/{seg['id']}/delivery-preview").json()
+    assert stored["user_direction"] == {"emotion": "fear", "intensity": 4, "delivery": "whispering"} and "whispering" in stored["instruct"]
+    cleared = client.get(f"/api/segments/{seg['id']}/delivery-preview", params={"delivery": ""}).json()
+    assert "whispering" not in (cleared["instruct"] or "") and "fearful" in cleared["instruct"]
+    assert client.get(f"/api/segments/{seg['id']}/delivery-preview").json()["user_direction"]["delivery"] == "whispering"
+
+
+def test_regenerate_with_direction_with_the_director_on(client, ctx):
+    bid = import_semantic(client, director_enabled=True)["id"]
+    client.post(f"/api/books/{bid}/analyze", json={})
+    w = worker_with(ctx, RecordingEngine())
+    w.run_until_idle()
+    client.post("/api/queue", json={"book_id": bid})
+    w.run_until_idle()
+    seg = narrator_segment(ctx, bid)
+    r = client.post(f"/api/segments/{seg['id']}/regenerate", json={"direction": {"emotion": "anger", "intensity": 5, "delivery": "shouting"}})
+    assert r.status_code == 200, r.text
+    d = r.json()["delivery"]
+    assert d["applied"] and "angry" in d["instruct"] and "shouting" in d["instruct"] and d["source"] == "you"
+    prev = client.get(f"/api/segments/{seg['id']}/delivery-preview", params={"emotion": "joy", "intensity": "3"}).json()
+    assert "joyful" in prev["instruct"] and prev["source"] == "you"
+    assert seg_row(ctx, seg["id"])["status"] == "pending"
+    # the Director-on cascade resets takes on its own; a job must exist for them or they would stay pending forever
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT id FROM jobs WHERE book_id=? AND kind='book' AND status IN ('queued','running')", (bid,))
+    w.run_until_idle()
+    assert not [s for s in all_segments(ctx, bid) if s["status"] in ("pending", "synthesizing")]
+    assert seg_row(ctx, seg["id"])["status"] in ("passed", "flagged")
+
+
+def test_segment_detail_timing_comes_from_the_chapter_map(client, ctx):
+    """segment_detail finds its chapter-master timing inside SQLite now; the output must be unchanged."""
+    import json as _json
+
+    from studio import services as SV
+
+    bid = import_semantic(client)["id"]
+    segs = [s for s in all_segments(ctx, bid) if s["ch_idx"] == 1]
+    entries = [{"sid": s["sid"], "start_s": round(i * 2.5, 3), "end_s": round(i * 2.5 + 2.0, 3)} for i, s in enumerate(segs)]
+    with ctx.db.tx() as conn:
+        conn.execute("INSERT INTO chapter_renders(chapter_id, kind, path, duration_s, segment_map_json, takes_digest, created_at) VALUES (?,?,?,?,?,?,?)",
+                     (segs[0]["chapter_id"], "wav", "x.wav", 99.0, _json.dumps(entries), "d", 1.0))
+    for i, s in enumerate(segs):
+        assert SV.segment_detail(ctx, s["id"])["chapter_timing"] == entries[i]
+    other = next(s for s in all_segments(ctx, bid) if s["ch_idx"] == 2)
+    assert SV.segment_detail(ctx, other["id"])["chapter_timing"] is None
+__STUDIO_EOF_0843a886b192__
 cat > "$DEST/tests/test_release_notes.py" <<'__STUDIO_EOF_941bec614861__'
 """Release notes come from CHANGELOG.md (tools/release_notes.py), and every release must have an entry."""
 from __future__ import annotations
@@ -32227,6 +36204,426 @@ def test_every_changelog_version_has_notes_and_current_version_is_covered():
     for v in re.findall(r"^## (v\d+\.\d+\.\d+)\s*$", text, re.M):
         assert rn.section(text, v), f"empty CHANGELOG section for {v}"
 __STUDIO_EOF_941bec614861__
+cat > "$DEST/tests/test_runtime.py" <<'__STUDIO_EOF_a063bb59fbd7__'
+"""Processing-time estimates (studio/runtime.py) and the grouped, paginated Queue API. MOCK engine and synthetic rows only."""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from conftest import make_text
+from studio import runtime as R
+from studio import services as S
+from studio.db import row, rows
+
+NOW = 1_800_000_000.0
+
+
+def _make_book(client, title, chapters=1, queue=False):
+    r = client.post("/api/imports", files={"file": (f"{title}.txt", make_text(chapters, title=title).encode(), "text/plain")})
+    assert r.status_code == 200, r.text
+    voice = next(v for v in client.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+    b = client.post(f"/api/imports/{r.json()['token']}/confirm", json={"title": title, "voice_id": voice["id"], "queue": queue})
+    assert b.status_code == 200, b.text
+    return b.json()
+
+
+def _seg_ids(ctx, book_id):
+    with ctx.db.session() as conn:
+        return [r["id"] for r in rows(conn, "SELECT id FROM segments WHERE book_id=? ORDER BY id", (book_id,))]
+
+
+def _attempts(ctx, seg_ids, secs, model="m-x", t0=NOW - 100000, status="done", vv=None):
+    """One finished attempt per segment id, each taking `secs` wall seconds."""
+    with ctx.db.tx() as conn:
+        for i, sid in enumerate(seg_ids):
+            c = t0 + i * 10
+            conn.execute("""INSERT INTO attempts(segment_id, round, attempt_no, status, engine, model_id, voice_version_id, fingerprint, text_spoken, created_at, finished_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?)""", (sid, 1, 1, status, "mock", model, vv, "fp", "x", c, c + secs))
+
+
+def _job(ctx, book_id, status, position=1.0, started_at=None, finished_at=None, active_seconds=0.0):
+    with ctx.db.tx() as conn:
+        return conn.execute("""INSERT INTO jobs(kind, book_id, status, position, created_at, started_at, finished_at, updated_at, active_seconds)
+                               VALUES ('book',?,?,?,?,?,?,?,?)""", (book_id, status, position, (started_at or NOW) - 5, started_at, finished_at,
+                                                                  finished_at or started_at or NOW, active_seconds)).lastrowid
+
+
+def _set_model(ctx, book_id, model):
+    """Point the book at its own copy of its voice version with the given TTS model (books of one voice otherwise share a version)."""
+    with ctx.db.tx() as conn:
+        bk = row(conn, "SELECT voice_id, voice_version_id FROM books WHERE id=?", (book_id,))
+        vv = row(conn, "SELECT * FROM voice_versions WHERE id=?", (bk["voice_version_id"],))
+        nxt = row(conn, "SELECT MAX(version) m FROM voice_versions WHERE voice_id=?", (bk["voice_id"],))["m"] + 1
+        new = conn.execute("INSERT INTO voice_versions(voice_id, version, model_id, speaker, language, instruct, created_at) VALUES (?,?,?,?,?,?,?)",
+                           (bk["voice_id"], nxt, model, vv["speaker"], vv["language"], vv["instruct"], NOW)).lastrowid
+        conn.execute("UPDATE books SET voice_version_id=? WHERE id=?", (new, book_id))
+
+
+def _rt(ctx, book_id, now=NOW):
+    with ctx.db.session() as conn:
+        b = row(conn, "SELECT * FROM books WHERE id=?", (book_id,))
+        return R.book_runtime(conn, b, R.runtime_context(conn, now))
+
+
+def _pending(ctx, book_id):
+    with ctx.db.session() as conn:
+        return row(conn, "SELECT COUNT(*) n FROM segments WHERE book_id=? AND status IN ('pending','synthesizing')", (book_id,))["n"]
+
+
+def _mark_done(ctx, book_id, n):
+    """Mark the first n segments of a book rendered (passed)."""
+    ids = _seg_ids(ctx, book_id)[:n]
+    with ctx.db.tx() as conn:
+        for sid in ids:
+            conn.execute("UPDATE segments SET status='passed' WHERE id=?", (sid,))
+    return ids
+
+
+def _history(client, ctx):
+    """A book whose 30 segments carry 30 finished attempts of 4 s each (the global rate), tagged m-x. Returns that book's id."""
+    h = _make_book(client, "History", chapters=6)
+    ids = _seg_ids(ctx, h["id"])
+    assert len(ids) >= 30
+    _attempts(ctx, ids[:30], 4.0, model="m-x")
+    _mark_done(ctx, h["id"], len(ids))
+    return h["id"]
+
+
+# ----------------------------------------------------------------------------------------------------------- rates
+
+
+def test_no_rate_data_says_estimate_after_n_more_segments(client, ctx):
+    b = _make_book(client, "Fresh")
+    _job(ctx, b["id"], "queued")
+    rt = _rt(ctx, b["id"])
+    assert rt["state"] == "queued" and rt["total_est_s"] is None and rt["starts_at"] is None and rt["finish_at"] is None
+    assert rt["basis"] == "estimate after 20 more segments" and rt["estimated"] is True
+    ids = _seg_ids(ctx, b["id"])
+    _attempts(ctx, ids[:5], 3.0)
+    assert _rt(ctx, b["id"])["basis"] == "estimate after 15 more segments"
+    assert set(rt) == {"state", "processing_s", "remaining_s", "finish_at", "starts_at", "total_est_s", "estimated", "basis"}
+
+
+def test_idle_book_with_pending_segments(client, ctx):
+    h = _history(client, ctx)
+    b = _make_book(client, "Idle")
+    _set_model(ctx, b["id"], "m-x")
+    rt = _rt(ctx, b["id"])
+    assert rt["state"] == "idle" and rt["starts_at"] is None and rt["finish_at"] is None and rt["remaining_s"] is None
+    assert rt["total_est_s"] == _pending(ctx, b["id"]) * 4.0
+    assert rt["basis"].startswith("typical pace on m-x")
+    done = _rt(ctx, h)  # fully rendered, but no completed job: nothing to estimate and nothing to report
+    assert done["state"] == "idle" and done["total_est_s"] is None and done["processing_s"] is None
+
+
+def test_per_model_rate_beats_the_global_median(client, ctx):
+    _history(client, ctx)  # global: 30 segments at 4 s on m-x
+    fast = _make_book(client, "Fast", chapters=6)
+    ids = _seg_ids(ctx, fast["id"])
+    _set_model(ctx, fast["id"], "m-fast")
+    _attempts(ctx, ids[:25], 1.0, model="m-fast", t0=NOW - 50000)  # newer than the history
+    other = _make_book(client, "Other")  # m-other has no data: falls back to the global median
+    _set_model(ctx, other["id"], "m-other")
+    plain = _make_book(client, "Plain")
+    _set_model(ctx, plain["id"], "m-x")
+    for bk in (fast, other, plain):
+        _job(ctx, bk["id"], "queued", position=float(bk["id"]))
+    rf, ro, rp = (_rt(ctx, b["id"]) for b in (fast, other, plain))
+    assert rf["total_est_s"] == _pending(ctx, fast["id"]) * 1.0 and "m-fast" in rf["basis"]
+    assert ro["total_est_s"] == _pending(ctx, other["id"]) * 4.0 and "all voices" in ro["basis"]
+    assert rp["total_est_s"] == _pending(ctx, plain["id"]) * 4.0 and "m-x" in rp["basis"]
+
+
+def test_fewer_than_twenty_model_samples_fall_back_to_global(client, ctx):
+    _history(client, ctx)
+    b = _make_book(client, "Few", chapters=2)
+    _set_model(ctx, b["id"], "m-few")
+    _attempts(ctx, _seg_ids(ctx, b["id"])[:5], 9.0, model="m-few", t0=NOW - 10)
+    _job(ctx, b["id"], "queued")
+    rt = _rt(ctx, b["id"])
+    assert rt["total_est_s"] == _pending(ctx, b["id"]) * 4.0 and "all voices" in rt["basis"]
+
+
+# ----------------------------------------------------------------------------------------------------------- running
+
+
+def test_running_uses_observed_rate_after_ten_segments(client, ctx):
+    _history(client, ctx)
+    b = _make_book(client, "Running", chapters=3)
+    _set_model(ctx, b["id"], "m-x")
+    total = len(_seg_ids(ctx, b["id"]))
+    done = _mark_done(ctx, b["id"], 12)
+    _attempts(ctx, done, 20.0, t0=NOW - 900)  # finished after the job started (NOW-1000)
+    _job(ctx, b["id"], "running", started_at=NOW - 1000, active_seconds=300.0)  # 300 s over 12 segments = 25 s each
+    rt = _rt(ctx, b["id"])
+    assert rt["state"] == "running" and rt["estimated"] is True and rt["starts_at"] is None
+    assert rt["remaining_s"] == (total - 12) * 25.0 and rt["finish_at"] == NOW + rt["remaining_s"]
+    assert "this job's own pace" in rt["basis"] and "12 segments" in rt["basis"]
+
+
+def test_running_with_few_done_uses_the_model_median(client, ctx):
+    _history(client, ctx)
+    b = _make_book(client, "Starting", chapters=3)
+    _set_model(ctx, b["id"], "m-x")
+    done = _mark_done(ctx, b["id"], 4)
+    _attempts(ctx, done, 20.0, t0=NOW - 90)
+    _job(ctx, b["id"], "running", started_at=NOW - 100, active_seconds=80.0)
+    rt = _rt(ctx, b["id"])
+    assert rt["remaining_s"] == _pending(ctx, b["id"]) * 4.0 and "typical pace on m-x" in rt["basis"]
+
+
+def test_running_with_no_data_has_no_remaining_time(client, ctx):
+    b = _make_book(client, "Blind")
+    _job(ctx, b["id"], "running", started_at=NOW - 10, active_seconds=5.0)
+    rt = _rt(ctx, b["id"])
+    assert rt["state"] == "running" and rt["remaining_s"] is None and rt["finish_at"] is None and rt["basis"].startswith("estimate after")
+
+
+# ----------------------------------------------------------------------------------------------------------- queue order
+
+
+def test_queued_start_times_accumulate_over_the_queue_and_paused_does_not_advance(client, ctx):
+    _history(client, ctx)
+    books = [_make_book(client, f"Q{i}", chapters=2) for i in range(4)]
+    for b in books:
+        _set_model(ctx, b["id"], "m-x")
+    run, q1, q2, paused = books
+    _mark_done(ctx, run["id"], 2)
+    _job(ctx, run["id"], "running", position=1, started_at=NOW - 50, active_seconds=10.0)
+    _job(ctx, paused["id"], "paused", position=2)
+    _job(ctx, q1["id"], "queued", position=3)
+    _job(ctx, q2["id"], "queued", position=4)
+    r_run, r_q1, r_q2, r_p = (_rt(ctx, b["id"]) for b in (run, q1, q2, paused))
+    left = _pending(ctx, run["id"]) * 4.0
+    assert r_run["remaining_s"] == left
+    assert r_q1["starts_at"] == NOW + left and r_q1["total_est_s"] == _pending(ctx, q1["id"]) * 4.0
+    assert r_q1["finish_at"] == r_q1["starts_at"] + r_q1["total_est_s"]
+    assert r_q2["starts_at"] == r_q1["finish_at"]  # cumulative: the paused book did not delay it
+    assert r_p["state"] == "queued" and "paused" in r_p["basis"] and r_p["starts_at"] is None and r_p["finish_at"] is None
+    assert r_p["total_est_s"] == _pending(ctx, paused["id"]) * 4.0
+    with ctx.db.session() as conn:
+        assert R.runtime_context(conn, NOW)["queue_order"] == [run["id"], q1["id"], q2["id"], paused["id"]]
+        assert R.runtime_context(conn, NOW)["running_remaining"] == {run["id"]: left}
+
+
+def test_unknown_work_ahead_leaves_start_time_unknown(client, ctx):
+    a, b = _make_book(client, "A"), _make_book(client, "B")
+    _job(ctx, a["id"], "running", position=1, started_at=NOW - 5)
+    _job(ctx, b["id"], "queued", position=2)
+    assert _rt(ctx, b["id"])["starts_at"] is None
+
+
+# ----------------------------------------------------------------------------------------------------------- finished
+
+
+def test_finished_is_the_sum_of_active_seconds_over_all_runs(client, ctx):
+    b = _make_book(client, "Done", chapters=1)
+    _mark_done(ctx, b["id"], len(_seg_ids(ctx, b["id"])))
+    _job(ctx, b["id"], "completed", started_at=NOW - 9000, finished_at=NOW - 8000, active_seconds=900.0)   # full pass
+    _job(ctx, b["id"], "completed", started_at=NOW - 500, finished_at=NOW - 400, active_seconds=40.0)      # touch-up
+    _job(ctx, b["id"], "completed", started_at=NOW - 300, finished_at=NOW - 200, active_seconds=12.5)      # touch-up
+    rt = _rt(ctx, b["id"])
+    assert rt["state"] == "finished" and rt["estimated"] is False and rt["processing_s"] == 952.5
+    assert rt["remaining_s"] is None and rt["starts_at"] is None and rt["finish_at"] is None and rt["total_est_s"] is None
+    assert "3 runs" in rt["basis"]
+
+
+def test_legacy_jobs_without_active_seconds_fall_back_to_wall_time(client, ctx):
+    b = _make_book(client, "Old")
+    _mark_done(ctx, b["id"], len(_seg_ids(ctx, b["id"])))
+    _job(ctx, b["id"], "completed", started_at=NOW - 2000, finished_at=NOW - 1500, active_seconds=0.0)
+    _job(ctx, b["id"], "completed", started_at=NOW - 100, finished_at=NOW - 50, active_seconds=20.0)
+    rt = _rt(ctx, b["id"])
+    assert rt["processing_s"] == 520.0 and rt["estimated"] is False and "older run was timed" in rt["basis"]
+
+
+def test_book_with_pending_segments_is_never_finished(client, ctx):
+    b = _make_book(client, "Partial")
+    _job(ctx, b["id"], "completed", started_at=NOW - 100, finished_at=NOW - 50, active_seconds=20.0)
+    assert _rt(ctx, b["id"])["state"] == "idle"
+
+
+# ----------------------------------------------------------------------------------------------------------- director
+
+
+def test_director_time_is_added_per_undirected_segment(client, ctx):
+    _history(client, ctx)
+    b = _make_book(client, "Directed", chapters=2)
+    _set_model(ctx, b["id"], "m-x")
+    _job(ctx, b["id"], "queued")
+    plain = _rt(ctx, b["id"])["total_est_s"]
+    with ctx.db.tx() as conn:
+        conn.execute("INSERT INTO analysis_stages(book_id, stage, status, stats_json) VALUES (?, 'director', 'running', ?)",
+                     (b["id"], '{"directed": 10, "seconds": 50.0}'))  # 5 s of Director per segment
+        conn.execute("UPDATE books SET narrative_json=? WHERE id=?", ('{"director_enabled": true}', b["id"]))
+    pending = _pending(ctx, b["id"])
+    rt = _rt(ctx, b["id"])
+    assert rt["total_est_s"] == plain + pending * 5.0 and "Director" in rt["basis"]
+    with ctx.db.tx() as conn:  # Director off for this book: no addition
+        conn.execute("UPDATE books SET narrative_json=? WHERE id=?", ('{"director_enabled": false}', b["id"]))
+    assert _rt(ctx, b["id"])["total_est_s"] == plain
+
+
+# ----------------------------------------------------------------------------------------------------------- cost
+
+
+def test_query_count_does_not_grow_with_the_number_of_books(client, ctx):
+    def count() -> int:
+        n = [0]
+        with ctx.db.session() as conn:
+            conn.set_trace_callback(lambda _sql: n.__setitem__(0, n[0] + 1))
+            rc = R.runtime_context(conn, NOW)
+            for b in rows(conn, "SELECT * FROM books"):
+                R.book_runtime(conn, b, rc)
+        return n[0]
+
+    first = [_make_book(client, f"B{i}") for i in range(2)]
+    for b in first:
+        _job(ctx, b["id"], "queued", position=float(b["id"]))
+    few = count()
+    more = [_make_book(client, f"C{i}") for i in range(10)]
+    for b in more:
+        _job(ctx, b["id"], "queued", position=float(b["id"]))
+    assert count() == few
+
+
+# ----------------------------------------------------------------------------------------------------------- services wiring
+
+
+def test_books_and_queue_carry_the_same_runtime(client, ctx):
+    _history(client, ctx)
+    b = _make_book(client, "Wired", chapters=2)
+    _set_model(ctx, b["id"], "m-x")
+    _job(ctx, b["id"], "queued")
+    summary = next(x for x in S.list_books(ctx) if x["id"] == b["id"])
+    q = next(j for j in client.get("/api/queue").json()["jobs"] if j["book_id"] == b["id"])
+    assert summary["runtime"]["state"] == "queued" and q["runtime"]["state"] == "queued"
+    assert abs(summary["runtime"]["total_est_s"] - q["runtime"]["total_est_s"]) < 1e-6
+    assert q["eta_s"] == q["runtime"]["total_est_s"] and abs(q["eta_finish_s"] - (q["runtime"]["finish_at"] - S.now())) < 5
+    assert client.get(f"/api/books/{b['id']}").json()["runtime"]["state"] == "queued"
+    assert any(x["id"] == b["id"] and x["runtime"] for x in client.get("/api/overview").json()["recent"])
+
+
+# ----------------------------------------------------------------------------------------------------------- queue grouping / pagination
+
+
+def _finished_job(ctx, book_id, finished_at, active=10.0, status="completed"):
+    return _job(ctx, book_id, status, started_at=finished_at - 100, finished_at=finished_at, active_seconds=active)
+
+
+def test_one_finished_row_per_book_with_earlier_runs(client, ctx):
+    b = _make_book(client, "Touchy", chapters=1)
+    ids = _seg_ids(ctx, b["id"])
+    _mark_done(ctx, b["id"], len(ids))
+    t = S.now() - 5000
+    full = _finished_job(ctx, b["id"], t, active=600.0)
+    _attempts(ctx, ids, 5.0, t0=t - 90)  # rendered every segment during the first run
+    runs = [full]
+    for k in range(3):  # three touch-ups, each re-rendered one segment
+        ft = t + 1000 * (k + 1)
+        jid = _finished_job(ctx, b["id"], ft, active=7.0 + k)
+        _attempts(ctx, [ids[k]], 3.0, t0=ft - 50)
+        runs.append(jid)
+    q = client.get("/api/queue").json()
+    assert q["finished_total"] == 1 and len(q["finished"]) == 1
+    f = q["finished"][0]
+    assert f["id"] == runs[-1] and f["book_id"] == b["id"]
+    assert [r["id"] for r in f["earlier_runs"]] == [runs[2], runs[1], runs[0]]  # newest first
+    assert [r["kind_hint"] for r in f["earlier_runs"]] == ["touch-up", "touch-up", "full pass"]
+    assert f["earlier_runs"][0]["segments_rendered"] == 1 and f["earlier_runs"][2]["segments_rendered"] == len(ids)
+    assert f["earlier_runs"][0]["active_seconds"] == 8.0 and f["latest_run"]["kind_hint"] == "touch-up"
+    assert f["runtime"]["state"] == "finished" and f["runtime"]["processing_s"] == 600.0 + 7.0 + 8.0 + 9.0
+    assert f["eta_s"] is None and f["eta_finish_s"] is None
+    assert [j["id"] for j in q["jobs"] if j["status"] == "completed"] == [runs[-1]]  # old consumers see a single entry too
+
+
+def test_finished_pagination_is_stable_and_counts_books(client, ctx):
+    t = S.now() - 100000
+    ids = []
+    for i in range(25):
+        b = _make_book(client, f"Fin {i:02d}")
+        _finished_job(ctx, b["id"], t + i * 60)
+        ids.append(b["id"])
+    pages = []
+    for off in (0, 10, 20):
+        q = client.get(f"/api/queue?finished_offset={off}&finished_limit=10").json()
+        assert q["finished_total"] == 25 and q["finished_offset"] == off
+        pages.append([j["book_id"] for j in q["finished"]])
+    assert [len(p) for p in pages] == [10, 10, 5]
+    assert sum(pages, []) == list(reversed(ids))  # newest finished first, no repeats across pages
+    assert client.get("/api/queue").json()["finished_limit"] == 10
+    assert len(client.get("/api/queue?finished_limit=50").json()["finished"]) == 25
+    assert client.get("/api/queue?finished_limit=51").status_code == 422
+
+
+def test_window_is_thirty_days_by_finished_at(client, ctx):
+    old, recent = _make_book(client, "Old"), _make_book(client, "Recent")
+    _finished_job(ctx, old["id"], S.now() - 31 * 86400)
+    _finished_job(ctx, recent["id"], S.now() - 29 * 86400)
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE jobs SET updated_at=?", (S.now(),))  # touching updated_at must not resurrect the old run
+    q = client.get("/api/queue").json()
+    assert [j["book_id"] for j in q["finished"]] == [recent["id"]] and q["finished_total"] == 1
+
+
+def test_active_jobs_stay_unpaginated_and_keep_old_keys(client, ctx):
+    _history(client, ctx)
+    books = [_make_book(client, f"Act {i}") for i in range(12)]
+    for b in books:
+        client.post("/api/queue", json={"book_id": b["id"]})
+    q = client.get("/api/queue").json()
+    assert len(q["active"]) == 12 and [j["status"] for j in q["jobs"]] == ["queued"] * 12
+    assert {"jobs", "utility", "throughput", "finished", "finished_total", "utility_total"} <= set(q)
+    assert q["throughput"]["samples"] >= 20 and all("runtime" in j for j in q["jobs"])
+
+
+def test_utility_pagination(client, ctx):
+    b = _make_book(client, "Util")
+    with ctx.db.tx() as conn:
+        for i in range(23):
+            conn.execute("INSERT INTO jobs(kind, book_id, status, created_at, finished_at, updated_at) VALUES ('assemble',?,'completed',?,?,?)",
+                         (b["id"], NOW + i, NOW + i, NOW + i))
+    p1 = client.get("/api/queue").json()
+    assert p1["utility_total"] == 23 and len(p1["utility"]) == 10 and p1["utility"][0]["title"].startswith("Util")
+    p3 = client.get("/api/queue?utility_offset=20&utility_limit=10").json()
+    assert len(p3["utility"]) == 3
+    ids = [u["id"] for u in p1["utility"]] + [u["id"] for u in client.get("/api/queue?utility_offset=10").json()["utility"]] + [u["id"] for u in p3["utility"]]
+    assert ids == sorted(ids, reverse=True) and len(set(ids)) == 23
+
+
+def test_touch_up_regenerate_shows_one_finished_entry(client, ctx, make_worker):
+    b = _make_book(client, "Regen", chapters=1, queue=True)
+    w = make_worker()
+    w.run_until_idle()
+    assert client.get(f"/api/books/{b['id']}").json()["pending"] == 0
+    sid = _seg_ids(ctx, b["id"])[1]
+    for _ in range(2):  # two touch-ups, each creating (and finishing) another book job
+        assert client.post(f"/api/segments/{sid}/regenerate", json={}).status_code == 200
+        w.run_until_idle()
+    with ctx.db.session() as conn:
+        assert row(conn, "SELECT COUNT(*) n FROM jobs WHERE book_id=? AND kind='book' AND status='completed'", (b["id"],))["n"] == 3
+    q = client.get("/api/queue").json()
+    assert q["finished_total"] == 1 and len(q["finished"]) == 1
+    f = q["finished"][0]
+    assert len(f["earlier_runs"]) == 2 and f["runtime"]["state"] == "finished" and f["runtime"]["estimated"] is False
+    assert f["runtime"]["processing_s"] is not None and f["eta_s"] is None
+    assert [j["status"] for j in q["jobs"]] == ["completed"]
+
+
+# ----------------------------------------------------------------------------------------------------------- node formatting tests
+
+JS_TEST = Path(__file__).parent / "js" / "runtime_fmt.test.mjs"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_runtime_formatting_node_suite():
+    r = subprocess.run(["node", str(JS_TEST)], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+__STUDIO_EOF_a063bb59fbd7__
 cat > "$DEST/tests/test_scrub_check.py" <<'__STUDIO_EOF_27eceefd664d__'
 """tools/scrub_check.py detects private network details, personal paths and private keys."""
 from __future__ import annotations
@@ -32280,6 +36677,26 @@ def test_detects_private_key_blocks():
 def test_reports_line_numbers():
     assert sc.scan_text("ok\nok\nhost 10.1.1.1", "f.txt") == [("f.txt", 3, "private IPv4", "10.1.1.1")]
 __STUDIO_EOF_27eceefd664d__
+cat > "$DEST/tests/test_settings_ui.py" <<'__STUDIO_EOF_e04250ee81e8__'
+"""Settings page (tabs) logic: the node unit suite for static/js/views/settings-model.js. The tabbed page itself needs a real browser
+(tools/e2e/polish_settings.py)."""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+JS_TEST = Path(__file__).resolve().parent / "js" / "settings_model.test.mjs"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_settings_model_node_suite():
+    r = subprocess.run(["node", str(JS_TEST)], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "0 failed" in r.stdout
+__STUDIO_EOF_e04250ee81e8__
 cat > "$DEST/tests/test_text.py" <<'__STUDIO_EOF_5a07baaa7291__'
 """Unit tests: parsing, chunking, normalisation and alignment."""
 from __future__ import annotations
@@ -33513,7 +37930,7 @@ def test_building_the_app_never_writes_outside_its_own_home(ctx, tmp_path, monke
     create_app(ctx, start_worker=False)
     assert not list(fake_home.rglob("*")) or all(p.name in ("xdg",) for p in fake_home.rglob("*"))
 __STUDIO_EOF_8809f0a6a6de__
-cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_4a18f1347cef__'
+cat > "$DEST/tests/test_update_flow.py" <<'__STUDIO_EOF_6f4637cc8b0e__'
 """Update flow: check / download / verify / stage (ReleaseUpdateManager), install / drain / switch / rollback (Applier),
 queue drain in the worker, the HTTP API, and a real-process end-to-end update with rollback. Mock inference only; no macOS."""
 from __future__ import annotations
@@ -33805,11 +38222,12 @@ def test_background_download_endpoint_flow_and_busy_guard(env):
     env.publish("0.5.1")
     env.mgr.check()
     env.mgr.download(background=True)
-    for _ in range(200):
-        if env.mgr.status()["state"] == "staged":
+    for _ in range(1000):  # a loaded machine (parallel test runs, browser scripts) can need seconds, not milliseconds
+        if env.mgr.status()["state"] in ("staged", "failed", "offline"):
             break
         time.sleep(0.02)
-    assert env.mgr.status()["state"] == "staged" and env.mgr.status()["busy"] is None
+    st = env.mgr.status()
+    assert st["state"] == "staged" and st["busy"] is None, f"download ended in state {st['state']!r}: {st.get('error') or st.get('message')}"
 
 
 def test_request_install_needs_staged_and_explicit_version(env):
@@ -34229,7 +38647,7 @@ def test_supervised_worker_exits_when_its_server_disappears(ctx, monkeypatch):
     assert w.parent_gone() is True
     monkeypatch.delenv("STUDIO_SUPERVISED_WORKER")
     assert Worker(ctx, tts=MockEngine({}), asr=MockASR()).parent_gone() is False     # foreground `studio worker` is never auto-stopped
-__STUDIO_EOF_4a18f1347cef__
+__STUDIO_EOF_6f4637cc8b0e__
 cat > "$DEST/tests/test_update_install.py" <<'__STUDIO_EOF_e0a39c35e7b1__'
 """Installer, release tooling, migration from the Bash/Homebrew install, and the CLI. These run on the dev machine (Windows/Git Bash
 or Linux); anything that needs a real Mac is listed in docs/10-installation-and-updates.md as a manual hardware check."""
@@ -34853,6 +39271,285 @@ def test_housekeeping_does_nothing_without_an_active_release(env):
     d = _rt(env.layout, "e" * 16)
     assert housekeeping.prune_runtimes(env.layout) == [] and d.exists()
 __STUDIO_EOF_0e0a530fac23__
+cat > "$DEST/tests/test_voice_retune.py" <<'__STUDIO_EOF_40a1a402b9a4__'
+"""Duplicate & retune voices (P2-G): copy a preset/designed voice with new delivery, retune a promoted clone from its source design
+voice, derived_from lineage, description sync after an edit, constant query count of GET /api/voices. MOCK engine only."""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from conftest import needs_ffmpeg
+from studio import services as S
+from studio.db import row, rows
+from studio.web.auth import AuthStore
+
+DESC = "A gruff older male voice, low and slow, with a dry edge."
+NEW_DESC = "A bright young female voice, quick and warm, with a light Irish lilt."
+
+
+def _voices(client):
+    return {v["name"]: v for v in client.get("/api/voices").json()["voices"]}
+
+
+def _design(client, name="Gruff captain", desc=DESC):
+    r = client.post("/api/voices/design", json={"name": name, "description": desc})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _promote(client, make_worker, design, name="Gruff captain (stable)"):
+    w = make_worker if hasattr(make_worker, "run_until_idle") else make_worker()
+    pj = client.post(f"/api/voices/{design['id']}/preview", json={"text": "The harbour lights trembled on the black water tonight.", "verify": False}).json()
+    w.run_until_idle()
+    r = client.post("/api/voices/promote", json={"job_id": pj["id"], "name": name})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _consent(ctx, voice):
+    with ctx.db.session() as conn:
+        return json.loads(row(conn, "SELECT consent_json FROM voice_versions WHERE id=?", (voice["version"]["id"],))["consent_json"])
+
+
+def _versions(ctx, vid):
+    with ctx.db.session() as conn:
+        return rows(conn, "SELECT * FROM voice_versions WHERE voice_id=? ORDER BY version", (vid,))
+
+
+# ------------------------------------------------------------------ update_voice keeps the card summary current
+
+
+def test_editing_a_design_voice_updates_the_card_description(client):
+    d = _design(client)
+    assert d["description"] == DESC
+    r = client.patch(f"/api/voices/{d['id']}", json={"instruct": NEW_DESC})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["version"]["version"] == 2 and out["version"]["instruct"] == NEW_DESC and out["description"] == NEW_DESC
+    assert _voices(client)["Gruff captain"]["description"] == NEW_DESC
+
+
+def test_description_sync_keeps_explicit_description_and_name_only_edits(client):
+    d = _design(client)
+    out = client.patch(f"/api/voices/{d['id']}", json={"instruct": NEW_DESC, "description": "My own summary"}).json()
+    assert out["description"] == "My own summary" and out["version"]["version"] == 2
+    out = client.patch(f"/api/voices/{d['id']}", json={"name": "Renamed"}).json()
+    assert out["name"] == "Renamed" and out["version"]["version"] == 2 and out["description"] == "My own summary"
+    ryan = _voices(client)["Ryan"]
+    out = client.patch(f"/api/voices/{ryan['id']}", json={"instruct": "Hushed and tense."}).json()
+    assert out["version"]["version"] == 2 and out["description"] == ryan["description"]   # presets keep their own summary
+
+
+# ------------------------------------------------------------------ duplicate
+
+
+def test_duplicate_a_builtin_preset_creates_an_editable_custom_preset(client, ctx):
+    ryan = _voices(client)["Ryan"]
+    r = client.post(f"/api/voices/{ryan['id']}/duplicate", json={"name": "Ryan - thriller", "instruct": "Low, tense, whispered thriller narration."})
+    assert r.status_code == 200, r.text
+    c = r.json()
+    assert c["id"] != ryan["id"] and c["builtin"] is False and c["kind"] == "preset" and c["name"] == "Ryan - thriller"
+    assert c["version"]["speaker"] == "Ryan" and c["version"]["instruct"] == "Low, tense, whispered thriller narration." and c["version"]["version"] == 1
+    assert c["version"]["model_id"] == ryan["version"]["model_id"] and c["version"]["language"] == ryan["version"]["language"]
+    assert c["derived_from"]["voice_id"] == ryan["id"] and c["derived_from"]["voice_name"] == "Ryan" and c["derived_from"]["version"] == 1
+    assert c["derived_from"]["relation"] == "copy"
+    assert _consent(ctx, c)["type"] == "built-in synthetic speaker" and _consent(ctx, c)["derived_from"] == c["derived_from"]
+    # the new voice is a normal custom voice: it can be edited and archived, the built-in source cannot
+    assert client.patch(f"/api/voices/{c['id']}", json={"name": "Ryan thriller 2"}).status_code == 200
+    # the original is untouched
+    after = _voices(client)["Ryan"]
+    assert after["version"]["id"] == ryan["version"]["id"] and len(_versions(ctx, ryan["id"])) == 1 and after["derived_from"] is None
+    # other speaker for a preset; unsupported speaker is refused
+    r = client.post(f"/api/voices/{ryan['id']}/duplicate", json={"name": "Aiden-ish", "speaker": "Aiden"})
+    assert r.status_code == 200 and r.json()["version"]["speaker"] == "Aiden" and r.json()["version"]["instruct"] == ryan["version"]["instruct"]
+    assert client.post(f"/api/voices/{ryan['id']}/duplicate", json={"name": "Bad", "speaker": "Nobody"}).status_code == 422
+
+
+def test_duplicate_a_design_voice_copies_the_description_and_can_override_it(client, ctx):
+    d = _design(client)
+    same = client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Gruff captain copy"}).json()
+    assert same["version"]["instruct"] == DESC and same["description"] == DESC and same["kind"] == "design"
+    assert same["version"]["model_id"] == d["version"]["model_id"]
+    c = client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Bright sailor", "instruct": NEW_DESC}).json()
+    assert c["version"]["instruct"] == NEW_DESC and c["description"] == NEW_DESC and c["builtin"] is False
+    assert c["derived_from"] == {"relation": "copy", "voice_id": d["id"], "voice_name": "Gruff captain", "version": 1}
+    assert _consent(ctx, c)["type"] == "designed synthetic voice"
+    # the original keeps its description and its single version
+    o = client.get(f"/api/voices/{d['id']}").json()
+    assert o["version"]["instruct"] == DESC and o["description"] == DESC and len(o["versions"]) == 1 and o["derived_from"] is None
+    # a copy is made from the CURRENT version of an edited source
+    client.patch(f"/api/voices/{d['id']}", json={"instruct": "A second description that is long enough."})
+    c3 = client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "From v2"}).json()
+    assert c3["version"]["instruct"] == "A second description that is long enough." and c3["derived_from"]["version"] == 2
+    # validation
+    assert client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Short", "instruct": "too short"}).status_code == 422
+    assert client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Spk", "speaker": "Ryan"}).status_code == 422
+    assert client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Extra", "bogus": 1}).status_code == 422
+
+
+@needs_ffmpeg
+def test_duplicate_names_must_be_unique_and_a_clone_cannot_be_duplicated(client, make_worker):
+    d = _design(client)
+    assert client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "gruff CAPTAIN"}).status_code == 409
+    assert client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "   "}).status_code == 422
+    assert client.post("/api/voices/99999/duplicate", json={"name": "x"}).status_code == 404
+    clone = _promote(client, make_worker, d)
+    r = client.post(f"/api/voices/{clone['id']}/duplicate", json={"name": "Clone copy"})
+    assert r.status_code == 422 and "retune" in json.dumps(r.json()).lower()
+
+
+@needs_ffmpeg
+def test_duplicate_and_retune_write_audit_entries(client, ctx, make_worker):
+    d = _design(client)
+    c = client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Copy A"}).json()
+    clone = _promote(client, make_worker, d)
+    t = client.post(f"/api/voices/{clone['id']}/retune", json={"name": "Gruff captain (retune 2)"}).json()
+    with ctx.db.session() as conn:
+        dup = row(conn, "SELECT * FROM audit_log WHERE entity='voice' AND entity_id=? AND action='duplicate'", (str(c["id"]),))
+        tun = row(conn, "SELECT * FROM audit_log WHERE entity='voice' AND entity_id=? AND action='retune'", (str(t["id"]),))
+    assert dup and json.loads(dup["detail_json"])["derived_from"]["voice_id"] == d["id"]
+    assert tun and json.loads(tun["detail_json"])["derived_from"]["clone_voice_id"] == clone["id"]
+
+
+# ------------------------------------------------------------------ retune
+
+
+@needs_ffmpeg
+def test_retune_from_a_promoted_clone_creates_a_design_copy_of_the_source(client, ctx, make_worker):
+    d = _design(client)
+    w = make_worker()
+    clone = _promote(client, w, d)
+    assert clone["source_voice"] == {"id": d["id"], "name": "Gruff captain", "archived": False}
+    r = client.post(f"/api/voices/{clone['id']}/retune", json={"name": "Gruff captain (retune 2)", "instruct": NEW_DESC})
+    assert r.status_code == 200, r.text
+    t = r.json()
+    assert t["kind"] == "design" and t["builtin"] is False and t["version"]["instruct"] == NEW_DESC and t["description"] == NEW_DESC
+    assert t["source"] == {"id": d["id"], "name": "Gruff captain", "archived": False}
+    df = t["derived_from"]
+    assert df["relation"] == "retune" and df["clone_voice_id"] == clone["id"] and df["clone_name"] == "Gruff captain (stable)" and df["source_voice_id"] == d["id"]
+    # without instruct the source's current description is copied
+    t2 = client.post(f"/api/voices/{clone['id']}/retune", json={"name": "Gruff captain (retune 3)"}).json()
+    assert t2["version"]["instruct"] == DESC
+    # neither the source nor the clone changed
+    assert len(_versions(ctx, d["id"])) == 1 and len(_versions(ctx, clone["id"])) == 1
+    assert client.get(f"/api/voices/{d['id']}").json()["version"]["instruct"] == DESC
+    # the new design voice can be previewed immediately and the preview completes (mock engine)
+    pj = client.post(f"/api/voices/{t['id']}/preview", json={"text": "A brand new retuned sample sentence for testing.", "verify": False}).json()
+    w.run_until_idle()
+    done = client.get(f"/api/jobs/{pj['id']}").json()
+    assert done["status"] == "completed", done
+
+
+@needs_ffmpeg
+def test_retune_finds_an_archived_source_and_a_legacy_clone_by_holder_name(client, ctx, make_worker):
+    d = _design(client)
+    clone = _promote(client, make_worker, d)
+    # legacy clone (promoted before the source id was recorded): only rights_holder names the source
+    with ctx.db.tx() as conn:
+        c = json.loads(row(conn, "SELECT consent_json FROM voice_versions WHERE id=?", (clone["version"]["id"],))["consent_json"])
+        c.pop("source_voice_id"); c.pop("source_voice_name")
+        conn.execute("UPDATE voice_versions SET consent_json=? WHERE id=?", (json.dumps(c), clone["version"]["id"]))
+    assert client.get(f"/api/voices/{clone['id']}").json()["source_voice"]["id"] == d["id"]
+    assert client.post(f"/api/voices/{d['id']}/archive").status_code == 200   # the source may be archived
+    listed = _voices(client)["Gruff captain (stable)"]
+    assert listed["source_voice"] == {"id": d["id"], "name": "Gruff captain", "archived": True}
+    t = client.post(f"/api/voices/{clone['id']}/retune", json={"name": "Gruff captain v2"})
+    assert t.status_code == 200, t.text
+    assert t.json()["source"]["archived"] is True and t.json()["version"]["instruct"] == DESC
+
+
+@needs_ffmpeg
+def test_retune_errors(client, ctx, make_worker):
+    d = _design(client)
+    ryan = _voices(client)["Ryan"]
+    assert client.post(f"/api/voices/{ryan['id']}/retune", json={"name": "x"}).status_code == 422       # not a clone
+    assert client.post(f"/api/voices/{d['id']}/retune", json={"name": "x"}).status_code == 422          # not a clone
+    assert client.post("/api/voices/99999/retune", json={"name": "x"}).status_code == 404
+    # a human-recorded clone has no source design voice
+    from conftest import make_wav_bytes
+    human = client.post("/api/voices/clone", data={"name": "Human", "ref_text": "This is a short sample of my own speaking voice.", "rights_holder": "Jane Author",
+                                                   "owner_attest": "true"}, files={"file": ("me.wav", make_wav_bytes(6.0), "audio/wav")}).json()
+    assert human["source_voice"] is None
+    r = client.post(f"/api/voices/{human['id']}/retune", json={"name": "Human retune"})
+    assert r.status_code == 422 and "no source design voice" in json.dumps(r.json()).lower()
+    # source design voice deleted from the DB entirely -> also 422
+    clone = _promote(client, make_worker, d)
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE voices SET kind='preset' WHERE id=?", (d["id"],))   # simulate "no design voice found"
+    assert client.post(f"/api/voices/{clone['id']}/retune", json={"name": "Orphan"}).status_code == 422
+    # duplicate name
+    with ctx.db.tx() as conn:
+        conn.execute("UPDATE voices SET kind='design' WHERE id=?", (d["id"],))
+    assert client.post(f"/api/voices/{clone['id']}/retune", json={"name": "gruff captain"}).status_code == 409
+
+
+# ------------------------------------------------------------------ GET /api/voices shape and cost
+
+
+@needs_ffmpeg
+def test_voice_list_exposes_derived_from_and_source_voice(client, make_worker):
+    d = _design(client)
+    c = client.post(f"/api/voices/{d['id']}/duplicate", json={"name": "Copy of captain"}).json()
+    listed = _voices(client)
+    assert listed["Copy of captain"]["derived_from"]["voice_id"] == d["id"]
+    assert listed["Gruff captain"]["derived_from"] is None and "source_voice" not in listed["Gruff captain"]
+    assert listed["Ryan"]["derived_from"] is None
+    clone = _promote(client, make_worker, d)
+    assert c["id"] != clone["id"] and _voices(client)[clone["name"]]["source_voice"]["id"] == d["id"]
+
+
+def test_voice_list_query_count_does_not_grow_with_the_number_of_voices(client, ctx):
+    def count_queries():
+        n = []
+        orig = ctx.db.connect
+
+        def traced():
+            conn = orig()
+            conn.set_trace_callback(lambda sql: n.append(sql))
+            return conn
+
+        ctx.db.connect = traced
+        try:
+            out = S.list_voices(ctx)
+        finally:
+            ctx.db.connect = orig
+        return len(n), len(out)
+
+    q1, n1 = count_queries()
+    for i in range(12):
+        client.post("/api/voices/design", json={"name": f"Designed {i}", "description": f"A designed test voice number {i}, calm and clear."})
+    q2, n2 = count_queries()
+    assert n2 >= n1 + 12 and q2 == q1, (q1, n1, q2, n2)
+
+
+# ------------------------------------------------------------------ roles
+
+
+def test_operators_may_duplicate_and_retune_and_the_audit_names_them(ctx):
+    from fastapi.testclient import TestClient
+
+    from studio.web.app import create_app
+    from studio.web.auth import is_admin_only
+
+    assert not is_admin_only("POST", "/api/voices/3/duplicate") and not is_admin_only("POST", "/api/voices/3/retune")
+    store = AuthStore(ctx.config_dir / "auth.json")
+    store.set_user("boss", "correct-horse-battery", "admin")
+    store.set_user("clerk", "correct-horse-battery2", "operator")
+    app = create_app(ctx, start_worker=False)
+    with TestClient(app, base_url="http://127.0.0.1:7861", headers={"X-Studio-Request": "1"}) as c:
+        assert c.post("/api/voices/1/duplicate", json={"name": "Anon copy"}).status_code == 401
+        assert c.post("/api/auth/login", json={"username": "clerk", "password": "correct-horse-battery2"}).status_code == 200
+        ryan = next(v for v in c.get("/api/voices").json()["voices"] if v["name"] == "Ryan")
+        r = c.post(f"/api/voices/{ryan['id']}/duplicate", json={"name": "Clerk copy", "instruct": "Warm and slow."})
+        assert r.status_code == 200, r.text
+        assert c.post(f"/api/voices/{ryan['id']}/retune", json={"name": "x"}).status_code == 422   # allowed, but Ryan is not a clone
+        assert c.post(f"/api/voices/{r.json()['id']}/archive").status_code == 403                   # archiving stays admin-only
+    with ctx.db.session() as conn:
+        a = row(conn, "SELECT actor FROM audit_log WHERE entity='voice' AND action='duplicate'")
+    assert a["actor"] == "clerk"
+__STUDIO_EOF_40a1a402b9a4__
 cat > "$DEST/tests/update_fixtures.py" <<'__STUDIO_EOF_51e40cd42181__'
 """Helpers that build signed release indexes and release archives for the update tests. Everything here is local: no network.
 (Real signing keys are never used; each test run generates a throw-away Ed25519 pair.)"""
@@ -35005,20 +39702,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_124c57064e14__'
-20261029182429-9e03fd86
-__STUDIO_EOF_124c57064e14__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_29801045c8c7__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_734c8ec93cf3__'
+20261029193823-a745506b
+__STUDIO_EOF_734c8ec93cf3__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_574e84a9e877__'
 {
-  "version": "0.7.0",
-  "schema_version": 5,
+  "version": "0.8.0",
+  "schema_version": 6,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029182429-9e03fd86",
+  "build": "20261029193823-a745506b",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_29801045c8c7__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_116179539832__'
+__STUDIO_EOF_574e84a9e877__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_46041ad1318f__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -35027,24 +39724,24 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-c1894ed3c498e3e24aeaa1d2905639963092c1d8263d6164f8b02aae64e2d3a3  CHANGELOG.md
+613db1f2d417204287146bf79dd43860658a981d73cb4602ab306a1d02b1478d  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
 c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-d2ea4160686bdcf618e66c4af7dcf92969743abcebd596d7e69a9725acd302c1  studio/__init__.py
+1a85e9d93375bb82c486798299986544a071ce3db138f7a01813357b1fd470b8  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
-3afc7696205c7b72debc6b3d21cc0f714250442b2885b27ce8a95f86ccef6852  studio/assembly.py
+299f26b31f565f52ff70bd75c1ebdf74384f06c52eb261edab89e03fb2789463  studio/assembly.py
 837ab7a7fa9751230d2e1734f41663fdc3fc429b4918428a17b54364304d200d  studio/audio.py
 2a0318ca98f9cabde638206f6927cd63a8887a4dfd7a3ffb1f02673f5cadc014  studio/chapters.py
 9f5f1545af6038e8b90b79f311299755abbac80c96f353a00771c613d7b1e082  studio/chunker.py
 ec66838fd57f07591bd7202ff68bb8e78197335150a357e5ae0d829b2d112d06  studio/cli.py
 6bbd6b9329b1f6eb5204c88b6eee48c7b131ec3dcaaa9418fc28cb1ef9bd1bda  studio/config.py
 2e4a2a1622bec236742d8176c974eee9c7a28e73af3b9258a307e9a37eea0fb3  studio/context.py
-0cc15d03907866bbdaeef1bc8c8fe7d757dbd2728dd94e50b041f3ed2625e302  studio/db.py
-3868a8f87ef1b6fdabe06384619883b993d9a8977a05faa170042a22ec1486a1  studio/diskmgmt.py
+24b4e17cea10cc9c89a53b35f58927de4b20d101ee6befac37878f3c5be9ffb9  studio/db.py
+fd0c1bcdbab55433b968686e3282a6d2e5aaea56efeb109c2cfc5a50bbdaca5e  studio/diskmgmt.py
 5385954828543ca6765fd4a0dd1ae525d4c9aea182833fa6324e5153462b4ccf  studio/doctor.py
 5fb1a9635011f118912ea0ba9774d74d776a22090a9966485f1ed9bf002badaa  studio/engines.py
 bee7a44c349cc983c1f2e745a7ad0b963cdaa09dfc0a85be8175845a45ec27bb  studio/interfaces.py
@@ -35061,22 +39758,23 @@ b83144da5fc80ec2d036cd71325ed9e2fd1ae376ed225b9d11405f1839d2d8af  studio/narrati
 cf75d2f25c335bd22bab6b54b588cab556e42cbe13ccde6ad3b1952dfefc0b4c  studio/narrative/llm.py
 b46b73a672a446a5354f3d690dd03a5b2b93dd40ff7289b544031d97656c950d  studio/narrative/refbank.py
 42741318923c3a452a22770966d88dd6430bc7b1245353402a33801eae08f88c  studio/narrative/segmenter.py
-8f6a43bffd735d157678376f03487dbb22ade0f10d0e5374441e92655165f777  studio/narrative/store.py
+73fa3ac164bea0c96f8b5f67faf451803aec7c7887c63e3ec444c9b3979caf89  studio/narrative/store.py
 e99ef7430c0ad58c9c90b4acd346f6113bd9b83cf0bfee793e9d2e8a5d587592  studio/narrative/structure.py
 7443afaba3bf1e77c6b6cb5af09210f66a24fd4df2c92efeb92da31f3b12e138  studio/narrative/vocab.py
 ff0ba18f5d275560e3f5b6896a1ab001bff592b04d91aec3f90d787288d51c10  studio/narrative/voicecheck.py
 35783594c7c72f8bffe54f9273f776fc90a838d32b8fff6cf3544d6484574fc8  studio/narrative/windows.py
 591464a9ef33a7f229606df8377a44a01a15f43519901fe59bcabb2929b9652b  studio/normalize.py
 1b54c58a2a23453a96149f6054e64337cc0bd05a36c640ecdc63b1d744e6f484  studio/parsing.py
-d2b1ab5a73f1ddba08ada8e0961a6ad8a1c20d159752f1323efffdfc099dea7a  studio/pipeline.py
+a6ca514a20fac5ed916fe771f134f22762f47a3d60d05134621000afcc1aa69b  studio/pipeline.py
 6d7f7e457f3bf31ce81d47c85a78dfb3d4d1fbdb056bb7da323ffaec25985ce8  studio/platform_services.py
 8b16a5d5b9c0e5e3f126b3f00886e484fabbc9adf032616e54aa7809fe37a91a  studio/pronunciation.py
 c422f9cf89b9df531cc97fb99a83afcc0870f36a3815fdd9542c055f2c6a1293  studio/providers.py
 b80b30d1c5e825456acd899ebf71ef17084a11128417d6f76f7edc7223a06015  studio/reference.py
 d7c04f37b6d59389946fc6a9bd2d8748b8b0138048f7566720e794e61615ab11  studio/reports.py
+5313c147b6af4f62ebde16db670e6dbda015db5c54880e2503334220be95de4f  studio/runtime.py
 0827980c61c8e0042744e7e80b349249e729b05eb6a2c12d97b75d7836bf75e7  studio/scheduler.py
 ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets_store.py
-1cd9abff799995407ff5715a7d37e2ae33a9d72a57aae90ac66009be5f31638a  studio/services.py
+909689d4ec7477d499c60ff94f7de3dfa5d8b0e1766c45e31bf32bda2dc8fcfc  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 7f184566b98f1c5680a9787c1971442f2db3aa5f6d7ad4b8c8d545d80a72594d  studio/storage.py
 2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
@@ -35098,67 +39796,81 @@ b7ae6a70648246bb07726d2179b30ad72eebf2c796656e04589d237d3f456865  studio/update/
 34b312dc445b0dee8fb0c6f6e57681845dc4892b8c8f337d38b1f01d51e12582  studio/util.py
 533aecc73aba7cf5e51108b08ba15627f1f98e0d180448b38d38dabedeefa9d3  studio/versions.py
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  studio/web/__init__.py
-c68c80b13bf7c8f38014129349b89dea6e8f894967f61a3920bb37ef765a2605  studio/web/app.py
+99a2b45eba5a5a2e90244022bf52a6c1be9d6a5e365dcccdfa74b0bbe22cb03e  studio/web/app.py
 b70b0c22eb95341222d1460280ec65458da12c16a9d89b48f5085caf20e04ab8  studio/web/auth.py
-1d6e667a2da2f9e85aeb32d8da2b28fbfc0d95451d958d02f87ca9ef0bee4a9f  studio/web/disk_api.py
+b57b21a1c5f74de22c1b95e64673fa5815a4ab5658bd315b9145847a2dc19bd2  studio/web/disk_api.py
 5578c285b43ad3dcf2a7f9386180ca6c207e76c3357daa31b0b7b6cfb284eb36  studio/web/media.py
-b36bf505aa8f1d636b6affb5f0f57b64d2413d45ebeb553dcf5e9ab9149f51d2  studio/web/narrative_api.py
+f7c4345f4ed1d327bf15739f5ff493beb219985118566069585717ef312c184d  studio/web/narrative_api.py
 ecfd1a5469712d833cc0a847438aab7dced29c7548a1b164d68f9c3eee127fc7  studio/web/pronunciation_api.py
 5cd414f9fcb139e0fb321d20da123d12a21413a2ea97ac516355282309b3af53  studio/web/security.py
-cfe1d2c3c405964b213eedb0a52652003d35498b310724ad17e31d72e3a11050  studio/web/static/app.css
+d6cda8e2636be0b6b59429687ce9ac951edba2b45b52517134da01ea3d2d5095  studio/web/static/app.css
 31fd707206f2d4d289afc1f44ee88b1e0a67c5d23ff8fe767e71f6eb7d3f59c2  studio/web/static/index.html
-50cc0f10b83f6dbebf94ef4e5d2a8cf4e575d83daed68e7fc54f686f55f5eed5  studio/web/static/js/app.js
+e343455cc84d96771acf625a4ac26cea0a665dbcd36d07d8e1ca80b9d2e94542  studio/web/static/js/app.js
 48f833f8fc07cb5e21d645f47438767f0bb268c6e75f67e5103b718289b34ab7  studio/web/static/js/recorder-worklet.js
 7fa1aaef3b746c1ff0532364312b3f66618ee07e22340194161509329660c46a  studio/web/static/js/recorder.js
-b372e2eb1a717acca2871cc5c6ba67c62fa9453eb93cc532732a4ea6d09bc0f2  studio/web/static/js/ui.js
+8f54ce1707961c5c0e0c32694a5dc900afa415cf361b0f17f854ff83e110a421  studio/web/static/js/runtime.js
+784ffc31a298fcee004deac473191f233cc864072849353497a206a5ea636612  studio/web/static/js/ui.js
 dcc55ea8f77a965dad2128c4648151016b2b90fac8c04d6c1a5ef2d32800b2c1  studio/web/static/js/views/about.js
-72391dfc31f0e5922226a4dd3e9c45cc68c271ba3121759300f7b093248c873e  studio/web/static/js/views/book.js
-c166c7c55500ee3a9b9f09921cade5d5deaa50daa2510d1bee39510ff6fee7ee  studio/web/static/js/views/disk.js
+8cc9592465cb797dcc2f94cc5e3ec4a81b5ee475b649086e57862774807797c9  studio/web/static/js/views/book.js
+f9e11f538729fa1ee26d318079bcc9cfc3d9ebb0a2a56a6efb42de10efef2196  studio/web/static/js/views/disk.js
 0c9d9bb96dec493a1b94e0b0162ce84732fca262ede4048807dc7224198f9f10  studio/web/static/js/views/inspector.js
-d273092e442ed9b15f0cbe0c57899fd6c3d90600c7f9194bb8c3cb7f334fa307  studio/web/static/js/views/library.js
+5bbecfb1b732210e3b3e6cc0277c1f4630ce608a9c8342f173a87d7623c20ba3  studio/web/static/js/views/library.js
 12ce0cfe4f36133debdfcaeb6efc8830bae924c2ee68f8a0b44f55d15c736b6c  studio/web/static/js/views/narrative-fields.js
 f6fd8b4c43b806272652e1ec0734d9edea2269c76f1dec69e369060f4cf9966a  studio/web/static/js/views/narrative.js
-93238703fc3a72d348a69429f525f7ab15491530b37f1675fa7e703b23ec26f9  studio/web/static/js/views/overview.js
+260731b18809827a6ba6a18060bcb31509671ec34fc6d8d0f25ef38fc954df97  studio/web/static/js/views/overview.js
 1117069bc8e7985f64aa55a362faeb39d20d03cd6a2288320946736b707f76be  studio/web/static/js/views/pronunciation.js
-0cc4435bf1c8401ce77d2609457f53e7e12728c50a2242511bd03a4bf24e5517  studio/web/static/js/views/queue.js
-4e01f2632672db4776cdb5691c988a742223892eeeba1fdee441c61a259ffd71  studio/web/static/js/views/review.js
-afd04ff108c2ff860f72a3dcc040cd1761cbb893b8eb8c3272f6c0754b29b9e3  studio/web/static/js/views/settings.js
+1f5660b40274821a84362fa6c91cfbeb8d6bd6dac8c04b3ba75cb49bc5d9f72b  studio/web/static/js/views/queue.js
+413afc59d42d98da5c90716abf1eda080c27da228b0965a629935c04ae2570f9  studio/web/static/js/views/review.js
+7a7b7b9d201b1dfc3ec9b1754bda84658e9287c2d80b525402c1c071602ce38a  studio/web/static/js/views/settings-model.js
+cfa28686e9726031ad5cec6505c085ffe8c6939717eb690a60813eefe8304878  studio/web/static/js/views/settings.js
 bbe31ec54fc18e2ad5f36ae38b887a0c1f0c4267e363e0ea60bc6de3cb6b21e5  studio/web/static/js/views/updates.js
 8d720d0b065e549aa5a20b6a15e15b88b8f3480e52789788dd9771a14c3f5703  studio/web/static/js/views/voicelab.js
-63707ad4dcbc617497dc1fbe666ff6e4caf8592c97c2bdd20d935b7506ad39cc  studio/web/static/js/views/voices.js
+53fefa529ac61867ad682e50ebe7bc2173a91924d6bd3e340c47754559dfec6c  studio/web/static/js/views/voices.js
 ddf237e18d6974e7d46409fa759f8b74184a0831782c5b96fe62a84c6649909a  studio/web/update_api.py
-7defc308d71b5229980a5b5ee6b1e7715bcaa45ff1f806d2a0af679e5cf8a82a  studio/worker.py
+3eebcc79e151f558dfadb4989b3d07148b6df43fae86bccdb32c89d6cbf55d11  studio/worker.py
+6ab6dab062ff8b357f362d45abb7b84068166406f490dbf10ff82afa802091b8  tests/book_synth.py
 c99a7b0d46fabe726ddb2f119ae01407fed5f3d5fb47735fb8bc2204a4764c40  tests/conftest.py
+82e548f7564e639f01c7f1782cfb5331003f83dfd5bf06bc448bbedc61a54764  tests/js/runtime_fmt.test.mjs
+173851e87a7e31a16aabebcb12229205baabdc81bac038e7eb791fae06d47086  tests/js/settings_model.test.mjs
+315b9574b3d02742fbf2582b885a695ea1933005e377d73390f9f0f48bbfd30c  tests/js/ui_helpers.test.mjs
 25f9be1396914fbe6d39e2af5a910ccb3594c71d9771d42f695bb76b9286588f  tests/narrative_fixtures.py
 26db5cfee5c4079df4639db736b3411a8738f44a7e26914c95c201e1ecac2ff7  tests/test_ab.py
 fbdadcf974b84711c6f3d786c73426bbdd9531acd6f58ee7f5cc5220756ddbef  tests/test_attribution.py
 78e55b160cf0b1a81a246882d4f14c99459a07773b9b66bf6268c31f78036722  tests/test_audio.py
 a06f481d9cb56f104f988cb4cc454ec7ff4146efd14cfd59cb24f2bae56a51d2  tests/test_auth.py
+c946f5c7d8645c72518bb50a170ef5cf3124a9bdea814f79f55e183995a44455  tests/test_book_perf.py
 8ff8a34089b11e9a539c3c1c6099b7e75d8463a8f06472ef6d6326c97ab4cdef  tests/test_chapter_tools.py
 749a0258640cb849a923606c2eef26e406799d597753c8f86e77f425efa0166e  tests/test_delivery_audio.py
 9d70d6a6f3b95b4b3434e534cf8caab7d1b74112a8cd6c1c288e0e78b6df0ee0  tests/test_director_v2.py
+efe8a88feba27ce3f303dd292d210481ec12c61be030c1dab44e71b3158174e3  tests/test_disk_cache.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
-7f2be53c985a847fad8e1530eb70c774a43098f0d86bba8d99e8c636e23c9eb3  tests/test_integration.py
+50917c1ab533b6b085f48d7ce50c82bdb0d407c698f21b14dd351a96ccafaf9a  tests/test_integration.py
 1c0cca55ee5aeeceaa49b48ca01122ee0d7cd1b3b169e88110e7a870f027fbaa  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
+53f9aa6c2b4761245977f33bf2122be88d24e6c3596402ed6406e49a397dd8f5  tests/test_live_foundation.py
 811fdb836aac5fe1933f5bc19a12a1806b9fea7924647169b9437fb112a2ec36  tests/test_llm_test_connection.py
 26f35306b0eb46a32cc4d636fc09983fda871576a4734475f1ffa10839373743  tests/test_llm_thinking.py
 5718c9f539626d695c34652ce1e46bc54a4385a77a28499611d3af0bba2576ba  tests/test_narrative.py
 f3f382c26c8b3e9b980837d2557e5f4072b1d2f9a062401cfb60d4eb10ea7762  tests/test_narrator_versions.py
+fdc9fd72ee280fccec193686bbffc97bfcbd9cb8659ca8220e4903344335d48b  tests/test_overview_runtime.py
 f0a48a3252bc31fe005eaa918869f11a9440d0da69a0a6f93a8172cbeed97aa4  tests/test_plumbing_v5.py
 abcfa3cf215e557d314d5787422dc075c23d82768aa0acf47f7795a022818522  tests/test_pronunciation.py
+0843a886b1920b7ad042811941eab41699cd9c437dfbf6abf07c5243bb750aa1  tests/test_regen_direction.py
 941bec614861c4c3fe8f12141069bce971704d787260ba8f14250304f600e306  tests/test_release_notes.py
+a063bb59fbd7a52469a99b42c915b282f444d27cd79adcdb821f3814d421cd91  tests/test_runtime.py
 27eceefd664d0a111abd03d3de7c88d560efc9342696fc614943aefb76db8675  tests/test_scrub_check.py
+e04250ee81e8837f2a8cfec6a027db380408d9192fcdbe4a34bdb9e6ed140a60  tests/test_settings_ui.py
 5a07baaa72917990c226fd5781bee25ed45ca0fef7b042ce69526aee41a05f3b  tests/test_text.py
 6fbd27e147d787b2c120410b522e472ac6007c39a032549fe504f032e483ad4d  tests/test_translator.py
 8809f0a6a6decf18a653ea6e432a9c7f5d8350c3f390523dcf2ddb57a8c3cc59  tests/test_update_core.py
-4a18f1347ceff3abc5c29e956bc9e334900966588cd85c374974edfdc6463eb7  tests/test_update_flow.py
+6f4637cc8b0ea04090a737c11dfbdcc16b716b9cf8573f63bbea7b3d4b781613  tests/test_update_flow.py
 e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_update_install.py
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
+40a1a402b9a485f9a072a397f0388a826b14de7f29b0a475f6200f325e37e192  tests/test_voice_retune.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-124c57064e147ec6cd3cce13cb61c8cf854dcb7d6f562806f7e854014869cf55  BUILD
-29801045c8c78faed88b877857f5ee941c9aa7ae756725db6df8a3baae6a2d6e  release.json
-__STUDIO_EOF_116179539832__
+734c8ec93cf3c24ebf8b36da9ef01f427c37bf508264ca58689004b3a524a9f3  BUILD
+574e84a9e8773e2d53c720152c407f8254a201c2b2100929ae50f447a37ddd0f  release.json
+__STUDIO_EOF_46041ad1318f__
 }
 
 verify_manifest() {
