@@ -3,6 +3,12 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.9.1
+Documentation only: a new root `README.md` for the GitHub repository page (until now GitHub fell back to `docs/README.md`, the index for
+development sessions). It describes the features, the pipeline, requirements, step-by-step installation from the latest release, installer
+options, models, updating, uninstalling and migrating, privacy and security, limits, and links into the docs. No application code changed;
+tested with pytest only (mock engine), nothing run on the Mac.
+
 ## v0.9.0
 Feature release: emotion clips that keep the narrator's voice, directable cloned narrators, and a new Narrator Studio. **What ran where:** the clone-instruction
 experiment ran on the Mac with the real Qwen3-TTS 1.7B models and Whisper (`docs/clone_instruct_experiment.json`). This version was then installed on the Mac

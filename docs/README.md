@@ -23,7 +23,7 @@ If you are a new session (human or AI), read these in order. Each file is self-c
 | 11 | [11-roadmap.md](11-roadmap.md) | **Adopted** branch/tag/channel policy (v0.5.5), the full remaining roadmap with sizes and priorities, and the questions waiting on the owner |
 | 12 | [12-container.md](12-container.md) | Container image definition (mock/CPU only, tag-based upgrades, unmanaged updater); written but not built or tested |
 
-Also: `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
+Also: `../README.md` (the public overview and installation guide shown on GitHub), `../CLAUDE.md` (short rules for AI sessions), `../src/app/README.md` (operator guide, also installed on
 the Mac), `../src/app/MODEL_LICENSES.md`, `../tools/e2e/README.md` (end-to-end scripts), `screenshots/`.
 
 ## The 60-second brief

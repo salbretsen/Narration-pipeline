@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.9.0 (build 20261029222442-6ee54454)
+#  Version v0.9.1 (build 20261030071545-37174526)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.9.0"
+STUDIO_VERSION="v0.9.1"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261029222442-6ee54454"
+BUILD_ID="20261030071545-37174526"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,17 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_c95b132444d7__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_fddd210e0ca1__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.9.1
+Documentation only: a new root `README.md` for the GitHub repository page (until now GitHub fell back to `docs/README.md`, the index for
+development sessions). It describes the features, the pipeline, requirements, step-by-step installation from the latest release, installer
+options, models, updating, uninstalling and migrating, privacy and security, limits, and links into the docs. No application code changed;
+tested with pytest only (mock engine), nothing run on the Mac.
 
 ## v0.9.0
 Feature release: emotion clips that keep the narrator's voice, directable cloned narrators, and a new Narrator Studio. **What ran where:** the clone-instruction
@@ -917,7 +923,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_c95b132444d7__
+__STUDIO_EOF_fddd210e0ca1__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -3081,7 +3087,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_d492d7e7ba63__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_cb62a3bf924a__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -3090,13 +3096,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_d492d7e7ba63__
+__STUDIO_EOF_cb62a3bf924a__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -34280,7 +34286,7 @@ def test_narrator_pages_are_served(client):
     for p in ("/static/js/views/narrator.js", "/static/js/views/narrator-common.js", "/static/js/views/narrator-model.js", "/static/js/views/voices.js"):
         assert client.get(p).status_code == 200, p
 __STUDIO_EOF_ea04b48616d9__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_cba454b5fb88__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_1302c82077ad__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -34665,13 +34671,13 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.9.0" and st["version_label"] == "v0.9.0"
+    assert st["version"] == "0.9.1" and st["version_label"] == "v0.9.1"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.9.0" and "stage" not in a
+    assert a["version_label"] == "v0.9.1" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_cba454b5fb88__
+__STUDIO_EOF_1302c82077ad__
 cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_31cc500ed28e__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
@@ -41012,20 +41018,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_0e1f9969832a__'
-20261029222442-6ee54454
-__STUDIO_EOF_0e1f9969832a__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_699830436ec3__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_035ed5aa1596__'
+20261030071545-37174526
+__STUDIO_EOF_035ed5aa1596__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_d6018fce3cf4__'
 {
-  "version": "0.9.0",
+  "version": "0.9.1",
   "schema_version": 7,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261029222442-6ee54454",
+  "build": "20261030071545-37174526",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_699830436ec3__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_47ca144bcc45__'
+__STUDIO_EOF_d6018fce3cf4__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_dc569d5c92f7__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -41034,13 +41040,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-c95b132444d7d359a8bb0802adcda975003467565c66ae89c2f6d1cfa7ffd7e8  CHANGELOG.md
+fddd210e0ca1b1e4ba86cffd04ad4c21585620177b90fd0024aa197bbbaf236d  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
 c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-d492d7e7ba6394f7badf4420c2d4efe2313dcc7661c893639fe407cd60852c3a  studio/__init__.py
+cb62a3bf924a0385084b383149a088ff823421fd04e762e4f1c24e9317515602  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 299f26b31f565f52ff70bd75c1ebdf74384f06c52eb261edab89e03fb2789463  studio/assembly.py
@@ -41159,7 +41165,7 @@ c946f5c7d8645c72518bb50a170ef5cf3124a9bdea814f79f55e183995a44455  tests/test_boo
 efe8a88feba27ce3f303dd292d210481ec12c61be030c1dab44e71b3158174e3  tests/test_disk_cache.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
 ea04b48616d90752892780fbf2bdba8603d31599b36989dcb621417853596a94  tests/test_emotion_takes.py
-cba454b5fb8854cd8bfa43c80c7f951e442af527554e81628091303b5e70896e  tests/test_integration.py
+1302c82077ad478eb0268856a2ccb15261dd6ac134dfdbe780767a6276925892  tests/test_integration.py
 31cc500ed28ef19e463c183be28384e482ed27da389113c1807233415b039551  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
 53f9aa6c2b4761245977f33bf2122be88d24e6c3596402ed6406e49a397dd8f5  tests/test_live_foundation.py
@@ -41183,9 +41189,9 @@ e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_upd
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
 40a1a402b9a485f9a072a397f0388a826b14de7f29b0a475f6200f325e37e192  tests/test_voice_retune.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-0e1f9969832a76261d2de0e0b08bf281c62a447726ca224e2e189289d3571d48  BUILD
-699830436ec3f765fc4f9d7abd484847bf4a5a8eb3011745aebaf35a0fda640f  release.json
-__STUDIO_EOF_47ca144bcc45__
+035ed5aa1596c7a0803685e8a6411e99708f97fba78dee90c9aa69a1102e467f  BUILD
+d6018fce3cf4a452b4f7a578b7706b34b0e61dd2b643430c5cebf86b4860f365  release.json
+__STUDIO_EOF_dc569d5c92f7__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.
