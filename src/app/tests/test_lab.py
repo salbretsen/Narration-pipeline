@@ -150,6 +150,26 @@ def test_self_signed_certificate_for_lan_use(ctx):
     assert cert.read_bytes() != before  # a new host name triggers a new certificate
 
 
+def test_certificate_with_a_long_host_name(ctx):
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    from studio.tls import ensure_certificate
+
+    long_name = "a" * 40 + "." + "b" * 19 + ".example.net"  # 72 characters, as a reverse-DNS name can be
+    assert len(long_name) == 72
+    s = ctx.settings().model_copy(deep=True)
+    s.server.allowed_hosts = [long_name, "x" * 64 + ".lan", "studio.example.lan"]
+    ctx.save_settings(s)
+    cert, key = ensure_certificate(ctx)  # used to raise ValueError (CommonName longer than 64)
+    c = x509.load_pem_x509_certificate(cert.read_bytes())
+    cn = c.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    assert 0 < len(cn) <= 64 and cn != long_name
+    san = c.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert long_name in san.get_values_for_type(x509.DNSName) and ("x" * 64 + ".lan") not in san.get_values_for_type(x509.DNSName)
+    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+
+
 def test_https_settings_validation():
     from studio.config import Settings
 

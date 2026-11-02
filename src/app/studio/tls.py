@@ -18,6 +18,17 @@ from .util import atomic_write_bytes
 VALID_DAYS = 825
 
 
+def _valid_dns(name: str) -> bool:
+    """RFC 1035 limits: 253 characters in all, 63 per label (a reverse-DNS name from the router can be longer)."""
+    return len(name) <= 253 and all(0 < len(label) <= 63 for label in name.split("."))
+
+
+def _common_name(dns: list[str]) -> str:
+    """X.509 limits the CommonName to 64 characters; the full list of names goes in the SAN extension anyway."""
+    short = [n for n in dns if len(n) <= 64 and n != "localhost"]
+    return min(short, key=len) if short else "audiobook-studio"
+
+
 def _names(ctx) -> tuple[list[str], list[str]]:
     from .web.security import local_names
 
@@ -30,7 +41,7 @@ def _names(ctx) -> tuple[list[str], list[str]]:
         try:
             ips.add(str(ipaddress.ip_address(n)))
         except ValueError:
-            if "." in n or n == "localhost" or n.replace("-", "").isalnum():
+            if ("." in n or n == "localhost" or n.replace("-", "").isalnum()) and _valid_dns(n):
                 dns.add(n)
     ips |= {"127.0.0.1"}
     return sorted(dns), sorted(ips)
@@ -64,7 +75,7 @@ def ensure_certificate(ctx) -> tuple[Path, Path]:
         except Exception:
             pass
     key = ec.generate_private_key(ec.SECP256R1())
-    host = dns[0] if dns else "audiobook-studio"
+    host = _common_name(dns)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host), x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Audiobook Studio (self-signed)")])
     now = dt.datetime.now(dt.timezone.utc)
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())

@@ -2,7 +2,7 @@
 # =============================================================================
 #  Audiobook Studio - user-space setup for Apple Silicon Macs (no prerequisites)
 #  Developed by Scott Albretsen, TSAL Solutions LLC
-#  Version v0.9.1 (build 20261030071545-37174526)
+#  Version v0.9.2 (build 20261102160608-460747b6)
 #
 #  WHAT THIS DOES (read it; it is a plain, inspectable shell script - never pipe it into a shell unseen):
 #    * installs into your home folder only. No sudo, no administrator password, no /usr/local, no /opt/homebrew, no shell profile edits.
@@ -24,9 +24,9 @@
 set -Eeuo pipefail
 umask 022
 
-STUDIO_VERSION="v0.9.1"
+STUDIO_VERSION="v0.9.2"
 STUDIO_VERSION="${STUDIO_VERSION#v}"   # release directories and the update pointer use the bare version
-BUILD_ID="20261030071545-37174526"
+BUILD_ID="20261102160608-460747b6"
 
 # ---- release-pinned bootstrap artifacts (generated from tools/runtime-manifest.json) ----
 UV_VERSION="0.13.6"
@@ -473,11 +473,18 @@ case "${1:-status}" in
 esac
 __STUDIO_EOF_f6f85c632513__
   chmod 755 "$DEST/bin/studio-service"
-cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_fddd210e0ca1__'
+cat > "$DEST/CHANGELOG.md" <<'__STUDIO_EOF_3db1abdcde10__'
 # Changelog
 
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
+
+## v0.9.2
+Bug fix: HTTPS (port 8443) did not start on a Mac whose host name list contained a name longer than 64 characters (for example a long reverse-DNS name
+from the router). The certificate used the alphabetically first name as its CommonName, which X.509 limits to 64 characters, so certificate creation raised
+`ValueError` and the studio quietly served HTTP only (only a log warning). The CommonName is now the shortest usable name (64 characters or fewer, else
+"audiobook-studio"); names that are not valid DNS names (over 253 characters, or a label over 63) are left out of the certificate; every other name and
+address still goes into the SAN list. New test `test_certificate_with_a_long_host_name`. Tested with pytest only; not run on the Mac.
 
 ## v0.9.1
 Documentation only: a new root `README.md` for the GitHub repository page (until now GitHub fell back to `docs/README.md`, the index for
@@ -923,7 +930,7 @@ render exactly as in v0.2.2.
 ## v0.1
 - First prerelease: manuscript import, durable queue, Qwen3-TTS narration with Whisper QA, review workspace,
   chapter-marked M4B export, release signoff, LAN access with authentication, background service.
-__STUDIO_EOF_fddd210e0ca1__
+__STUDIO_EOF_3db1abdcde10__
 cat > "$DEST/MODEL_LICENSES.md" <<'__STUDIO_EOF_fb9571e537dc__'
 # Models, licences and your responsibilities
 
@@ -3087,7 +3094,7 @@ huggingface_hub>=0.23
 cryptography>=42
 __STUDIO_EOF_0150442fc879__
   mkdir -p "$DEST/studio"
-cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_cb62a3bf924a__'
+cat > "$DEST/studio/__init__.py" <<'__STUDIO_EOF_ddeabb153f33__'
 """Audiobook Studio - local, autonomous audiobook production on Apple Silicon.
 
 Versioning is X.Y.Z (Major.Feature.Minor/Patch):
@@ -3096,13 +3103,13 @@ Versioning is X.Y.Z (Major.Feature.Minor/Patch):
   Z  Minor    any bug fix, feature alteration, documentation update or housekeeping
 """
 
-__version__ = "0.9.1"
+__version__ = "0.9.2"
 VERSION_LABEL = f"v{__version__}"
 APP_NAME = "Audiobook Studio"
 DEVELOPER = "Scott Albretsen"
 COMPANY = "TSAL Solutions LLC"
 COPYRIGHT = "\u00a9 2026 TSAL Solutions LLC"
-__STUDIO_EOF_cb62a3bf924a__
+__STUDIO_EOF_ddeabb153f33__
 cat > "$DEST/studio/__main__.py" <<'__STUDIO_EOF_6d8b7d7846a8__'
 from .cli import main
 
@@ -18900,7 +18907,7 @@ def move_book(ctx, book_id: int, new_root: str, progress=None) -> dict:
         ctx.event(conn, "storage", f"Moved '{book['title']}' to {dest_root} ({len(copied)} files verified). The old copy was kept.", book_id)
     return {"files": len(copied), "old": {k: str(v_) for k, v_ in old.items()}, "new": {k: str(v_) for k, v_ in new.items()}}
 __STUDIO_EOF_7f184566b98f__
-cat > "$DEST/studio/tls.py" <<'__STUDIO_EOF_2956fddddc1f__'
+cat > "$DEST/studio/tls.py" <<'__STUDIO_EOF_29cfde88568b__'
 """Self-signed HTTPS certificate for the studio's LAN address.
 
 Browsers only allow microphone access on secure pages (https:// or localhost). A certificate
@@ -18921,6 +18928,17 @@ from .util import atomic_write_bytes
 VALID_DAYS = 825
 
 
+def _valid_dns(name: str) -> bool:
+    """RFC 1035 limits: 253 characters in all, 63 per label (a reverse-DNS name from the router can be longer)."""
+    return len(name) <= 253 and all(0 < len(label) <= 63 for label in name.split("."))
+
+
+def _common_name(dns: list[str]) -> str:
+    """X.509 limits the CommonName to 64 characters; the full list of names goes in the SAN extension anyway."""
+    short = [n for n in dns if len(n) <= 64 and n != "localhost"]
+    return min(short, key=len) if short else "audiobook-studio"
+
+
 def _names(ctx) -> tuple[list[str], list[str]]:
     from .web.security import local_names
 
@@ -18933,7 +18951,7 @@ def _names(ctx) -> tuple[list[str], list[str]]:
         try:
             ips.add(str(ipaddress.ip_address(n)))
         except ValueError:
-            if "." in n or n == "localhost" or n.replace("-", "").isalnum():
+            if ("." in n or n == "localhost" or n.replace("-", "").isalnum()) and _valid_dns(n):
                 dns.add(n)
     ips |= {"127.0.0.1"}
     return sorted(dns), sorted(ips)
@@ -18967,7 +18985,7 @@ def ensure_certificate(ctx) -> tuple[Path, Path]:
         except Exception:
             pass
     key = ec.generate_private_key(ec.SECP256R1())
-    host = dns[0] if dns else "audiobook-studio"
+    host = _common_name(dns)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host), x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Audiobook Studio (self-signed)")])
     now = dt.datetime.now(dt.timezone.utc)
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
@@ -18994,7 +19012,7 @@ def fingerprint_sha256(cert_path: Path) -> str:
     cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
     h = cert.fingerprint(hashes.SHA256()).hex().upper()
     return ":".join(h[i:i + 2] for i in range(0, len(h), 2))
-__STUDIO_EOF_2956fddddc1f__
+__STUDIO_EOF_29cfde88568b__
   mkdir -p "$DEST/studio/update"
 cat > "$DEST/studio/update/__init__.py" <<'__STUDIO_EOF_dcfb737a627a__'
 """Authenticated, user-level application updates.
@@ -34286,7 +34304,7 @@ def test_narrator_pages_are_served(client):
     for p in ("/static/js/views/narrator.js", "/static/js/views/narrator-common.js", "/static/js/views/narrator-model.js", "/static/js/views/voices.js"):
         assert client.get(p).status_code == 200, p
 __STUDIO_EOF_ea04b48616d9__
-cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_1302c82077ad__'
+cat > "$DEST/tests/test_integration.py" <<'__STUDIO_EOF_734543a1439f__'
 """HTTP integration tests through FastAPI's TestClient with the real worker, scheduler,
 SQLite database, FFmpeg assembly and the MOCK engine (synthetic test tones - not MLX)."""
 from __future__ import annotations
@@ -34671,14 +34689,14 @@ def test_ui_shell_and_static_assets(client):
 
 def test_about_page_data_and_version(client):
     st = client.get("/api/auth/status").json()
-    assert st["version"] == "0.9.1" and st["version_label"] == "v0.9.1"
+    assert st["version"] == "0.9.2" and st["version_label"] == "v0.9.2"
     a = client.get("/api/about").json()
-    assert a["version_label"] == "v0.9.1" and "stage" not in a
+    assert a["version_label"] == "v0.9.2" and "stage" not in a
     assert a["developer"] == "Scott Albretsen" and a["company"] == "TSAL Solutions LLC" and "TSAL Solutions LLC" in a["copyright"]
     assert a["licenses"] and a["qa_limitations"] and "python" in a
     assert 'id="ver"' in client.get("/").text
-__STUDIO_EOF_1302c82077ad__
-cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_31cc500ed28e__'
+__STUDIO_EOF_734543a1439f__
+cat > "$DEST/tests/test_lab.py" <<'__STUDIO_EOF_d5b16b055985__'
 """Reference-voice lab: scripts, quality scoring, draft recordings, Whisper check / audition jobs,
 narrator creation from a recording, HTTPS certificate generation. Mock engine (not real speech)."""
 from __future__ import annotations
@@ -34831,6 +34849,26 @@ def test_self_signed_certificate_for_lan_use(ctx):
     assert cert.read_bytes() != before  # a new host name triggers a new certificate
 
 
+def test_certificate_with_a_long_host_name(ctx):
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    from studio.tls import ensure_certificate
+
+    long_name = "a" * 40 + "." + "b" * 19 + ".example.net"  # 72 characters, as a reverse-DNS name can be
+    assert len(long_name) == 72
+    s = ctx.settings().model_copy(deep=True)
+    s.server.allowed_hosts = [long_name, "x" * 64 + ".lan", "studio.example.lan"]
+    ctx.save_settings(s)
+    cert, key = ensure_certificate(ctx)  # used to raise ValueError (CommonName longer than 64)
+    c = x509.load_pem_x509_certificate(cert.read_bytes())
+    cn = c.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
+    assert 0 < len(cn) <= 64 and cn != long_name
+    san = c.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert long_name in san.get_values_for_type(x509.DNSName) and ("x" * 64 + ".lan") not in san.get_values_for_type(x509.DNSName)
+    ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
+
+
 def test_https_settings_validation():
     from studio.config import Settings
 
@@ -34856,7 +34894,7 @@ def test_noise_floor_estimates_and_continuous_reads_are_not_called_noisy(tmp_pat
     bn = next(c for c in qc["checks"] if c["name"] == "Background noise")
     assert bn["status"] == "warn" and "No quiet moment" in bn["detail"]  # unknown, not a false 'too noisy' failure
     assert qc["verdict"] != "poor"
-__STUDIO_EOF_31cc500ed28e__
+__STUDIO_EOF_d5b16b055985__
 cat > "$DEST/tests/test_lab_compare.py" <<'__STUDIO_EOF_00a2eb991424__'
 """Multi-take comparison in the reference lab. Mock engine (not real speech)."""
 from __future__ import annotations
@@ -41018,20 +41056,20 @@ def file_member(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     ti.mode = 0o644
     return ti, data
 __STUDIO_EOF_51e40cd42181__
-cat > "$DEST/BUILD" <<'__STUDIO_EOF_035ed5aa1596__'
-20261030071545-37174526
-__STUDIO_EOF_035ed5aa1596__
-cat > "$DEST/release.json" <<'__STUDIO_EOF_d6018fce3cf4__'
+cat > "$DEST/BUILD" <<'__STUDIO_EOF_8ea2eadc4339__'
+20261102160608-460747b6
+__STUDIO_EOF_8ea2eadc4339__
+cat > "$DEST/release.json" <<'__STUDIO_EOF_12c907a26d06__'
 {
-  "version": "0.9.1",
+  "version": "0.9.2",
   "schema_version": 7,
   "runtime_id": "d2cda442365e8c51",
-  "build": "20261030071545-37174526",
+  "build": "20261102160608-460747b6",
   "platform": "macos",
   "arch": "arm64"
 }
-__STUDIO_EOF_d6018fce3cf4__
-cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_dc569d5c92f7__'
+__STUDIO_EOF_12c907a26d06__
+cat > "$DEST/MANIFEST.sha256" <<'__STUDIO_EOF_a844adccb370__'
 45c27eed4a2a4984dc0cfa4fd9444416d85a062c7322800a87f00ae128be78da  bin/_env.sh
 2a92b069ee240cf0ebd909efd5dad8ce3344e3ee946f56ebea4654734d4f43ab  bin/audiobook-studio
 3c447bcd621e7321edd815fcece324115b62bf79de4c306e8849c73dedd77f60  bin/run-tests
@@ -41040,13 +41078,13 @@ da9eebee096ca13395b725da8345dc634cff1f91857cc2bb1da92b88c2e02b13  bin/smoke-test
 db6095bef8ef5f469590b2ec91c243ff24b3abb0f3e8add899997a7f49e2bfbc  bin/stop-studio
 19463d394fba5aeafd2c4fae4eec3f504993520b5a3d9f18973f2be32a0eca70  bin/studio
 f6f85c632513a17d966a4834b38cce4eedb2447b2ca0c44ad69cb2fff18f6447  bin/studio-service
-fddd210e0ca1b1e4ba86cffd04ad4c21585620177b90fd0024aa197bbbaf236d  CHANGELOG.md
+3db1abdcde101c567a620983612608881547a4cdb8722ecdfc1a51143880763a  CHANGELOG.md
 fb9571e537dca97e9f698929367ec153e81763ce1ff73a2c420982ebe5731046  MODEL_LICENSES.md
 c718fb7d1e299a845d348d4d5023d00a2988d5c58302ff08e1a7c846bfcc3aa1  README.md
 b50c02630f9ffdb0299e442203bbe9caac270699395833dc0e2e53c91a234416  requirements-mlx.txt
 d2cda442365e8c51af8b7d2605a0b88a169e4d187e5d5f4c38c53c8b882cc99a  requirements.lock
 0150442fc879eedf4a07947941a13d5f0170c0f21b16ea08bbdaa63b67df4d5b  requirements.txt
-cb62a3bf924a0385084b383149a088ff823421fd04e762e4f1c24e9317515602  studio/__init__.py
+ddeabb153f33aaa8bddf1f70595b93d961534e16e2e3e0cb46dbf81938474785  studio/__init__.py
 6d8b7d7846a845059d7a3107143f11131f63c5511d669b44085b15ec5e3d2279  studio/__main__.py
 c9c866d2c8aae98694973365f9b7f8dd19e148f5cc911be0523d45279db22aa2  studio/align.py
 299f26b31f565f52ff70bd75c1ebdf74384f06c52eb261edab89e03fb2789463  studio/assembly.py
@@ -41093,7 +41131,7 @@ ae0d5bdc74d1089ea6aca47535f71e7402236204734480629613d013f0155c4e  studio/secrets
 3c50270d2b98ace136b498d3bca5db7f2633ba49443bb51f10e5effd0f9ab1e8  studio/services.py
 ef48976df99c626133890f299b10001f7fdb54164ff777372c81c1088b96252c  studio/smoke.py
 7f184566b98f1c5680a9787c1971442f2db3aa5f6d7ad4b8c8d545d80a72594d  studio/storage.py
-2956fddddc1ff1ff155432616232ad20ad711e598b8c475c7834f41e1f8d6ac4  studio/tls.py
+29cfde88568b662dc34ffdd1b9bb97335b05e2fee6fafc453b13093e3b1a896c  studio/tls.py
 dcfb737a627a1aa43c08139b151af4e00e522fb52985a99b700ccb06f0d5fe71  studio/update/__init__.py
 492b24e47d39eb7075711d6456e98bd9691b6d2dd3dad060159d8b26149ad7de  studio/update/archive.py
 7bca892de0a3a8afc83fb38d3c0fe673d0504fd95db339619ee884ac83830488  studio/update/helper.py
@@ -41165,8 +41203,8 @@ c946f5c7d8645c72518bb50a170ef5cf3124a9bdea814f79f55e183995a44455  tests/test_boo
 efe8a88feba27ce3f303dd292d210481ec12c61be030c1dab44e71b3158174e3  tests/test_disk_cache.py
 f0e734ac28d07b00b07e3fd6f3b67de18440818cfe8db73df379eac98320665f  tests/test_disk_management.py
 ea04b48616d90752892780fbf2bdba8603d31599b36989dcb621417853596a94  tests/test_emotion_takes.py
-1302c82077ad478eb0268856a2ccb15261dd6ac134dfdbe780767a6276925892  tests/test_integration.py
-31cc500ed28ef19e463c183be28384e482ed27da389113c1807233415b039551  tests/test_lab.py
+734543a1439fcbe1c4c3f3d0a49a30791f1981b17ba5ef631cbb322cf5b0bc47  tests/test_integration.py
+d5b16b055985770e0fb6c5e13fb2c7780c4989d05b8169822b61831013b9f7c5  tests/test_lab.py
 00a2eb99142497e572dcb1cb360130645e15664f6c1e40390c41047a14e330cf  tests/test_lab_compare.py
 53f9aa6c2b4761245977f33bf2122be88d24e6c3596402ed6406e49a397dd8f5  tests/test_live_foundation.py
 811fdb836aac5fe1933f5bc19a12a1806b9fea7924647169b9437fb112a2ec36  tests/test_llm_test_connection.py
@@ -41189,9 +41227,9 @@ e0a39c35e7b152de14ad0bff8cc675aa1b9e7aabf3f6e1d642ccefe31bb4abcc  tests/test_upd
 0e0a530fac2318e28026f2d23bcf566bab581a8fba17d2e8f39fe31caef505e3  tests/test_update_rollback.py
 40a1a402b9a485f9a072a397f0388a826b14de7f29b0a475f6200f325e37e192  tests/test_voice_retune.py
 51e40cd42181e99f63a2a060248a46e267b5dbe7a595e63c949a718fb75d9e9c  tests/update_fixtures.py
-035ed5aa1596c7a0803685e8a6411e99708f97fba78dee90c9aa69a1102e467f  BUILD
-d6018fce3cf4a452b4f7a578b7706b34b0e61dd2b643430c5cebf86b4860f365  release.json
-__STUDIO_EOF_dc569d5c92f7__
+8ea2eadc4339f055ff77f50c5f99de4da191262e0f039641c4dc48d8e5ea3dfa  BUILD
+12c907a26d06392f562f5a184ca6ed6ba513c848ae385367b57ef0a7b46e10d4  release.json
+__STUDIO_EOF_a844adccb370__
 }
 
 # macOS ships /usr/bin/shasum. The fallbacks only exist so --extract-only can be used to inspect this file on another machine.

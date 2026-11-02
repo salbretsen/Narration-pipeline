@@ -3,6 +3,13 @@
 Versions are X.Y.Z: X = Major (a major release update, owner-triggered only); Y = Feature (any new feature);
 Z = Minor/Patch (any bug fix, feature alteration, documentation update or housekeeping).
 
+## v0.9.2
+Bug fix: HTTPS (port 8443) did not start on a Mac whose host name list contained a name longer than 64 characters (for example a long reverse-DNS name
+from the router). The certificate used the alphabetically first name as its CommonName, which X.509 limits to 64 characters, so certificate creation raised
+`ValueError` and the studio quietly served HTTP only (only a log warning). The CommonName is now the shortest usable name (64 characters or fewer, else
+"audiobook-studio"); names that are not valid DNS names (over 253 characters, or a label over 63) are left out of the certificate; every other name and
+address still goes into the SAN list. New test `test_certificate_with_a_long_host_name`. Tested with pytest only; not run on the Mac.
+
 ## v0.9.1
 Documentation only: a new root `README.md` for the GitHub repository page (until now GitHub fell back to `docs/README.md`, the index for
 development sessions). It describes the features, the pipeline, requirements, step-by-step installation from the latest release, installer
